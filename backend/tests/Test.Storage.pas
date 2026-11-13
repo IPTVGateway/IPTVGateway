@@ -84,6 +84,7 @@ type
     [Test] procedure EpgReplaceAndLoadByTvgId;
     [Test] procedure EpgMaxDaysCapsFutureProgrammes;
     [Test] procedure IngestStatusRecordsUnknownSource;
+    [Test] procedure ZapCacheServesAndInvalidates;
   end;
 
 implementation
@@ -3034,6 +3035,95 @@ begin
     Assert.IsTrue(Found, 'status recorded for the requested source');
   finally
     Ingest.Free;
+  end;
+end;
+
+// The locking store answers the zap path (list by login + stream on that list)
+// from memory, and forgets it after any write that can change the answer.
+procedure TStorageTests.ZapCacheServesAndInvalidates;
+var
+  Inner, Store: IStore;
+  Snap: TSourceSnapshot;
+  Lst, Found: TCustomList;
+  It: TCustomItem;
+  S: TStreamItem;
+  ListId, StreamId, ItemId: Integer;
+begin
+  Inner := NewStore(FDbPath);
+  Store := TLockingStore.Create(Inner, Inner); // single connection, as on Unraid
+  Snap := TSourceSnapshot.Create(1);
+  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', 'NL', 'npo1.nl', 'http://p/live/u/p/1.ts'));
+  Store.MergeSnapshot(Snap);
+  Snap.Free;
+  var L := Store.LoadStreams(Default(TCatalogFilter));
+  try StreamId := L[0].Id; finally L.Free; end;
+
+  Lst := TCustomList.Create;
+  try
+    Lst.Name := 'Box'; Lst.OutputUsername := 'box'; Lst.OutputPassword := 'pw'; Lst.Enabled := True;
+    ListId := Store.SaveList(Lst);
+  finally
+    Lst.Free;
+  end;
+  It := TCustomItem.Create;
+  try
+    It.ListId := ListId; It.StreamItemId := StreamId; It.ContentType := ctLive;
+    ItemId := Store.SaveItem(It);
+  finally
+    It.Free;
+  end;
+
+  // first call fills the cache, second is served from it (both owned copies)
+  for var Round := 1 to 2 do
+  begin
+    Found := Store.FindListByCredentials('box', 'pw');
+    try
+      Assert.IsNotNull(Found);
+      Assert.AreEqual(ListId, Found.Id);
+    finally
+      Found.Free;
+    end;
+    S := Store.LoadListStreamById(ListId, StreamId);
+    try
+      Assert.IsNotNull(S);
+      Assert.AreEqual('http://p/live/u/p/1.ts', S.UpstreamUrl);
+    finally
+      S.Free;
+    end;
+  end;
+
+  // the provider URL changes on a refresh -> the next zap sees the new one
+  Snap := TSourceSnapshot.Create(1);
+  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', 'NL', 'npo1.nl', 'http://p/live/u/p/1.m3u8'));
+  Store.MergeSnapshot(Snap);
+  Snap.Free;
+  S := Store.LoadListStreamById(ListId, StreamId);
+  try
+    Assert.AreEqual('http://p/live/u/p/1.m3u8', S.UpstreamUrl, 'refresh invalidates');
+  finally
+    S.Free;
+  end;
+
+  // removed from the list -> no longer playable with this login
+  Store.DeleteItem(ItemId);
+  S := Store.LoadListStreamById(ListId, StreamId);
+  Assert.IsNull(S, 'item removed');
+
+  // login changed -> old credentials no longer resolve
+  Found := Store.FindListByCredentials('box', 'pw');
+  try
+    Found.OutputPassword := 'new';
+    Store.SaveList(Found);
+  finally
+    Found.Free;
+  end;
+  Found := Store.FindListByCredentials('box', 'pw');
+  Assert.IsNull(Found, 'old password rejected');
+  Found := Store.FindListByCredentials('box', 'new');
+  try
+    Assert.IsNotNull(Found, 'new password accepted');
+  finally
+    Found.Free;
   end;
 end;
 

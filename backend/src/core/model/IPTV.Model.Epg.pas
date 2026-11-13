@@ -9,9 +9,11 @@ unit IPTV.Model.Epg;
 interface
 
 uses
+  // RTL
   System.Generics.Collections;
 
 type
+  /// One guide programme of one channel (tvg-id) from one source.
   TEpgProgramme = class
   private
     FId: Integer;
@@ -33,6 +35,7 @@ type
     property Category: string read FCategory write FCategory;
   end;
 
+  /// Owning list of guide programmes.
   TEpgProgrammeList = class(TObjectList<TEpgProgramme>);
 
   /// A <channel> of an XMLTV guide (id + first display-name). Kept for the extra
@@ -57,6 +60,7 @@ procedure KeepOneSourcePerChannel(AList: TEpgProgrammeList; ANowUtc: TDateTime);
 implementation
 
 uses
+  // RTL
   System.SysUtils;
 
 const
@@ -70,51 +74,54 @@ type
     Future, Total: Integer;
   end;
 var
-  Scores: TDictionary<string, TScore>;  // key: tvg-id + cScoreKeySep + source id
-  Best: TDictionary<string, Integer>;   // tvg-id -> chosen source id
-  P: TEpgProgramme;
-  Key: string;
-  Sc, BestSc: TScore;
-  Pair: TPair<string, TScore>;
-  Tvg: string;
-  Src, Sep, I, Cur: Integer;
+  lScores: TDictionary<string, TScore>;  // key: tvg-id + cScoreKeySep + source id
+  lBest: TDictionary<string, Integer>;   // tvg-id -> chosen source id
+  lProgramme: TEpgProgramme;
+  lKey: string;
+  lScore, lBestScore: TScore;
+  lPair: TPair<string, TScore>;
+  lTvg: string;
+  lSrc, lSep, i, lCur: Integer;
 begin
   if (AList = nil) or (AList.Count = 0) then
     Exit;
-  Scores := TDictionary<string, TScore>.Create;
-  Best := TDictionary<string, Integer>.Create;
+  lScores := nil;
+  lBest := nil;
   try
-    for P in AList do
+    lScores := TDictionary<string, TScore>.Create;
+    lBest := TDictionary<string, Integer>.Create;
+    for lProgramme in AList do
     begin
-      Key := P.ChannelTvgId + cScoreKeySep + P.SourceId.ToString;
-      if not Scores.TryGetValue(Key, Sc) then
-        Sc := Default(TScore);
-      Inc(Sc.Total);
-      if P.StopUtc > ANowUtc then
-        Inc(Sc.Future);
-      Scores.AddOrSetValue(Key, Sc);
+      lKey := lProgramme.ChannelTvgId + cScoreKeySep + lProgramme.SourceId.ToString;
+      if not lScores.TryGetValue(lKey, lScore) then
+        lScore := Default(TScore);
+      Inc(lScore.Total);
+      if lProgramme.StopUtc > ANowUtc then
+        Inc(lScore.Future);
+      lScores.AddOrSetValue(lKey, lScore);
     end;
-    for Pair in Scores do
+    for lPair in lScores do
     begin
-      Sep := Pair.Key.LastIndexOf(cScoreKeySep);
-      Tvg := Pair.Key.Substring(0, Sep);
-      Src := StrToIntDef(Pair.Key.Substring(Sep + 1), 0);
-      if Best.TryGetValue(Tvg, Cur) then
+      lSep := lPair.Key.LastIndexOf(cScoreKeySep);
+      lTvg := lPair.Key.Substring(0, lSep);
+      lSrc := StrToIntDef(lPair.Key.Substring(lSep + 1), 0);
+      if lBest.TryGetValue(lTvg, lCur) then
       begin
-        BestSc := Scores[Tvg + cScoreKeySep + Cur.ToString];
-        if (Pair.Value.Future < BestSc.Future) or
-           ((Pair.Value.Future = BestSc.Future) and (Pair.Value.Total < BestSc.Total)) or
-           ((Pair.Value.Future = BestSc.Future) and (Pair.Value.Total = BestSc.Total) and (Src > Cur)) then
+        lBestScore := lScores[lTvg + cScoreKeySep + lCur.ToString];
+        if (lPair.Value.Future < lBestScore.Future) or
+           ((lPair.Value.Future = lBestScore.Future) and (lPair.Value.Total < lBestScore.Total)) or
+           ((lPair.Value.Future = lBestScore.Future) and (lPair.Value.Total = lBestScore.Total) and
+            (lSrc > lCur)) then
           Continue;
       end;
-      Best.AddOrSetValue(Tvg, Src);
+      lBest.AddOrSetValue(lTvg, lSrc);
     end;
-    for I := AList.Count - 1 downto 0 do
-      if Best.TryGetValue(AList[I].ChannelTvgId, Cur) and (AList[I].SourceId <> Cur) then
-        AList.Delete(I);
+    for i := AList.Count - 1 downto 0 do
+      if lBest.TryGetValue(AList[i].ChannelTvgId, lCur) and (AList[i].SourceId <> lCur) then
+        AList.Delete(i);
   finally
-    Best.Free;
-    Scores.Free;
+    FreeAndNil(lBest);
+    FreeAndNil(lScores);
   end;
 end;
 

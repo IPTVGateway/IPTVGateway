@@ -12,6 +12,7 @@
   .dproj search paths. }
 
 uses
+  // RTL
   Vcl.SvcMgr,
   // ── core: model ──────────────────────────────────────────────────────
   IPTV.Model.Types in '..\core\model\IPTV.Model.Types.pas',

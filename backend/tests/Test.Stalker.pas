@@ -7,23 +7,32 @@ unit Test.Stalker;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Tests for the Stalker/MAG portal URL and cookie builders.</summary>
   [TestFixture]
   TStalkerTests = class
   public
+    /// <summary>A bare host gets /portal.php appended.</summary>
     [Test] procedure PortalUrl_AppendsPortalPhp;
+    /// <summary>A /c/ console path resolves to the portal endpoint.</summary>
     [Test] procedure PortalUrl_StripsConsolePath;
+    /// <summary>An explicit endpoint URL is kept.</summary>
     [Test] procedure PortalUrl_KeepsExplicitEndpoint;
+    /// <summary>The handshake action URL is built correctly.</summary>
     [Test] procedure ActionUrl_BuildsHandshake;
+    /// <summary>The cookie carries the MAC, language and timezone.</summary>
     [Test] procedure Cookie_CarriesMacAndLocale;
   end;
 
 implementation
 
 uses
+  // RTL
   System.SysUtils,
+  // own units
   IPTV.Source.Stalker;
 
 procedure TStalkerTests.PortalUrl_AppendsPortalPhp;
@@ -55,12 +64,12 @@ end;
 
 procedure TStalkerTests.Cookie_CarriesMacAndLocale;
 var
-  C: string;
+  lCookie: string;
 begin
-  C := StalkerCookie('00:1A:79:AA:BB:CC');
-  Assert.IsTrue(C.Contains('mac=00:1A:79:AA:BB:CC'), 'cookie carries the MAC');
-  Assert.IsTrue(C.Contains('stb_lang=en'), 'cookie carries stb_lang');
-  Assert.IsTrue(C.Contains('timezone='), 'cookie carries timezone');
+  lCookie := StalkerCookie('00:1A:79:AA:BB:CC');
+  Assert.IsTrue(lCookie.Contains('mac=00:1A:79:AA:BB:CC'), 'cookie carries the MAC');
+  Assert.IsTrue(lCookie.Contains('stb_lang=en'), 'cookie carries stb_lang');
+  Assert.IsTrue(lCookie.Contains('timezone='), 'cookie carries timezone');
 end;
 
 initialization

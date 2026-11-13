@@ -8,10 +8,13 @@ unit IPTV.Model.Source;
 interface
 
 uses
+  // RTL
   System.SysUtils,
+  // Own units
   IPTV.Model.Types;
 
 type
+  /// One upstream provider (Xtream portal or M3U playlist) and its per-source settings.
   TSourceConfig = class
   private
     FId: Integer;
@@ -39,9 +42,11 @@ type
     FTzOffsetMin: Integer;     // portal clock - UTC in minutes (Xtream server_info); timeshift
                                // start times are in the portal's local time
   public
+    /// Creates an enabled source with every content type on.
     constructor Create;
     /// Copy every field (used to clone cached rows and to pre-load an update).
     procedure Assign(const ASrc: TSourceConfig);
+    /// True when the source is enabled and ingests AType.
     function EnabledFor(AType: TContentType): Boolean;
     /// Apply the per-source name filters: include (whitelist) then exclude (blacklist),
     /// each matching when a token is a prefix OR suffix of the name (case-insensitive).
@@ -93,7 +98,9 @@ type
     Exc: TArray<string>;
   end;
 
+/// Builds the prepared (cleaned, normalised, sorted) form of include/exclude tokens.
 function PrepareNameFilter(const AInclude, AExclude: TArray<string>): TPreparedNameFilter;
+/// Name passes a prepared include/exclude filter (see NamePassesFilters).
 function PreparedNamePasses(const AFilter: TPreparedNameFilter; const AName: string): Boolean;
 /// True when an EXCLUDE token matches the name (include tokens are not considered).
 function PreparedNameExcluded(const AFilter: TPreparedNameFilter; const AName: string): Boolean;
@@ -105,22 +112,25 @@ function NamePassesFilters(const AName: string; const AInclude, AExclude: TArray
 implementation
 
 uses
-  System.StrUtils, System.Generics.Collections;
+  // RTL
+  System.StrUtils,
+  System.Generics.Collections;
 
 // Map every separator (| - : tab) to a space and trim, so a token can be matched
 // as a whole, separator-delimited word — mirrors the storage NameFilterSql
 // (NormCol) so "what gets filtered" == "what matches here". Note: internal space
 // runs are NOT collapsed, exactly like NormCol — the prefix/suffix patterns below
 // tolerate them, and not collapsing keeps the SQL and Pascal results identical.
-function NormSeps(const S: string): string;
+function NormSeps(const AValue: string): string;
 begin
   // ASCII separators + the Unicode vertical bars providers decorate names with
   // (┃ │ ¦ ｜ …) — keep in lockstep with Core.Utils.IsPrefixSep and the storage
   // NameFilterSql so strip/filter/match all treat the same chars as boundaries.
-  Result := S
+  Result := AValue
     .Replace('|', ' ').Replace('-', ' ').Replace(':', ' ').Replace(#9, ' ')
     .Replace(cSepBrokenBar, ' ').Replace(cSepBoxLight, ' ').Replace(cSepBoxHeavy, ' ')
-    .Replace(cSepTripleDashLight, ' ').Replace(cSepTripleDashHeavy, ' ').Replace(cSepQuadDashLight, ' ')
+    .Replace(cSepTripleDashLight, ' ').Replace(cSepTripleDashHeavy, ' ')
+    .Replace(cSepQuadDashLight, ' ')
     .Replace(cSepQuadDashHeavy, ' ').Replace(cSepFullwidthBar, ' ')
     .Trim;
 end;
@@ -128,63 +138,64 @@ end;
 // Does AToken appear as the first or last space-delimited word of AName?
 function TokenMatchesName(const AName, AToken: string): Boolean;
 var
-  N, T: string;
+  lName, lToken: string;
 begin
-  T := NormSeps(AToken);
-  if T = '' then
+  lToken := NormSeps(AToken);
+  if lToken = '' then
     Exit(False);
-  N := NormSeps(AName);
-  Result := SameText(N, T) or StartsText(T + ' ', N) or EndsText(' ' + T, N);
+  lName := NormSeps(AName);
+  Result := SameText(lName, lToken) or StartsText(lToken + ' ', lName) or EndsText(' ' + lToken, lName);
 end;
 
 function MatchesAnyToken(const AName: string; const ATokens: TArray<string>): Boolean;
 var
-  T: string;
+  lToken: string;
 begin
-  for T in ATokens do
-    if TokenMatchesName(AName, T) then
+  for lToken in ATokens do
+    if TokenMatchesName(AName, lToken) then
       Exit(True);
   Result := False;
 end;
 
 function SplitFilterLines(const ATokens: TArray<string>): TArray<string>;
 var
-  T, Part: string;
+  lToken, lPart: string;
 begin
   Result := [];
-  for T in ATokens do
-    for Part in T.Replace('"', '').Split([#13#10, #10, #13]) do // '"' never part of a name token (see StrArrayToCsv)
-      if Part.Trim <> '' then
-        Result := Result + [Part.Trim];
+  for lToken in ATokens do
+    // '"' is never part of a name token (see StrArrayToCsv)
+    for lPart in lToken.Replace('"', '').Split([#13#10, #10, #13]) do
+      if lPart.Trim <> '' then
+        Result := Result + [lPart.Trim];
 end;
 
 function CleanFilterTokens(const ATokens: TArray<string>): TArray<string>;
 var
-  T: string;
+  lToken: string;
 begin
   Result := [];
-  for T in SplitFilterLines(ATokens) do
-    if (Length(T) <= MaxFilterTokenLen) and (NormSeps(T) <> '') then
-      Result := Result + [T];
+  for lToken in SplitFilterLines(ATokens) do
+    if (Length(lToken) <= MaxFilterTokenLen) and (NormSeps(lToken) <> '') then
+      Result := Result + [lToken];
 end;
 
 function FirstTooLongFilterToken(const ATokens: TArray<string>): string;
 var
-  T: string;
+  lToken: string;
 begin
-  for T in SplitFilterLines(ATokens) do
-    if Length(T) > MaxFilterTokenLen then
-      Exit(T);
+  for lToken in SplitFilterLines(ATokens) do
+    if Length(lToken) > MaxFilterTokenLen then
+      Exit(lToken);
   Result := '';
 end;
 
 function PrepareTokens(const ATokens: TArray<string>): TArray<string>;
 var
-  T: string;
+  lToken: string;
 begin
   Result := [];
-  for T in CleanFilterTokens(ATokens) do
-    Result := Result + [AnsiLowerCase(NormSeps(T))];
+  for lToken in CleanFilterTokens(ATokens) do
+    Result := Result + [AnsiLowerCase(NormSeps(lToken))];
   TArray.Sort<string>(Result);
 end;
 
@@ -194,35 +205,35 @@ begin
   Result.Exc := PrepareTokens(AExclude);
 end;
 
-// N = normalised, lower-cased name. True when a token equals the whole name, or
-// the part before / after one of its spaces — exactly SameText(N,T) or
+// ANormName = normalised, lower-cased name (N). True when a token equals the whole
+// name, or the part before / after one of its spaces — exactly SameText(N,T) or
 // StartsText(T+' ',N) or EndsText(' '+T,N) (the word-boundary rule of the SQL).
-function NormNameMatchesAny(const N: string; const ATokens: TArray<string>): Boolean;
+function NormNameMatchesAny(const ANormName: string; const ATokens: TArray<string>): Boolean;
 var
-  I, Dummy: Integer;
+  i, lDummy: Integer;
 begin
   if Length(ATokens) = 0 then
     Exit(False);
-  if TArray.BinarySearch<string>(ATokens, N, Dummy) then
+  if TArray.BinarySearch<string>(ATokens, ANormName, lDummy) then
     Exit(True);
-  for I := 1 to Length(N) do
-    if N[I] = ' ' then
-      if TArray.BinarySearch<string>(ATokens, Copy(N, 1, I - 1), Dummy) or
-         TArray.BinarySearch<string>(ATokens, Copy(N, I + 1, MaxInt), Dummy) then
+  for i := 1 to Length(ANormName) do
+    if ANormName[i] = ' ' then
+      if TArray.BinarySearch<string>(ATokens, Copy(ANormName, 1, i - 1), lDummy) or
+         TArray.BinarySearch<string>(ATokens, Copy(ANormName, i + 1, MaxInt), lDummy) then
         Exit(True);
   Result := False;
 end;
 
 function PreparedNamePasses(const AFilter: TPreparedNameFilter; const AName: string): Boolean;
 var
-  N: string;
+  lNormName: string;
 begin
   if (Length(AFilter.Inc) = 0) and (Length(AFilter.Exc) = 0) then
     Exit(True);
-  N := AnsiLowerCase(NormSeps(AName));
-  if (Length(AFilter.Inc) > 0) and not NormNameMatchesAny(N, AFilter.Inc) then
+  lNormName := AnsiLowerCase(NormSeps(AName));
+  if (Length(AFilter.Inc) > 0) and not NormNameMatchesAny(lNormName, AFilter.Inc) then
     Exit(False);
-  Result := not NormNameMatchesAny(N, AFilter.Exc);
+  Result := not NormNameMatchesAny(lNormName, AFilter.Exc);
 end;
 
 function PreparedNameExcluded(const AFilter: TPreparedNameFilter; const AName: string): Boolean;

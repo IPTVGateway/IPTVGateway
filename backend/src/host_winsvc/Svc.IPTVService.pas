@@ -26,12 +26,20 @@ unit Svc.IPTVService;
 interface
 
 uses
-  Winapi.Windows, Winapi.ShlObj, System.SysUtils, System.Classes, System.IOUtils,
+  // RTL
+  Winapi.Windows,
+  Winapi.ShlObj,
+  System.SysUtils,
+  System.Classes,
+  System.IOUtils,
   System.SyncObjs,
   Vcl.SvcMgr,
-  IPTV.App.Config, IPTV.App.Runner;
+  // Own units
+  IPTV.App.Config,
+  IPTV.App.Runner;
 
 type
+  /// Thin SCM adapter: owns a TAppRunner and only controls it.
   TIPTVGatewayService = class(TService)
     procedure ServiceCreate(Sender: TObject);
     procedure ServiceDestroy(Sender: TObject);
@@ -42,8 +50,10 @@ type
     FRunner: TAppRunner;        // the worker thread that owns the app
     FLogLock: TCriticalSection; // serialise file writes (worker thread logs here)
     FLogPath: string;
+    /// Best-effort, thread-safe append of one line to the service log file.
     procedure SvcLog(const AMsg: string);
   public
+    /// The SCM control callback for this service.
     function GetServiceController: TServiceController; override;
   end;
 
@@ -76,10 +86,10 @@ end;
 // the exe. CSIDL_COMMON_APPDATA resolves ProgramData.
 function AppDataRoot: string;
 var
-  Buf: array[0..MAX_PATH] of Char;
+  lBuf: array[0..MAX_PATH] of Char;
 begin
-  if Succeeded(SHGetFolderPath(0, CSIDL_COMMON_APPDATA, 0, SHGFP_TYPE_CURRENT, @Buf[0])) then
-    Result := IncludeTrailingPathDelimiter(Buf) + cAppDataFolderName
+  if Succeeded(SHGetFolderPath(0, CSIDL_COMMON_APPDATA, 0, SHGFP_TYPE_CURRENT, @lBuf[0])) then
+    Result := IncludeTrailingPathDelimiter(lBuf) + cAppDataFolderName
   else
     Result := cFallbackAppDataRoot;
 end;
@@ -107,9 +117,9 @@ begin
   Result := TPath.Combine(AppDataRoot, cSvcDataDirName + PathDelim + cDatabaseFileName);
 end;
 
-procedure ServiceController(CtrlCode: DWord); stdcall;
+procedure ServiceController(ACtrlCode: DWord); stdcall;
 begin
-  IPTVGatewayService.Controller(CtrlCode);
+  IPTVGatewayService.Controller(ACtrlCode);
 end;
 
 function TIPTVGatewayService.GetServiceController: TServiceController;
@@ -145,22 +155,22 @@ end;
 // must never take the service down.
 procedure TIPTVGatewayService.SvcLog(const AMsg: string);
 var
-  F: TextFile;
-  Line: string;
+  lFile: TextFile;
+  lLine: string;
 begin
-  Line := Format('%s  %s', [FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now), AMsg]);
+  lLine := Format('%s  %s', [FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now), AMsg]);
   FLogLock.Enter;
   try
     try
-      AssignFile(F, FLogPath);
+      AssignFile(lFile, FLogPath);
       if FileExists(FLogPath) then
-        Append(F)
+        Append(lFile)
       else
-        Rewrite(F);
+        Rewrite(lFile);
       try
-        Writeln(F, Line);
+        Writeln(lFile, lLine);
       finally
-        CloseFile(F);
+        CloseFile(lFile);
       end;
     except
       // swallow: logging is best-effort (e.g. exe dir not writable)
@@ -172,7 +182,7 @@ end;
 
 procedure TIPTVGatewayService.ServiceStart(Sender: TService; var Started: Boolean);
 var
-  Cfg: TAppConfig;
+  lConfig: TAppConfig;
 begin
   try
     // Load settings from the writable ProgramData copy. On first run that file
@@ -180,19 +190,19 @@ begin
     // template) if present, else fall back to built-in defaults. Either way the
     // app persists future changes to the ProgramData copy (passed to the runner).
     if FileExists(SvcConfigPath) then
-      Cfg := TAppConfig.Load(SvcConfigPath)
+      lConfig := TAppConfig.Load(SvcConfigPath)
     else
-      Cfg := TAppConfig.Load(ExeDir + cConfigFileName); // template or defaults
+      lConfig := TAppConfig.Load(ExeDir + cConfigFileName); // template or defaults
     // Keep the DB off the (read-only) exe dir unless the operator set an explicit path.
-    if SameText(Cfg.DatabasePath, ExeDefaultDbPath) or (Cfg.DatabasePath = '') then
-      Cfg.DatabasePath := SvcDefaultDbPath
-    else if TPath.IsRelativePath(Cfg.DatabasePath) then
+    if SameText(lConfig.DatabasePath, ExeDefaultDbPath) or (lConfig.DatabasePath = '') then
+      lConfig.DatabasePath := SvcDefaultDbPath
+    else if TPath.IsRelativePath(lConfig.DatabasePath) then
       // a relative path would land in the service's working dir (System32)
-      Cfg.DatabasePath := TPath.Combine(AppDataRoot, Cfg.DatabasePath);
-    FRunner := TAppRunner.Create(Cfg, SvcLog, SvcConfigPath); // worker thread starts the app
+      lConfig.DatabasePath := TPath.Combine(AppDataRoot, lConfig.DatabasePath);
+    FRunner := TAppRunner.Create(lConfig, SvcLog, SvcConfigPath); // worker thread starts the app
     SvcLog(Format('IPTV Gateway service starting on port %d (HTTPS=%s). Data root: %s',
-      [Cfg.HttpPort, BoolToStr(Cfg.UseHttps, True), AppDataRoot]));
-    LogMessage(Format('IPTV Gateway starting on port %d.', [Cfg.HttpPort]),
+      [lConfig.HttpPort, BoolToStr(lConfig.UseHttps, True), AppDataRoot]));
+    LogMessage(Format('IPTV Gateway starting on port %d.', [lConfig.HttpPort]),
       EVENTLOG_INFORMATION_TYPE);
     // the app starts on the runner's thread: wait (within the SCM's start timeout)
     // for the outcome, so a bind failure shows as a failed start in services.msc

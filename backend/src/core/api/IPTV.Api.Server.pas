@@ -15,10 +15,18 @@ unit IPTV.Api.Server;
 interface
 
 uses
-  MARS.Core.Engine.Interfaces, MARS.http.Server.Indy,
-  IPTV.App.Config, IPTV.Ingest.Service, IPTV.Api.ProxyServer, IPTV.Api.SsdpServer;
+  // MARS
+  MARS.Core.Engine.Interfaces,
+  MARS.http.Server.Indy,
+  // own
+  IPTV.App.Config,
+  IPTV.Ingest.Service,
+  IPTV.Api.ProxyServer,
+  IPTV.Api.SsdpServer;
 
 type
+  /// The HTTP front end: MARS engine + Indy listener (admin API, Xtream portal,
+  /// Plex surfaces, bundled admin UI), plus the optional stream relay and SSDP.
   TApiServer = class
   private
     FConfig: TAppConfig;
@@ -30,37 +38,57 @@ type
     FProxyActivePort: Integer; // port the relay is bound to (0 = not running)
     FSsdp: TSsdpServer; // HDHomeRun discovery for Plex (UDP 1900); nil when off
     FWebRoot: string; // static admin-UI files (SPA); '' => not bundled, API only
+    /// The configured HTTP(S) port.
     function GetPort: Integer;
     // the relay is needed by the global stream proxy OR by a Plex surface set to relay
     function NeedsProxyServer: Boolean;
     procedure SyncProxyServer; // start/stop/rebind the relay to match what's enabled
     procedure SyncSsdp; // start/stop SSDP to match FConfig.PlexHdhrEnabled
   public
+    /// Stops the server (if running) and frees it.
     destructor Destroy; override;
+    /// Creates the server for AConfig; ALog receives request/lifecycle lines.
     constructor Create(const AConfig: TAppConfig; const ALog: TLogProc = nil);
+    /// Builds the MARS engine, opens the listener, runs the warm-up and starts the
+    /// relay/SSDP when enabled. Raises (after cleaning up) when a listener can't bind.
     procedure Start;
+    /// Stops SSDP, the relay and the listener and releases the engine.
     procedure Stop;
     /// Start/stop (or rebind) the stream-relay server at runtime — backs the
     /// settings toggle. Recreates the relay if the port changed while running.
     procedure SetProxy(AEnabled: Boolean; APort: Integer);
     /// Apply Plex settings live (re-reads the toggles; starts/stops SSDP).
     procedure SyncPlex(const AConfig: TAppConfig);
+    /// The configured HTTP(S) port.
     property Port: Integer read GetPort;
+    /// True between Start and Stop.
     property Running: Boolean read FRunning;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.IOUtils, System.RegularExpressions,
-  System.Net.URLClient, System.Net.HttpClient, System.Diagnostics, System.SyncObjs,
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.IOUtils,
+  System.RegularExpressions,
+  System.Net.URLClient,
+  System.Net.HttpClient,
+  System.Diagnostics,
+  System.SyncObjs,
   System.StrUtils,
-  IPTV.Core.Utils,
-  MARS.Core.Activation, MARS.Core.Activation.Interfaces,
-  MARS.Core.Engine, MARS.Core.Application.Interfaces, MARS.Core.URL,
+  // MARS
+  MARS.Core.Activation,
+  MARS.Core.Activation.Interfaces,
+  MARS.Core.Engine,
+  MARS.Core.Application.Interfaces,
+  MARS.Core.URL,
   MARS.Core.RequestAndResponse.Interfaces,
   MARS.Core.Activation.InjectionService, // registers [Context] injection (Request/Response/URL)
-  MARS.Core.MessageBodyWriter, MARS.Core.MessageBodyWriters, MARS.Core.MessageBodyReaders,
+  MARS.Core.MessageBodyWriter,
+  MARS.Core.MessageBodyWriters,
+  MARS.Core.MessageBodyReaders,
   // MARS always injects a JWT token during activation, so a Token implementation
   // must be linked even though we don't authenticate (mORMot on Windows, JOSE on Linux).
 {$IFDEF MSWINDOWS}
@@ -68,7 +96,11 @@ uses
 {$ELSE}
   MARS.JOSEJWT.Token,
 {$ENDIF}
-  IPTV.Api.Mars.Admin, IPTV.Api.Mars.Xtream, IPTV.Api.Mars.Plex;
+  // own
+  IPTV.Core.Utils,
+  IPTV.Api.Mars.Admin,
+  IPTV.Api.Mars.Xtream,
+  IPTV.Api.Mars.Plex;
 
 threadvar
   GReqStart: Int64;     // request start (TStopwatch ticks), per Indy worker thread
@@ -137,10 +169,10 @@ const
   cMaskQueryReplace = '$1***';
 
 // warm-up requests go to our own (possibly self-signed) cert on loopback
-procedure AcceptOwnCert(const Sender: TObject; const ARequest: TURLRequest;
-  const Certificate: TCertificate; var Accepted: Boolean);
+procedure AcceptOwnCert(const ASender: TObject; const ARequest: TURLRequest;
+  const ACertificate: TCertificate; var AAccepted: Boolean);
 begin
-  Accepted := True;
+  AAccepted := True;
 end;
 
 // mask credentials in a URL for logging: /live|movie|series|stream/{user}/{pass}
@@ -162,65 +194,77 @@ end;
 // else is treated as an admin-UI/static request.
 function IsBackendRoute(const AFirstSeg: string): Boolean;
 var
-  R: string;
+  lRoute: string;
 begin
-  for R in cBackendRoutes do
-    if SameText(AFirstSeg, R) then
+  for lRoute in cBackendRoutes do
+    if SameText(AFirstSeg, lRoute) then
       Exit(True);
   Result := False;
 end;
 
 function MimeType(const AExt: string): string;
 begin
-  if SameText(AExt, '.html') then Result := 'text/html; charset=utf-8'
-  else if SameText(AExt, '.js') or SameText(AExt, '.mjs') then Result := 'text/javascript; charset=utf-8'
-  else if SameText(AExt, '.css') then Result := 'text/css; charset=utf-8'
-  else if SameText(AExt, '.json') or SameText(AExt, '.map') then Result := 'application/json; charset=utf-8'
-  else if SameText(AExt, '.svg') then Result := 'image/svg+xml'
-  else if SameText(AExt, '.png') then Result := 'image/png'
-  else if SameText(AExt, '.jpg') or SameText(AExt, '.jpeg') then Result := 'image/jpeg'
-  else if SameText(AExt, '.ico') then Result := 'image/x-icon'
-  else if SameText(AExt, '.woff2') then Result := 'font/woff2'
-  else if SameText(AExt, '.woff') then Result := 'font/woff'
-  else if SameText(AExt, '.txt') then Result := 'text/plain; charset=utf-8'
-  else Result := 'application/octet-stream';
+  if SameText(AExt, '.html') then
+    Result := 'text/html; charset=utf-8'
+  else if SameText(AExt, '.js') or SameText(AExt, '.mjs') then
+    Result := 'text/javascript; charset=utf-8'
+  else if SameText(AExt, '.css') then
+    Result := 'text/css; charset=utf-8'
+  else if SameText(AExt, '.json') or SameText(AExt, '.map') then
+    Result := 'application/json; charset=utf-8'
+  else if SameText(AExt, '.svg') then
+    Result := 'image/svg+xml'
+  else if SameText(AExt, '.png') then
+    Result := 'image/png'
+  else if SameText(AExt, '.jpg') or SameText(AExt, '.jpeg') then
+    Result := 'image/jpeg'
+  else if SameText(AExt, '.ico') then
+    Result := 'image/x-icon'
+  else if SameText(AExt, '.woff2') then
+    Result := 'font/woff2'
+  else if SameText(AExt, '.woff') then
+    Result := 'font/woff'
+  else if SameText(AExt, '.txt') then
+    Result := 'text/plain; charset=utf-8'
+  else
+    Result := 'application/octet-stream';
 end;
 
 function ServeStatic(const AWebRoot, ARawPath: string; const AResponse: IMARSResponse): Boolean;
 var
-  Rel, FullPath: string;
-  Q: Integer;
-  Stream: TFileStream;
+  lRel, lFullPath: string;
+  lQueryPos: Integer;
+  lStream: TFileStream;
 begin
   Result := False;
   if AWebRoot = '' then
     Exit;
-  Rel := ARawPath;
-  Q := Pos('?', Rel);
-  if Q > 0 then
-    Rel := Copy(Rel, 1, Q - 1);
-  if (Rel = '') or (Rel = '/') then
-    Rel := cIndexHtml;
-  if Rel.Contains('..') then // path-traversal guard
+  lRel := ARawPath;
+  lQueryPos := Pos('?', lRel);
+  if lQueryPos > 0 then
+    lRel := Copy(lRel, 1, lQueryPos - 1);
+  if (lRel = '') or (lRel = '/') then
+    lRel := cIndexHtml;
+  if lRel.Contains('..') then // path-traversal guard
     Exit;
-  Rel := Rel.Replace('/', PathDelim, [rfReplaceAll]);
-  while Rel.StartsWith(PathDelim) do
-    Rel := Rel.Substring(1);
-  FullPath := TPath.Combine(AWebRoot, Rel);
+  lRel := lRel.Replace('/', PathDelim, [rfReplaceAll]);
+  while lRel.StartsWith(PathDelim) do
+    lRel := lRel.Substring(1);
+  lFullPath := TPath.Combine(AWebRoot, lRel);
   // Defence in depth: TPath.Combine returns a rooted/UNC second arg verbatim
   // (e.g. "C:\..."), so a crafted path could escape the web root. Reject anything
   // that doesn't canonicalise to a location inside AWebRoot.
-  if not TPath.GetFullPath(FullPath).StartsWith(
+  if not TPath.GetFullPath(lFullPath).StartsWith(
        IncludeTrailingPathDelimiter(TPath.GetFullPath(AWebRoot)), cIgnoreCase) then
     Exit;
-  if not TFile.Exists(FullPath) then
-    FullPath := TPath.Combine(AWebRoot, cIndexHtml); // SPA fallback
-  if not TFile.Exists(FullPath) then
+  if not TFile.Exists(lFullPath) then
+    lFullPath := TPath.Combine(AWebRoot, cIndexHtml); // SPA fallback
+  if not TFile.Exists(lFullPath) then
     Exit;
   // Indy frees the stream after sending (FreeContentStream := True)
-  Stream := TFileStream.Create(FullPath, fmOpenRead or fmShareDenyWrite);
-  AResponse.SetContentStream(Stream);
-  AResponse.SetContentType(MimeType(ExtractFileExt(FullPath)));
+  lStream := TFileStream.Create(lFullPath, fmOpenRead or fmShareDenyWrite);
+  AResponse.SetContentStream(lStream);
+  AResponse.SetContentType(MimeType(ExtractFileExt(lFullPath)));
   AResponse.SetStatusCode(cHttpStatusOk);
   Result := True;
 end;
@@ -231,6 +275,10 @@ begin
 end;
 
 procedure TApiServer.Start;
+var
+  lRoot: string;
+  lBase: string;
+  lLog: TLogProc;
 begin
   if FRunning then
     Exit;
@@ -271,23 +319,23 @@ begin
   // the bundled admin UI (built React app) lives in <exedir>/webui when present;
   // empty => the image/run is API-only (manage from the dev frontend instead).
   FWebRoot := '';
-  var LRoot := TPath.Combine(ExtractFilePath(ParamStr(0)), cWebUiDir);
-  if TDirectory.Exists(LRoot) then
+  lRoot := TPath.Combine(ExtractFilePath(ParamStr(0)), cWebUiDir);
+  if TDirectory.Exists(lRoot) then
   begin
-    FWebRoot := LRoot;
+    FWebRoot := lRoot;
     if Assigned(FLog) then
       FLog('Admin UI served from ' + FWebRoot);
   end;
 
   // BeforeHandleRequest does two jobs: (1) log every request (creds masked) and
   // (2) serve the admin UI for any non-backend GET so http://host:port/ shows
-  // the app. Returning False + Handled:=True stops MARS dispatch (we answered).
+  // the app. Returning False + AHandled := True stops MARS dispatch (we answered).
   FEngine.BeforeHandleRequest :=
     function (const AEngine: IMARSEngine; const AURL: TMARSURL;
       const ARequest: IMARSRequest; const AResponse: IMARSResponse;
-      var Handled: Boolean): Boolean
+      var AHandled: Boolean): Boolean
     var
-      LFirst, LMasked: string;
+      lFirst, lMasked: string;
     begin
       Result := True; // continue to MARS by default
       GReqStart := TStopwatch.GetTimeStamp; // per Indy thread; read in AfterHandleRequest
@@ -297,18 +345,18 @@ begin
         //  1) PATH segments — the live/movie/series stream endpoints are
         //     /live/{user}/{pass}/{id}, so the password sits in the path (no '=').
         //  2) query keys — get.php/player_api.php (?username=&password=), admin ?pw=, tokens, mac.
-        LMasked := MaskUrl(AURL.URL);
+        lMasked := MaskUrl(AURL.URL);
         // client IP first: shows which box/app asked (e.g. two boxes fighting
         // over a single provider connection)
-        FLog(Format('%-15s %s %s', [ARequest.RemoteIP, ARequest.Method, LMasked]));
+        FLog(Format('%-15s %s %s', [ARequest.RemoteIP, ARequest.Method, lMasked]));
       end;
 
-      LFirst := '';
+      lFirst := '';
       if AURL.HasPathTokens then
-        LFirst := AURL.PathTokens[0];
+        lFirst := AURL.PathTokens[0];
 
       // hold external backend requests until the startup warm-up has run
-      if (FWebRoot = '') or IsBackendRoute(LFirst) then
+      if (FWebRoot = '') or IsBackendRoute(lFirst) then
         if (GWarmGate <> nil) and (ARequest.GetHeaderParamValue(cWarmupHeader) <> GWarmToken) then
           GWarmGate.WaitFor(cWarmupWaitMs);
 
@@ -316,11 +364,11 @@ begin
         Exit;
       if not SameText(ARequest.Method, cMethodGet) then
         Exit;
-      if IsBackendRoute(LFirst) then
+      if IsBackendRoute(lFirst) then
         Exit; // /api, /player_api.php, /live, ... -> let MARS handle it
       if ServeStatic(FWebRoot, ARequest.GetRawPath, AResponse) then
       begin
-        Handled := True;   // we produced the response
+        AHandled := True;  // we produced the response
         Result := False;   // stop MARS dispatch
       end;
     end;
@@ -330,16 +378,16 @@ begin
   FEngine.AfterHandleRequest :=
     procedure (const AEngine: IMARSEngine; const AURL: TMARSURL;
       const ARequest: IMARSRequest; const AResponse: IMARSResponse;
-      var Handled: Boolean)
+      var AHandled: Boolean)
     var
-      LMs: Int64;
+      lMs: Int64;
     begin
       if not Assigned(FLog) then
         Exit;
-      LMs := (TStopwatch.GetTimeStamp - GReqStart) * 1000 div TStopwatch.Frequency;
-      if (LMs >= cSlowRequestMs) or (AResponse.StatusCode >= cHttpStatusErrorMin) then
+      lMs := (TStopwatch.GetTimeStamp - GReqStart) * 1000 div TStopwatch.Frequency;
+      if (lMs >= cSlowRequestMs) or (AResponse.StatusCode >= cHttpStatusErrorMin) then
         FLog(Format('%-15s done %d in %d ms  %s %s',
-          [ARequest.RemoteIP, AResponse.StatusCode, LMs, ARequest.Method, MaskUrl(AURL.URL)]));
+          [ARequest.RemoteIP, AResponse.StatusCode, lMs, ARequest.Method, MaskUrl(AURL.URL)]));
     end;
   // The actual exception behind a 500 (MARS only answers "Internal server error").
   GErrorLog := FLog;
@@ -371,38 +419,39 @@ begin
     // time (each resource class once), then open the gate. On a background thread so
     // a stuck warm-up can never block startup; external requests wait at most
     // cWarmupWaitMs anyway.
-    var LBase := Format('%s://%s:%d', [IfThen(FConfig.UseHttps, cSchemeHttps, cSchemeHttp),
+    lBase := Format('%s://%s:%d', [IfThen(FConfig.UseHttps, cSchemeHttps, cSchemeHttp),
       cLoopbackHost, FConfig.HttpPort]);
-    var LLog := FLog;
+    lLog := FLog;
     TThread.CreateAnonymousThread(
       procedure
       var
-        LHttp: THTTPClient;
-        LPath: string;
-        LSw: TStopwatch;
+        lHttp: THTTPClient;
+        lPath: string;
+        lSw: TStopwatch;
       begin
-        LSw := TStopwatch.StartNew;
+        lSw := TStopwatch.StartNew;
         try
-          LHttp := THTTPClient.Create;
+          lHttp := THTTPClient.Create;
           try
-            LHttp.ConnectionTimeout := cWarmupConnectTimeoutMs;
-            LHttp.ResponseTimeout := cWarmupResponseTimeoutMs;
-            LHttp.CustomHeaders[cWarmupHeader] := GWarmToken;
-            LHttp.ValidateServerCertificateCallback := AcceptOwnCert;
-            for LPath in cWarmupPaths do
+            lHttp.ConnectionTimeout := cWarmupConnectTimeoutMs;
+            lHttp.ResponseTimeout := cWarmupResponseTimeoutMs;
+            lHttp.CustomHeaders[cWarmupHeader] := GWarmToken;
+            lHttp.ValidateServerCertificateCallback := AcceptOwnCert;
+            for lPath in cWarmupPaths do
               try
-                LHttp.Get(LBase + LPath).StatusCode;
+                lHttp.Get(lBase + lPath).StatusCode;
               except
                 // a failed warm-up request still exercised the path; carry on
               end;
           finally
-            LHttp.Free;
+            FreeAndNil(lHttp);
           end;
         except
+          // warm-up is best-effort: whatever failed, the gate below must still open
         end;
         GWarmGate.SetEvent;
-        if Assigned(LLog) then
-          LLog(Format('warm-up done in %d ms - API open', [LSw.ElapsedMilliseconds]));
+        if Assigned(lLog) then
+          lLog(Format('warm-up done in %d ms - API open', [lSw.ElapsedMilliseconds]));
       end).Start;
 
     SyncProxyServer; // start the stream relay if the global proxy OR a Plex proxy needs it
@@ -419,16 +468,19 @@ end;
 
 procedure TApiServer.SyncSsdp;
 var
-  Uri: TURI;
-  Scheme: string;
+  lUri: TURI;
+  lScheme: string;
 begin
   if FConfig.PlexHdhrEnabled and not Assigned(FSsdp) then
   begin
     // the discover.json lives on httpPort; that port serves TLS when UseHttps is on,
     // so the SSDP LOCATION must use https there or Plex's fetch fails
-    if FConfig.UseHttps then Scheme := cSchemeHttps else Scheme := cSchemeHttp;
+    if FConfig.UseHttps then
+      lScheme := cSchemeHttps
+    else
+      lScheme := cSchemeHttp;
     FSsdp := TSsdpServer.Create(
-      Format('%s://%s:%d/discover.json', [Scheme, SafeUrlHost(FConfig.PublicBaseUrl, 'localhost'),
+      Format('%s://%s:%d/discover.json', [lScheme, SafeUrlHost(FConfig.PublicBaseUrl, 'localhost'),
         FConfig.HttpPort]), FLog);
     FSsdp.Start;
   end

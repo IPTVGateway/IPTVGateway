@@ -14,10 +14,15 @@ unit IPTV.Source.Xtream;
 interface
 
 uses
+  // RTL
   System.JSON,
-  IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Source.Intf;
+  // Own units
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Source.Intf;
 
 type
+  /// Source reader for an upstream Xtream Codes portal (player_api.php).
   TXtreamReader = class(TInterfacedObject, ISourceReader)
   private
     function ApiUrl(const ASource: TSourceConfig; const AAction: string): string;
@@ -39,9 +44,16 @@ function XtreamApiGet(const ASource: TSourceConfig; const AQuery: string): TJSON
 implementation
 
 uses
-  System.SysUtils, System.Generics.Collections,
-  System.NetEncoding, System.DateUtils, System.Math,
-  IPTV.Model.Types, IPTV.Source.Http, IPTV.Core.Utils;
+  // RTL
+  System.SysUtils,
+  System.Generics.Collections,
+  System.NetEncoding,
+  System.DateUtils,
+  System.Math,
+  // Own units
+  IPTV.Model.Types,
+  IPTV.Source.Http,
+  IPTV.Core.Utils;
 
 const
   // player_api.php actions
@@ -94,85 +106,88 @@ end;
 procedure TXtreamReader.LoadCategories(const ASource: TSourceConfig; ASnapshot: TSourceSnapshot;
   AContentType: Integer; const AAction: string);
 var
-  JV: TJSONValue;
-  Item: TJSONValue;
-  Obj: TJSONObject;
-  Cat: TCategory;
+  lJson: TJSONValue;
+  lItem: TJSONValue;
+  lObj: TJSONObject;
+  lCat: TCategory;
 begin
-  JV := TJSONValue(FetchJson(ApiUrl(ASource, AAction), ASource.UserAgent, ASource.Referer));
+  lJson := TJSONValue(FetchJson(ApiUrl(ASource, AAction), ASource.UserAgent, ASource.Referer));
   try
-    if not (JV is TJSONArray) then
+    if not (lJson is TJSONArray) then
       Exit;
-    for Item in TJSONArray(JV) do
+    for lItem in TJSONArray(lJson) do
     begin
-      if not (Item is TJSONObject) then Continue;
-      Obj := TJSONObject(Item);
-      Cat := TCategory.Create;
-      ASnapshot.Categories.Add(Cat); // own immediately so a GetValue type-mismatch can't leak it
-      Cat.SourceId := ASource.Id;
-      Cat.ContentType := TContentType(AContentType);
-      Cat.UpstreamId := Obj.GetValue<string>(cJsonCategoryId, '');
-      Cat.Name := Obj.GetValue<string>('category_name', '');
+      if not (lItem is TJSONObject) then
+        Continue;
+      lObj := TJSONObject(lItem);
+      lCat := TCategory.Create;
+      ASnapshot.Categories.Add(lCat); // own immediately so a GetValue type-mismatch can't leak it
+      lCat.SourceId := ASource.Id;
+      lCat.ContentType := TContentType(AContentType);
+      lCat.UpstreamId := lObj.GetValue<string>(cJsonCategoryId, '');
+      lCat.Name := lObj.GetValue<string>('category_name', '');
     end;
   finally
-    JV.Free;
+    FreeAndNil(lJson);
   end;
 end;
 
 procedure TXtreamReader.LoadStreams(const ASource: TSourceConfig; ASnapshot: TSourceSnapshot;
   AContentType: Integer; const AAction, AStreamPath: string);
 var
-  JV: TJSONValue;
-  Item: TJSONValue;
-  Obj: TJSONObject;
-  S: TStreamItem;
-  StreamId, Ext: string;
+  lJson: TJSONValue;
+  lItem: TJSONValue;
+  lObj: TJSONObject;
+  lStream: TStreamItem;
+  lStreamId, lExt: string;
 begin
-  JV := TJSONValue(FetchJson(ApiUrl(ASource, AAction), ASource.UserAgent, ASource.Referer));
+  lJson := TJSONValue(FetchJson(ApiUrl(ASource, AAction), ASource.UserAgent, ASource.Referer));
   try
-    if not (JV is TJSONArray) then
+    if not (lJson is TJSONArray) then
       Exit;
-    for Item in TJSONArray(JV) do
+    for lItem in TJSONArray(lJson) do
     begin
-      if not (Item is TJSONObject) then Continue;
-      Obj := TJSONObject(Item);
-      StreamId := Obj.GetValue<string>('stream_id', Obj.GetValue<string>('series_id', ''));
+      if not (lItem is TJSONObject) then
+        Continue;
+      lObj := TJSONObject(lItem);
+      lStreamId := lObj.GetValue<string>('stream_id', lObj.GetValue<string>('series_id', ''));
 
-      S := TStreamItem.Create;
-      ASnapshot.Streams.Add(S); // own immediately so a GetValue type-mismatch can't leak it
-      S.SourceId := ASource.Id;
-      S.ContentType := TContentType(AContentType);
+      lStream := TStreamItem.Create;
+      ASnapshot.Streams.Add(lStream); // own immediately so a GetValue type-mismatch can't leak it
+      lStream.SourceId := ASource.Id;
+      lStream.ContentType := TContentType(AContentType);
       // radio arrives in get_live_streams, flagged stream_type=radio_streams
-      if (S.ContentType = ctLive) and SameText(Obj.GetValue<string>(cJsonStreamType, ''), cStreamTypeRadio) then
-        S.ContentType := ctRadio;
+      if (lStream.ContentType = ctLive) and SameText(lObj.GetValue<string>(cJsonStreamType, ''), cStreamTypeRadio) then
+        lStream.ContentType := ctRadio;
       // live and radio share one call: drop the type the operator switched off
-      if not ASource.EnabledFor(S.ContentType) then
+      if not ASource.EnabledFor(lStream.ContentType) then
       begin
-        ASnapshot.Streams.Remove(S); // owned list: frees it
+        ASnapshot.Streams.Remove(lStream); // owned list: frees it
         Continue;
       end;
-      S.UpstreamId := StreamId;
-      S.Name := Obj.GetValue<string>('name', '');
-      S.Logo := Obj.GetValue<string>('stream_icon', Obj.GetValue<string>('cover', ''));
-      S.TvgId := Obj.GetValue<string>('epg_channel_id', '');
-      S.CategoryUpstreamId := Obj.GetValue<string>(cJsonCategoryId, '');
+      lStream.UpstreamId := lStreamId;
+      lStream.Name := lObj.GetValue<string>('name', '');
+      lStream.Logo := lObj.GetValue<string>('stream_icon', lObj.GetValue<string>('cover', ''));
+      lStream.TvgId := lObj.GetValue<string>('epg_channel_id', '');
+      lStream.CategoryUpstreamId := lObj.GetValue<string>(cJsonCategoryId, '');
       // catch-up: tv_archive=1 + tv_archive_duration (days); numbers or strings
       if (AContentType = Ord(ctLive)) and
-         (StrToIntDef(Obj.GetValue<string>('tv_archive', '0'), 0) = 1) then
-        S.ArchiveDays := Max(1, StrToIntDef(Obj.GetValue<string>('tv_archive_duration', '1'), 1))
+         (StrToIntDef(lObj.GetValue<string>('tv_archive', '0'), 0) = 1) then
+        lStream.ArchiveDays := Max(1, StrToIntDef(lObj.GetValue<string>('tv_archive_duration', '1'), 1))
       else
-        S.ArchiveDays := 0;
+        lStream.ArchiveDays := 0;
       // Real provider URL the box is redirected to. The extension differs per type:
       // VOD/movies carry a container_extension (mkv/mp4/…) and a .ts guess 404s on
       // players that don't negotiate; live has none, so .ts is the safe default.
-      Ext := Obj.GetValue<string>('container_extension', '').Trim;
-      if Ext = '' then
-        Ext := cExtTs;
-      S.UpstreamUrl := Format('%s/%s/%s/%s/%s.%s',
-        [ASource.Url.Trim.TrimRight(['/']), AStreamPath, ASource.Username.Trim, ASource.Password.Trim, StreamId, Ext]);
+      lExt := lObj.GetValue<string>('container_extension', '').Trim;
+      if lExt = '' then
+        lExt := cExtTs;
+      lStream.UpstreamUrl := Format('%s/%s/%s/%s/%s.%s',
+        [ASource.Url.Trim.TrimRight(['/']), AStreamPath, ASource.Username.Trim, ASource.Password.Trim,
+         lStreamId, lExt]);
     end;
   finally
-    JV.Free;
+    FreeAndNil(lJson);
   end;
 end;
 
@@ -181,36 +196,39 @@ end;
 // Best effort: a portal that refuses it must not fail the catalog refresh.
 procedure TXtreamReader.LoadAccountInfo(const ASource: TSourceConfig; ASnapshot: TSourceSnapshot);
 var
-  JV, UI, SI, V: TJSONValue;
-  Exp, UnixNow: Int64;
-  Offs: Integer;
+  lJson, lUserInfo, lServerInfo, lExpValue: TJSONValue;
+  lExp, lUnixNow: Int64;
+  lOffset: Integer;
 begin
   try
-    JV := TJSONValue(FetchJson(PlayerApiBaseUrl(ASource), ASource.UserAgent, ASource.Referer));
+    lJson := TJSONValue(FetchJson(PlayerApiBaseUrl(ASource), ASource.UserAgent, ASource.Referer));
     try
-      if not (JV is TJSONObject) then Exit;
-      UI := TJSONObject(JV).GetValue('user_info');
-      if not (UI is TJSONObject) then Exit;
+      if not (lJson is TJSONObject) then
+        Exit;
+      lUserInfo := TJSONObject(lJson).GetValue('user_info');
+      if not (lUserInfo is TJSONObject) then
+        Exit;
       ASnapshot.HasAccountInfo := True;
-      ASnapshot.AccountStatus := TJSONObject(UI).GetValue<string>('status', '');
-      V := TJSONObject(UI).GetValue('exp_date');
+      ASnapshot.AccountStatus := TJSONObject(lUserInfo).GetValue<string>('status', '');
+      lExpValue := TJSONObject(lUserInfo).GetValue('exp_date');
       ASnapshot.ExpiresUtc := 0;
-      if (V <> nil) and not (V is TJSONNull) and TryStrToInt64(V.Value, Exp) and (Exp > 0) then
-        ASnapshot.ExpiresUtc := UnixToDateTime(Exp, cReturnUtc);
-      ASnapshot.MaxConnections := StrToIntDef(TJSONObject(UI).GetValue<string>('max_connections', '0'), 0);
+      if (lExpValue <> nil) and not (lExpValue is TJSONNull) and TryStrToInt64(lExpValue.Value, lExp) and
+         (lExp > 0) then
+        ASnapshot.ExpiresUtc := UnixToDateTime(lExp, cReturnUtc);
+      ASnapshot.MaxConnections := StrToIntDef(TJSONObject(lUserInfo).GetValue<string>('max_connections', '0'), 0);
       // the portal's clock: timeshift start times are in its local time
-      SI := TJSONObject(JV).GetValue('server_info');
-      if SI is TJSONObject then
+      lServerInfo := TJSONObject(lJson).GetValue('server_info');
+      if lServerInfo is TJSONObject then
       begin
-        UnixNow := StrToInt64Def(TJSONObject(SI).GetValue<string>('timestamp_now', '0'), 0);
-        if XtreamTzOffsetMin(TJSONObject(SI).GetValue<string>('time_now', ''), UnixNow, Offs) then
+        lUnixNow := StrToInt64Def(TJSONObject(lServerInfo).GetValue<string>('timestamp_now', '0'), 0);
+        if XtreamTzOffsetMin(TJSONObject(lServerInfo).GetValue<string>('time_now', ''), lUnixNow, lOffset) then
         begin
           ASnapshot.HasTzOffset := True;
-          ASnapshot.TzOffsetMin := Offs;
+          ASnapshot.TzOffsetMin := lOffset;
         end;
       end;
     finally
-      JV.Free;
+      FreeAndNil(lJson);
     end;
   except
     // account info is a nicety; keep the previous values when it fails
@@ -227,42 +245,42 @@ end;
 
 procedure ApplyCategoryNames(ASnapshot: TSourceSnapshot);
 var
-  Cat, lRadioCat: TCategory;
-  S: TStreamItem;
-  Names: TDictionary<string, string>;
-  Key, N: string;
+  lCat, lRadioCat: TCategory;
+  lStream: TStreamItem;
+  lNames: TDictionary<string, string>;
+  lKey, lName: string;
 begin
   // Xtream streams only carry a category_id; copy the category NAME into
   // group_title so downstream M3U/output shows proper groups.
-  Names := TDictionary<string, string>.Create;
+  lNames := TDictionary<string, string>.Create;
   try
-    for Cat in ASnapshot.Categories do
-      Names.AddOrSetValue(ContentTypeNames[Cat.ContentType] + cCategoryKeySep + Cat.UpstreamId, Cat.Name);
-    for S in ASnapshot.Streams do
+    for lCat in ASnapshot.Categories do
+      lNames.AddOrSetValue(ContentTypeNames[lCat.ContentType] + cCategoryKeySep + lCat.UpstreamId, lCat.Name);
+    for lStream in ASnapshot.Streams do
     begin
-      Key := ContentTypeNames[S.ContentType] + cCategoryKeySep + S.CategoryUpstreamId;
-      if Names.TryGetValue(Key, N) then
-        S.GroupTitle := N
-      else if (S.ContentType = ctRadio) and
-        Names.TryGetValue(ContentTypeNames[ctLive] + cCategoryKeySep + S.CategoryUpstreamId, N) then
+      lKey := ContentTypeNames[lStream.ContentType] + cCategoryKeySep + lStream.CategoryUpstreamId;
+      if lNames.TryGetValue(lKey, lName) then
+        lStream.GroupTitle := lName
+      else if (lStream.ContentType = ctRadio) and
+        lNames.TryGetValue(ContentTypeNames[ctLive] + cCategoryKeySep + lStream.CategoryUpstreamId, lName) then
       begin
-        S.GroupTitle := N; // radio sits in the live categories ...
+        lStream.GroupTitle := lName; // radio sits in the live categories ...
         // ... so give radio its own copy of that category (browsable as radio,
         // and kept when only radio is switched on)
-        if not Names.ContainsKey(ContentTypeNames[ctRadio] + cCategoryKeySep + S.CategoryUpstreamId) then
+        if not lNames.ContainsKey(ContentTypeNames[ctRadio] + cCategoryKeySep + lStream.CategoryUpstreamId) then
         begin
           lRadioCat := TCategory.Create;
           ASnapshot.Categories.Add(lRadioCat);
           lRadioCat.SourceId := ASnapshot.SourceId;
           lRadioCat.ContentType := ctRadio;
-          lRadioCat.UpstreamId := S.CategoryUpstreamId;
-          lRadioCat.Name := N;
-          Names.Add(ContentTypeNames[ctRadio] + cCategoryKeySep + S.CategoryUpstreamId, N);
+          lRadioCat.UpstreamId := lStream.CategoryUpstreamId;
+          lRadioCat.Name := lName;
+          lNames.Add(ContentTypeNames[ctRadio] + cCategoryKeySep + lStream.CategoryUpstreamId, lName);
         end;
       end;
     end;
   finally
-    Names.Free;
+    FreeAndNil(lNames);
   end;
 end;
 

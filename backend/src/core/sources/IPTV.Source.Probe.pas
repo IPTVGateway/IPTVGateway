@@ -20,14 +20,18 @@ unit IPTV.Source.Probe;
 interface
 
 uses
-  System.SysUtils, System.Classes;
+  // RTL
+  System.SysUtils,
+  System.Classes;
 
 type
+  /// One audio track found in the stream.
   TProbeAudio = record
     Codec: string;     // 'AAC', 'AC-3', 'E-AC-3', 'MP2', ...
     Language: string;  // ISO 639 code from the PMT ('' if none)
   end;
 
+  /// Outcome of one stream probe (media facts + transfer timings).
   TProbeResult = record
     Ok: Boolean;
     Error: string;          // why the probe failed, or a warning ('stalled')
@@ -65,21 +69,24 @@ type
     FPtsFirst, FPtsMin, FPtsMax: Int64;
     FBytesTotal: Int64;
     FBytesAtMin, FBytesAtMax: Int64;
-    procedure Packet(const P: PByte);
-    procedure ParsePat(const P: PByte; ALen: Integer);
-    procedure ParsePmt(const P: PByte; ALen: Integer);
-    procedure VideoPayload(const P: PByte; ALen: Integer; AStart: Boolean);
-    procedure AppendVes(const P: PByte; ALen: Integer);
+    procedure Packet(const APacket: PByte);
+    procedure ParsePat(const AData: PByte; ALen: Integer);
+    procedure ParsePmt(const AData: PByte; ALen: Integer);
+    procedure VideoPayload(const AData: PByte; ALen: Integer; AStart: Boolean);
+    procedure AppendVes(const AData: PByte; ALen: Integer);
   public
+    /// Parse ACount raw TS bytes; partial packets are carried to the next call.
     procedure Feed(const ABuf; ACount: Integer);
     /// Drop any partial packet (call between HLS segments).
     procedure ResetSync;
     /// Fill the media fields of R from what was seen.
-    procedure Finish(var R: TProbeResult);
+    procedure Finish(var AResult: TProbeResult);
+    /// TS bytes parsed so far (whole packets).
     property BytesTotal: Int64 read FBytesTotal;
   end;
 
 const
+  /// Default receive budget of a probe, in seconds.
   cProbeDefaultSeconds = 8;
 
 /// Probe a stream URL for at most AMaxSeconds of receiving (clamped 3..20).
@@ -89,15 +96,24 @@ function ProbeStream(const AUrl: string; AMaxSeconds: Integer = cProbeDefaultSec
   const AUserAgent: string = ''; const AReferer: string = ''): TProbeResult;
 
 // exposed for tests
-function ParseH264Sps(const ANal: TBytes; var R: TProbeResult): Boolean;
-function ParseHevcSps(const ANal: TBytes; var R: TProbeResult): Boolean;
+/// Parse an H.264 SPS NAL (incl. its 1-byte header) into AResult; False if unreadable.
+function ParseH264Sps(const ANal: TBytes; var AResult: TProbeResult): Boolean;
+/// Parse an HEVC SPS NAL (incl. its 2-byte header) into AResult; False if unreadable.
+function ParseHevcSps(const ANal: TBytes; var AResult: TProbeResult): Boolean;
 
 implementation
 
 uses
-  System.SyncObjs, System.Diagnostics, System.Math, System.StrUtils,
+  // RTL
+  System.SyncObjs,
+  System.Diagnostics,
+  System.Math,
+  System.StrUtils,
   System.Generics.Collections,
-  IdHTTP, IdSSLOpenSSL, IdURI;
+  // Indy
+  IdHTTP,
+  IdSSLOpenSSL,
+  IdURI;
 
 const
   // HTTP client: look like VLC on the wire
@@ -307,25 +323,25 @@ type
   TBitReader = record
     Data: TBytes;
     Pos: Integer; // bit position
-    function Bits(N: Integer): Cardinal;
+    function Bits(ACount: Integer): Cardinal;
     function Bit: Boolean;
     function UE: Cardinal;
     function SE: Integer;
-    procedure Skip(N: Integer);
+    procedure Skip(ACount: Integer);
     function Eof: Boolean;
   end;
 
-function TBitReader.Bits(N: Integer): Cardinal;
+function TBitReader.Bits(ACount: Integer): Cardinal;
 var
-  I, B: Integer;
+  i, lBit: Integer;
 begin
   Result := 0;
-  for I := 1 to N do
+  for i := 1 to ACount do
   begin
     if (Pos shr 3) >= Length(Data) then
       raise EConvertError.Create('SPS truncated');
-    B := (Data[Pos shr 3] shr (7 - (Pos and 7))) and 1;
-    Result := (Result shl 1) or Cardinal(B);
+    lBit := (Data[Pos shr 3] shr (7 - (Pos and 7))) and 1;
+    Result := (Result shl 1) or Cardinal(lBit);
     Inc(Pos);
   end;
 end;
@@ -337,34 +353,34 @@ end;
 
 function TBitReader.UE: Cardinal;
 var
-  Zeros: Integer;
+  lZeros: Integer;
 begin
-  Zeros := 0;
+  lZeros := 0;
   while not Bit do
   begin
-    Inc(Zeros);
-    if Zeros > cExpGolombMaxZeros then
+    Inc(lZeros);
+    if lZeros > cExpGolombMaxZeros then
       raise EConvertError.Create('bad exp-golomb');
   end;
-  if Zeros = 0 then
+  if lZeros = 0 then
     Exit(0);
-  Result := (Cardinal(1) shl Zeros) - 1 + Bits(Zeros);
+  Result := (Cardinal(1) shl lZeros) - 1 + Bits(lZeros);
 end;
 
 function TBitReader.SE: Integer;
 var
-  K: Cardinal;
+  lValue: Cardinal;
 begin
-  K := UE;
-  if Odd(K) then
-    Result := Integer((K + 1) div 2)
+  lValue := UE;
+  if Odd(lValue) then
+    Result := Integer((lValue + 1) div 2)
   else
-    Result := -Integer(K div 2);
+    Result := -Integer(lValue div 2);
 end;
 
-procedure TBitReader.Skip(N: Integer);
+procedure TBitReader.Skip(ACount: Integer);
 begin
-  Inc(Pos, N);
+  Inc(Pos, ACount);
 end;
 
 function TBitReader.Eof: Boolean;
@@ -373,207 +389,233 @@ begin
 end;
 
 // strip the 0x03 emulation-prevention bytes (00 00 03 -> 00 00)
-function Unescape(const P: PByte; ALen: Integer): TBytes;
+function Unescape(const AData: PByte; ALen: Integer): TBytes;
 var
-  I, N, Zeros: Integer;
-  B: Byte;
+  i, lLen, lZeros: Integer;
+  lByte: Byte;
 begin
   SetLength(Result, ALen);
-  N := 0;
-  Zeros := 0;
-  for I := 0 to ALen - 1 do
+  lLen := 0;
+  lZeros := 0;
+  for i := 0 to ALen - 1 do
   begin
-    B := P[I];
-    if (Zeros >= 2) and (B = cEmulationPreventionByte) then
+    lByte := AData[i];
+    if (lZeros >= 2) and (lByte = cEmulationPreventionByte) then
     begin
-      Zeros := 0;
+      lZeros := 0;
       Continue;
     end;
-    if B = 0 then
-      Inc(Zeros)
+    if lByte = 0 then
+      Inc(lZeros)
     else
-      Zeros := 0;
-    Result[N] := B;
-    Inc(N);
+      lZeros := 0;
+    Result[lLen] := lByte;
+    Inc(lLen);
   end;
-  SetLength(Result, N);
+  SetLength(Result, lLen);
 end;
 
 { ── SPS parsers ─────────────────────────────────────────────────────────── }
 
-function ParseH264Sps(const ANal: TBytes; var R: TProbeResult): Boolean;
+function ParseH264Sps(const ANal: TBytes; var AResult: TProbeResult): Boolean;
 var
-  Br: TBitReader;
-  ProfileIdc, LevelIdc, Chroma, PocType, I, J, Cnt, SizeOfList: Integer;
-  LastScale, NextScale: Integer;
-  WMbs, HMap: Cardinal;
-  FrameMbsOnly: Boolean;
-  CL, CR, CT, CB, CropX, CropY: Integer;
-  PName: string;
+  lReader: TBitReader;
+  lProfileIdc, lLevelIdc, lChroma, lPocType, i, j, lCount, lSizeOfList: Integer;
+  lLastScale, lNextScale: Integer;
+  lWidthMbs, lHeightMapUnits: Cardinal;
+  lFrameMbsOnly: Boolean;
+  lCropLeft, lCropRight, lCropTop, lCropBottom, lCropUnitX, lCropUnitY: Integer;
+  lProfileName: string;
 begin
   // ANal = full NAL incl. its 1-byte header
-  Br.Data := ANal;
-  Br.Pos := cH264NalHeaderBits;
+  lReader.Data := ANal;
+  lReader.Pos := cH264NalHeaderBits;
   try
-    ProfileIdc := Br.Bits(8);
-    Br.Skip(8); // constraint flags
-    LevelIdc := Br.Bits(8);
-    Br.UE; // sps id
-    Chroma := cChroma420;
-    R.BitDepth := cBitDepthBase;
-    if ProfileIdc in cH264HighProfiles then
+    lProfileIdc := lReader.Bits(8);
+    lReader.Skip(8); // constraint flags
+    lLevelIdc := lReader.Bits(8);
+    lReader.UE; // sps id
+    lChroma := cChroma420;
+    AResult.BitDepth := cBitDepthBase;
+    if lProfileIdc in cH264HighProfiles then
     begin
-      Chroma := Br.UE;
-      if Chroma = cChroma444 then
-        Br.Skip(1); // separate_colour_plane
-      R.BitDepth := Integer(Br.UE) + cBitDepthBase;
-      Br.UE; // bit_depth_chroma
-      Br.Skip(1); // qpprime_y_zero_transform_bypass
-      if Br.Bit then // seq_scaling_matrix_present
+      lChroma := lReader.UE;
+      if lChroma = cChroma444 then
+        lReader.Skip(1); // separate_colour_plane
+      AResult.BitDepth := Integer(lReader.UE) + cBitDepthBase;
+      lReader.UE; // bit_depth_chroma
+      lReader.Skip(1); // qpprime_y_zero_transform_bypass
+      if lReader.Bit then // seq_scaling_matrix_present
       begin
-        Cnt := IfThen(Chroma <> cChroma444, cScalingListCount, cScalingListCount444);
-        for I := 0 to Cnt - 1 do
-          if Br.Bit then
+        lCount := IfThen(lChroma <> cChroma444, cScalingListCount, cScalingListCount444);
+        for i := 0 to lCount - 1 do
+          if lReader.Bit then
           begin
-            SizeOfList := IfThen(I < cScalingList4x4Count, cScalingList4x4Size, cScalingList8x8Size);
-            LastScale := cScalingDefault;
-            NextScale := cScalingDefault;
-            for J := 0 to SizeOfList - 1 do
+            lSizeOfList := IfThen(i < cScalingList4x4Count, cScalingList4x4Size, cScalingList8x8Size);
+            lLastScale := cScalingDefault;
+            lNextScale := cScalingDefault;
+            for j := 0 to lSizeOfList - 1 do
             begin
-              if NextScale <> 0 then
-                NextScale := (LastScale + Br.SE + cScalingModulo) mod cScalingModulo;
-              if NextScale <> 0 then
-                LastScale := NextScale;
+              if lNextScale <> 0 then
+                lNextScale := (lLastScale + lReader.SE + cScalingModulo) mod cScalingModulo;
+              if lNextScale <> 0 then
+                lLastScale := lNextScale;
             end;
           end;
       end;
     end;
-    Br.UE; // log2_max_frame_num_minus4
-    PocType := Br.UE;
-    if PocType = 0 then
-      Br.UE
-    else if PocType = 1 then
+    lReader.UE; // log2_max_frame_num_minus4
+    lPocType := lReader.UE;
+    if lPocType = 0 then
+      lReader.UE
+    else if lPocType = 1 then
     begin
-      Br.Skip(1);
-      Br.SE;
-      Br.SE;
-      Cnt := Br.UE;
-      for I := 1 to Cnt do
-        Br.SE;
+      lReader.Skip(1);
+      lReader.SE;
+      lReader.SE;
+      lCount := lReader.UE;
+      for i := 1 to lCount do
+        lReader.SE;
     end;
-    Br.UE; // max_num_ref_frames
-    Br.Skip(1); // gaps_in_frame_num_allowed
-    WMbs := Br.UE;
-    HMap := Br.UE;
-    FrameMbsOnly := Br.Bit;
-    if not FrameMbsOnly then
-      Br.Skip(1); // mb_adaptive_frame_field
-    Br.Skip(1); // direct_8x8_inference
-    CL := 0; CR := 0; CT := 0; CB := 0;
-    if Br.Bit then
+    lReader.UE; // max_num_ref_frames
+    lReader.Skip(1); // gaps_in_frame_num_allowed
+    lWidthMbs := lReader.UE;
+    lHeightMapUnits := lReader.UE;
+    lFrameMbsOnly := lReader.Bit;
+    if not lFrameMbsOnly then
+      lReader.Skip(1); // mb_adaptive_frame_field
+    lReader.Skip(1); // direct_8x8_inference
+    lCropLeft := 0;
+    lCropRight := 0;
+    lCropTop := 0;
+    lCropBottom := 0;
+    if lReader.Bit then
     begin
-      CL := Br.UE; CR := Br.UE; CT := Br.UE; CB := Br.UE;
+      lCropLeft := lReader.UE;
+      lCropRight := lReader.UE;
+      lCropTop := lReader.UE;
+      lCropBottom := lReader.UE;
     end;
-    case Chroma of
-      cChroma400: begin CropX := 1; CropY := 2 - Ord(FrameMbsOnly); end;
-      cChroma420: begin CropX := 2; CropY := 2 * (2 - Ord(FrameMbsOnly)); end;
-      cChroma422: begin CropX := 2; CropY := 2 - Ord(FrameMbsOnly); end;
+    case lChroma of
+      cChroma400:
+        begin
+          lCropUnitX := 1;
+          lCropUnitY := 2 - Ord(lFrameMbsOnly);
+        end;
+      cChroma420:
+        begin
+          lCropUnitX := 2;
+          lCropUnitY := 2 * (2 - Ord(lFrameMbsOnly));
+        end;
+      cChroma422:
+        begin
+          lCropUnitX := 2;
+          lCropUnitY := 2 - Ord(lFrameMbsOnly);
+        end;
     else
-      CropX := 1; CropY := 2 - Ord(FrameMbsOnly);
+      lCropUnitX := 1;
+      lCropUnitY := 2 - Ord(lFrameMbsOnly);
     end;
-    R.Width := Integer(WMbs + 1) * cMbSize - (CL + CR) * CropX;
-    R.Height := (2 - Ord(FrameMbsOnly)) * Integer(HMap + 1) * cMbSize - (CT + CB) * CropY;
-    R.Interlaced := not FrameMbsOnly;
-    case ProfileIdc of
-      cH264ProfileBaseline: PName := 'Baseline';
-      cH264ProfileMain: PName := 'Main';
-      cH264ProfileExtended: PName := 'Extended';
-      cH264ProfileHigh: PName := 'High';
-      cH264ProfileHigh10: PName := 'High 10';
-      cH264ProfileHigh422: PName := 'High 4:2:2';
-      cH264ProfileHigh444: PName := 'High 4:4:4';
+    AResult.Width := Integer(lWidthMbs + 1) * cMbSize - (lCropLeft + lCropRight) * lCropUnitX;
+    AResult.Height := (2 - Ord(lFrameMbsOnly)) * Integer(lHeightMapUnits + 1) * cMbSize -
+      (lCropTop + lCropBottom) * lCropUnitY;
+    AResult.Interlaced := not lFrameMbsOnly;
+    case lProfileIdc of
+      cH264ProfileBaseline: lProfileName := 'Baseline';
+      cH264ProfileMain: lProfileName := 'Main';
+      cH264ProfileExtended: lProfileName := 'Extended';
+      cH264ProfileHigh: lProfileName := 'High';
+      cH264ProfileHigh10: lProfileName := 'High 10';
+      cH264ProfileHigh422: lProfileName := 'High 4:2:2';
+      cH264ProfileHigh444: lProfileName := 'High 4:4:4';
     else
-      PName := 'Profile ' + IntToStr(ProfileIdc);
+      lProfileName := 'Profile ' + IntToStr(lProfileIdc);
     end;
-    R.Profile := Format('%s %d.%d', [PName, LevelIdc div cH264LevelDivisor,
-      LevelIdc mod cH264LevelDivisor]);
-    R.VideoCodec := cCodecH264;
-    Result := (R.Width > 0) and (R.Height > 0);
+    AResult.Profile := Format('%s %d.%d', [lProfileName, lLevelIdc div cH264LevelDivisor,
+      lLevelIdc mod cH264LevelDivisor]);
+    AResult.VideoCodec := cCodecH264;
+    Result := (AResult.Width > 0) and (AResult.Height > 0);
   except
     on EConvertError do
       Result := False;
   end;
 end;
 
-function ParseHevcSps(const ANal: TBytes; var R: TProbeResult): Boolean;
+function ParseHevcSps(const ANal: TBytes; var AResult: TProbeResult): Boolean;
 var
-  Br: TBitReader;
-  MaxSub, I, ProfileIdc, LevelIdc, Chroma: Integer;
-  ProgressiveSrc, InterlacedSrc: Boolean;
-  SubProfile, SubLevel: array[0..cHevcMaxSubLayers - 1] of Boolean;
-  W, H: Cardinal;
-  CL, CR, CT, CB, SubW, SubH: Integer;
-  PName: string;
+  lReader: TBitReader;
+  lMaxSub, i, lProfileIdc, lLevelIdc, lChroma: Integer;
+  lProgressiveSrc, lInterlacedSrc: Boolean;
+  lSubProfile, lSubLevel: array[0..cHevcMaxSubLayers - 1] of Boolean;
+  lWidth, lHeight: Cardinal;
+  lCropLeft, lCropRight, lCropTop, lCropBottom, lSubW, lSubH: Integer;
+  lProfileName: string;
 begin
-  Br.Data := ANal;
-  Br.Pos := cHevcNalHeaderBits; // 2-byte NAL header
+  lReader.Data := ANal;
+  lReader.Pos := cHevcNalHeaderBits; // 2-byte NAL header
   try
-    Br.Skip(4); // vps id
-    MaxSub := Br.Bits(3);
-    Br.Skip(1); // temporal_id_nesting
+    lReader.Skip(4); // vps id
+    lMaxSub := lReader.Bits(3);
+    lReader.Skip(1); // temporal_id_nesting
     // profile_tier_level(1, MaxSub)
-    Br.Skip(2 + 1); // profile_space, tier
-    ProfileIdc := Br.Bits(5);
-    Br.Skip(cHevcCompatFlagsBits); // compatibility flags
-    ProgressiveSrc := Br.Bit;
-    InterlacedSrc := Br.Bit;
-    Br.Skip(2); // non_packed, frame_only
-    Br.Skip(cHevcConstraintFlagsBits);
-    LevelIdc := Br.Bits(8);
-    for I := 0 to MaxSub - 1 do
+    lReader.Skip(2 + 1); // profile_space, tier
+    lProfileIdc := lReader.Bits(5);
+    lReader.Skip(cHevcCompatFlagsBits); // compatibility flags
+    lProgressiveSrc := lReader.Bit;
+    lInterlacedSrc := lReader.Bit;
+    lReader.Skip(2); // non_packed, frame_only
+    lReader.Skip(cHevcConstraintFlagsBits);
+    lLevelIdc := lReader.Bits(8);
+    for i := 0 to lMaxSub - 1 do
     begin
-      SubProfile[I] := Br.Bit;
-      SubLevel[I] := Br.Bit;
+      lSubProfile[i] := lReader.Bit;
+      lSubLevel[i] := lReader.Bit;
     end;
-    if MaxSub > 0 then
-      for I := MaxSub to cHevcMaxSubLayers - 1 do
-        Br.Skip(2);
-    for I := 0 to MaxSub - 1 do
+    if lMaxSub > 0 then
+      for i := lMaxSub to cHevcMaxSubLayers - 1 do
+        lReader.Skip(2);
+    for i := 0 to lMaxSub - 1 do
     begin
-      if SubProfile[I] then
-        Br.Skip(cHevcSubLayerProfileBits);
-      if SubLevel[I] then
-        Br.Skip(cHevcSubLayerLevelBits);
+      if lSubProfile[i] then
+        lReader.Skip(cHevcSubLayerProfileBits);
+      if lSubLevel[i] then
+        lReader.Skip(cHevcSubLayerLevelBits);
     end;
-    Br.UE; // sps id
-    Chroma := Br.UE;
-    if Chroma = cChroma444 then
-      Br.Skip(1);
-    W := Br.UE;
-    H := Br.UE;
-    CL := 0; CR := 0; CT := 0; CB := 0;
-    if Br.Bit then
+    lReader.UE; // sps id
+    lChroma := lReader.UE;
+    if lChroma = cChroma444 then
+      lReader.Skip(1);
+    lWidth := lReader.UE;
+    lHeight := lReader.UE;
+    lCropLeft := 0;
+    lCropRight := 0;
+    lCropTop := 0;
+    lCropBottom := 0;
+    if lReader.Bit then
     begin
-      CL := Br.UE; CR := Br.UE; CT := Br.UE; CB := Br.UE;
+      lCropLeft := lReader.UE;
+      lCropRight := lReader.UE;
+      lCropTop := lReader.UE;
+      lCropBottom := lReader.UE;
     end;
-    SubW := IfThen(Chroma in [cChroma420, cChroma422], 2, 1);
-    SubH := IfThen(Chroma = cChroma420, 2, 1);
-    R.Width := Integer(W) - (CL + CR) * SubW;
-    R.Height := Integer(H) - (CT + CB) * SubH;
-    R.BitDepth := Integer(Br.UE) + cBitDepthBase;
-    R.Interlaced := InterlacedSrc and not ProgressiveSrc;
-    case ProfileIdc of
-      cHevcProfileMain: PName := 'Main';
-      cHevcProfileMain10: PName := 'Main 10';
-      cHevcProfileMainStill: PName := 'Main Still';
-      cHevcProfileRext: PName := 'RExt';
+    lSubW := IfThen(lChroma in [cChroma420, cChroma422], 2, 1);
+    lSubH := IfThen(lChroma = cChroma420, 2, 1);
+    AResult.Width := Integer(lWidth) - (lCropLeft + lCropRight) * lSubW;
+    AResult.Height := Integer(lHeight) - (lCropTop + lCropBottom) * lSubH;
+    AResult.BitDepth := Integer(lReader.UE) + cBitDepthBase;
+    AResult.Interlaced := lInterlacedSrc and not lProgressiveSrc;
+    case lProfileIdc of
+      cHevcProfileMain: lProfileName := 'Main';
+      cHevcProfileMain10: lProfileName := 'Main 10';
+      cHevcProfileMainStill: lProfileName := 'Main Still';
+      cHevcProfileRext: lProfileName := 'RExt';
     else
-      PName := 'Profile ' + IntToStr(ProfileIdc);
+      lProfileName := 'Profile ' + IntToStr(lProfileIdc);
     end;
-    R.Profile := Format('%s %d.%d', [PName, LevelIdc div cHevcLevelDivisor,
-      (LevelIdc mod cHevcLevelDivisor) div cHevcLevelMinorDivisor]);
-    R.VideoCodec := cCodecHevc;
-    Result := (R.Width > 0) and (R.Height > 0);
+    AResult.Profile := Format('%s %d.%d', [lProfileName, lLevelIdc div cHevcLevelDivisor,
+      (lLevelIdc mod cHevcLevelDivisor) div cHevcLevelMinorDivisor]);
+    AResult.VideoCodec := cCodecHevc;
+    Result := (AResult.Width > 0) and (AResult.Height > 0);
   except
     on EConvertError do
       Result := False;
@@ -590,336 +632,336 @@ end;
 
 procedure TTsAnalyzer.Feed(const ABuf; ACount: Integer);
 var
-  Buf: TBytes;
-  Off, N: Integer;
+  lBuf: TBytes;
+  lOff, lLen: Integer;
 begin
   if ACount <= 0 then
     Exit;
   // join with the carried partial packet
-  N := Length(FCarry);
-  SetLength(Buf, N + ACount);
-  if N > 0 then
-    Move(FCarry[0], Buf[0], N);
-  Move(ABuf, Buf[N], ACount);
+  lLen := Length(FCarry);
+  SetLength(lBuf, lLen + ACount);
+  if lLen > 0 then
+    Move(FCarry[0], lBuf[0], lLen);
+  Move(ABuf, lBuf[lLen], ACount);
   FCarry := nil;
-  Off := 0;
-  while Off + cTsPacketSize <= Length(Buf) do
+  lOff := 0;
+  while lOff + cTsPacketSize <= Length(lBuf) do
   begin
-    if Buf[Off] <> cTsSyncByte then
+    if lBuf[lOff] <> cTsSyncByte then
       FSynced := False;
     if not FSynced then
     begin
       // need a sync byte here AND one packet later (or at the buffer end)
-      if (Buf[Off] = cTsSyncByte) and ((Off + cTsPacketSize >= Length(Buf)) or
-        (Buf[Off + cTsPacketSize] = cTsSyncByte)) then
+      if (lBuf[lOff] = cTsSyncByte) and ((lOff + cTsPacketSize >= Length(lBuf)) or
+        (lBuf[lOff + cTsPacketSize] = cTsSyncByte)) then
         FSynced := True
       else
       begin
-        Inc(Off);
+        Inc(lOff);
         Continue;
       end;
     end;
-    Packet(@Buf[Off]);
-    Inc(Off, cTsPacketSize);
+    Packet(@lBuf[lOff]);
+    Inc(lOff, cTsPacketSize);
   end;
-  if Off < Length(Buf) then
-    FCarry := Copy(Buf, Off, Length(Buf) - Off);
+  if lOff < Length(lBuf) then
+    FCarry := Copy(lBuf, lOff, Length(lBuf) - lOff);
 end;
 
-procedure TTsAnalyzer.Packet(const P: PByte);
+procedure TTsAnalyzer.Packet(const APacket: PByte);
 var
-  Pid, Afc, PayOff: Integer;
-  Start: Boolean;
+  lPid, lAfc, lPayOff: Integer;
+  lStart: Boolean;
 begin
   Inc(FBytesTotal, cTsPacketSize);
-  Start := (P[1] and cTsPayloadStartFlag) <> 0;
-  Pid := ((P[1] and cTsPidHighMask) shl 8) or P[2];
-  Afc := (P[3] shr cTsAfcShift) and cTsAfcMask;
-  if (Afc and cTsAfcPayload) = 0 then
+  lStart := (APacket[1] and cTsPayloadStartFlag) <> 0;
+  lPid := ((APacket[1] and cTsPidHighMask) shl 8) or APacket[2];
+  lAfc := (APacket[3] shr cTsAfcShift) and cTsAfcMask;
+  if (lAfc and cTsAfcPayload) = 0 then
     Exit; // no payload
-  PayOff := cTsHeaderSize;
-  if (Afc and cTsAfcAdaptation) <> 0 then
-    PayOff := cTsHeaderSize + 1 + P[cTsHeaderSize]; // adaptation_field_length byte
-  if PayOff >= cTsPacketSize then
+  lPayOff := cTsHeaderSize;
+  if (lAfc and cTsAfcAdaptation) <> 0 then
+    lPayOff := cTsHeaderSize + 1 + APacket[cTsHeaderSize]; // adaptation_field_length byte
+  if lPayOff >= cTsPacketSize then
     Exit;
-  if Pid = cTsPidPat then
+  if lPid = cTsPidPat then
   begin
-    if Start and (FPmtPid = 0) then
-      ParsePat(@P[PayOff], cTsPacketSize - PayOff);
+    if lStart and (FPmtPid = 0) then
+      ParsePat(@APacket[lPayOff], cTsPacketSize - lPayOff);
   end
-  else if (Pid = FPmtPid) and (FPmtPid <> 0) then
+  else if (lPid = FPmtPid) and (FPmtPid <> 0) then
   begin
-    if Start and not FPmtDone then
-      ParsePmt(@P[PayOff], cTsPacketSize - PayOff);
+    if lStart and not FPmtDone then
+      ParsePmt(@APacket[lPayOff], cTsPacketSize - lPayOff);
   end
-  else if (Pid = FVideoPid) and (FVideoPid <> 0) then
-    VideoPayload(@P[PayOff], cTsPacketSize - PayOff, Start);
+  else if (lPid = FVideoPid) and (FVideoPid <> 0) then
+    VideoPayload(@APacket[lPayOff], cTsPacketSize - lPayOff, lStart);
 end;
 
-procedure TTsAnalyzer.ParsePat(const P: PByte; ALen: Integer);
+procedure TTsAnalyzer.ParsePat(const AData: PByte; ALen: Integer);
 var
-  Ptr, Off, SecLen, I, Prog: Integer;
+  lPointer, lOff, lSecLen, lPos, lProgram: Integer;
 begin
-  Ptr := P[0];
-  Off := 1 + Ptr;
-  if Off + cPatHeaderSize > ALen then
+  lPointer := AData[0];
+  lOff := 1 + lPointer;
+  if lOff + cPatHeaderSize > ALen then
     Exit;
-  if P[Off] <> cPsiTableIdPat then
+  if AData[lOff] <> cPsiTableIdPat then
     Exit; // not a PAT
-  SecLen := ((P[Off + 1] and cPsiLengthHighMask) shl 8) or P[Off + 2];
-  I := Off + cPatHeaderSize;
-  while (I + cPatEntrySize <= Off + cPsiSectionHeaderSize + SecLen - cPsiCrcSize) and
-    (I + cPatEntrySize <= ALen) do
+  lSecLen := ((AData[lOff + 1] and cPsiLengthHighMask) shl 8) or AData[lOff + 2];
+  lPos := lOff + cPatHeaderSize;
+  while (lPos + cPatEntrySize <= lOff + cPsiSectionHeaderSize + lSecLen - cPsiCrcSize) and
+    (lPos + cPatEntrySize <= ALen) do
   begin
-    Prog := (P[I] shl 8) or P[I + 1];
-    if Prog <> 0 then // program 0 = the network PID, not a PMT
+    lProgram := (AData[lPos] shl 8) or AData[lPos + 1];
+    if lProgram <> 0 then // program 0 = the network PID, not a PMT
     begin
-      FPmtPid := ((P[I + 2] and cTsPidHighMask) shl 8) or P[I + 3];
+      FPmtPid := ((AData[lPos + 2] and cTsPidHighMask) shl 8) or AData[lPos + 3];
       Exit;
     end;
-    Inc(I, cPatEntrySize);
+    Inc(lPos, cPatEntrySize);
   end;
 end;
 
-procedure TTsAnalyzer.ParsePmt(const P: PByte; ALen: Integer);
+procedure TTsAnalyzer.ParsePmt(const AData: PByte; ALen: Integer);
 var
-  Ptr, Off, SecLen, EndPos, I, PInfo, St, EsPid, EsLen, D, DTag, DLen: Integer;
-  Lang, ACodec, Reg: string;
-  Au: TProbeAudio;
+  lPointer, lOff, lSecLen, lEndPos, lPos, lInfoLen, lStreamType, lEsPid, lEsLen, lDesc, lDescTag, lDescLen: Integer;
+  lLang, lCodec, lReg: string;
+  lAudio: TProbeAudio;
 begin
-  Ptr := P[0];
-  Off := 1 + Ptr;
-  if Off + cPmtHeaderSize > ALen then
+  lPointer := AData[0];
+  lOff := 1 + lPointer;
+  if lOff + cPmtHeaderSize > ALen then
     Exit;
-  if P[Off] <> cPsiTableIdPmt then
+  if AData[lOff] <> cPsiTableIdPmt then
     Exit; // not a PMT
-  SecLen := ((P[Off + 1] and cPsiLengthHighMask) shl 8) or P[Off + 2];
-  EndPos := Min(Off + cPsiSectionHeaderSize + SecLen - cPsiCrcSize, ALen); // before the CRC
-  PInfo := ((P[Off + 10] and cPsiLengthHighMask) shl 8) or P[Off + 11];
-  I := Off + cPmtHeaderSize + PInfo;
-  while I + cPmtEsHeaderSize <= EndPos do
+  lSecLen := ((AData[lOff + 1] and cPsiLengthHighMask) shl 8) or AData[lOff + 2];
+  lEndPos := Min(lOff + cPsiSectionHeaderSize + lSecLen - cPsiCrcSize, ALen); // before the CRC
+  lInfoLen := ((AData[lOff + 10] and cPsiLengthHighMask) shl 8) or AData[lOff + 11];
+  lPos := lOff + cPmtHeaderSize + lInfoLen;
+  while lPos + cPmtEsHeaderSize <= lEndPos do
   begin
-    St := P[I];
-    EsPid := ((P[I + 1] and cTsPidHighMask) shl 8) or P[I + 2];
-    EsLen := ((P[I + 3] and cPsiLengthHighMask) shl 8) or P[I + 4];
+    lStreamType := AData[lPos];
+    lEsPid := ((AData[lPos + 1] and cTsPidHighMask) shl 8) or AData[lPos + 2];
+    lEsLen := ((AData[lPos + 3] and cPsiLengthHighMask) shl 8) or AData[lPos + 4];
     // descriptors: language, AC-3 / E-AC-3 / DTS, registration
-    Lang := '';
-    ACodec := '';
-    Reg := '';
-    D := I + cPmtEsHeaderSize;
-    while (D + cDescHeaderSize <= I + cPmtEsHeaderSize + EsLen) and
-      (D + cDescHeaderSize <= EndPos) do
+    lLang := '';
+    lCodec := '';
+    lReg := '';
+    lDesc := lPos + cPmtEsHeaderSize;
+    while (lDesc + cDescHeaderSize <= lPos + cPmtEsHeaderSize + lEsLen) and
+      (lDesc + cDescHeaderSize <= lEndPos) do
     begin
-      DTag := P[D];
-      DLen := P[D + 1];
-      if D + cDescHeaderSize + DLen > EndPos then
+      lDescTag := AData[lDesc];
+      lDescLen := AData[lDesc + 1];
+      if lDesc + cDescHeaderSize + lDescLen > lEndPos then
         Break;
-      case DTag of
+      case lDescTag of
         cDescIso639Language:
-          if DLen >= cIso639CodeLen then
-            Lang := Chr(P[D + 2]) + Chr(P[D + 3]) + Chr(P[D + 4]);
-        cDescAc3: ACodec := cCodecAc3;
-        cDescEac3: ACodec := cCodecEac3;
-        cDescDts: ACodec := cCodecDts;
-        cDescAac: ACodec := cCodecAac;
+          if lDescLen >= cIso639CodeLen then
+            lLang := Chr(AData[lDesc + 2]) + Chr(AData[lDesc + 3]) + Chr(AData[lDesc + 4]);
+        cDescAc3: lCodec := cCodecAc3;
+        cDescEac3: lCodec := cCodecEac3;
+        cDescDts: lCodec := cCodecDts;
+        cDescAac: lCodec := cCodecAac;
         cDescRegistration:
-          if DLen >= cRegFormatIdLen then
-            Reg := Chr(P[D + 2]) + Chr(P[D + 3]) + Chr(P[D + 4]) + Chr(P[D + 5]);
+          if lDescLen >= cRegFormatIdLen then
+            lReg := Chr(AData[lDesc + 2]) + Chr(AData[lDesc + 3]) + Chr(AData[lDesc + 4]) + Chr(AData[lDesc + 5]);
       end;
-      Inc(D, cDescHeaderSize + DLen);
+      Inc(lDesc, cDescHeaderSize + lDescLen);
     end;
-    case St of
+    case lStreamType of
       cStreamTypeMpeg1Video, cStreamTypeMpeg2Video, cStreamTypeH264, cStreamTypeHevc:
         if FVideoPid = 0 then
         begin
-          FVideoPid := EsPid;
-          FVideoType := St;
+          FVideoPid := lEsPid;
+          FVideoType := lStreamType;
         end;
-      cStreamTypeMpeg1Audio, cStreamTypeMpeg2Audio: ACodec := cCodecMp2;
-      cStreamTypeAacAdts: ACodec := cCodecAac;
-      cStreamTypeAacLatm: ACodec := cCodecAacLatm;
-      cStreamTypeAc3: ACodec := cCodecAc3;
-      cStreamTypeEac3: ACodec := cCodecEac3;
+      cStreamTypeMpeg1Audio, cStreamTypeMpeg2Audio: lCodec := cCodecMp2;
+      cStreamTypeAacAdts: lCodec := cCodecAac;
+      cStreamTypeAacLatm: lCodec := cCodecAacLatm;
+      cStreamTypeAc3: lCodec := cCodecAc3;
+      cStreamTypeEac3: lCodec := cCodecEac3;
       cStreamTypePrivatePes:
         begin
-          if (ACodec = '') and (Reg = cRegFormatAc3) then
-            ACodec := cCodecAc3;
-          if (ACodec = '') and (Reg = cRegFormatEac3) then
-            ACodec := cCodecEac3;
-          if (FVideoPid = 0) and (Reg = cRegFormatHevc) then
+          if (lCodec = '') and (lReg = cRegFormatAc3) then
+            lCodec := cCodecAc3;
+          if (lCodec = '') and (lReg = cRegFormatEac3) then
+            lCodec := cCodecEac3;
+          if (FVideoPid = 0) and (lReg = cRegFormatHevc) then
           begin
-            FVideoPid := EsPid;
+            FVideoPid := lEsPid;
             FVideoType := cStreamTypeHevc;
           end;
         end;
     else
-      ACodec := '';
+      lCodec := '';
     end;
-    if (ACodec <> '') and (EsPid <> FVideoPid) then
+    if (lCodec <> '') and (lEsPid <> FVideoPid) then
     begin
-      Au.Codec := ACodec;
-      Au.Language := Lang.Trim;
-      FAudio := FAudio + [Au];
+      lAudio.Codec := lCodec;
+      lAudio.Language := lLang.Trim;
+      FAudio := FAudio + [lAudio];
     end;
-    Inc(I, cPmtEsHeaderSize + EsLen);
+    Inc(lPos, cPmtEsHeaderSize + lEsLen);
   end;
   FPmtDone := True;
 end;
 
-procedure TTsAnalyzer.AppendVes(const P: PByte; ALen: Integer);
+procedure TTsAnalyzer.AppendVes(const AData: PByte; ALen: Integer);
 begin
   if (ALen <= 0) or (FVesLen >= cMaxVesBytes) then
     Exit;
   ALen := Min(ALen, cMaxVesBytes - FVesLen);
   if FVesLen + ALen > Length(FVes) then
     SetLength(FVes, Max(FVesLen + ALen, Length(FVes) * 2 + cVesGrowBytes));
-  Move(P^, FVes[FVesLen], ALen);
+  Move(AData^, FVes[FVesLen], ALen);
   Inc(FVesLen, ALen);
 end;
 
-procedure TTsAnalyzer.VideoPayload(const P: PByte; ALen: Integer; AStart: Boolean);
+procedure TTsAnalyzer.VideoPayload(const AData: PByte; ALen: Integer; AStart: Boolean);
 var
-  HdrLen: Integer;
-  Pts: Int64;
+  lHdrLen: Integer;
+  lPts: Int64;
 begin
   if not AStart then
   begin
-    AppendVes(P, ALen);
+    AppendVes(AData, ALen);
     Exit;
   end;
   // PES header: 00 00 01 sid len(2) flags(2) hdrlen
-  if (ALen < cPesHeaderSize) or (P[0] <> 0) or (P[1] <> 0) or (P[2] <> 1) then
+  if (ALen < cPesHeaderSize) or (AData[0] <> 0) or (AData[1] <> 0) or (AData[2] <> 1) then
     Exit;
-  HdrLen := cPesHeaderSize + P[cPesHeaderLenOffset];
-  if ((P[cPesFlagsOffset] and cPesPtsFlag) <> 0) and (ALen >= cPesWithPtsSize) then
+  lHdrLen := cPesHeaderSize + AData[cPesHeaderLenOffset];
+  if ((AData[cPesFlagsOffset] and cPesPtsFlag) <> 0) and (ALen >= cPesWithPtsSize) then
   begin
     // 33-bit PTS spread over 5 bytes with marker bits
-    Pts := (Int64((P[cPesPtsOffset] shr 1) and 7) shl 30) or
-           (Int64(P[cPesPtsOffset + 1]) shl 22) or
-           (Int64(P[cPesPtsOffset + 2] shr 1) shl 15) or
-           (Int64(P[cPesPtsOffset + 3]) shl 7) or Int64(P[cPesPtsOffset + 4] shr 1);
+    lPts := (Int64((AData[cPesPtsOffset] shr 1) and 7) shl 30) or
+           (Int64(AData[cPesPtsOffset + 1]) shl 22) or
+           (Int64(AData[cPesPtsOffset + 2] shr 1) shl 15) or
+           (Int64(AData[cPesPtsOffset + 3]) shl 7) or Int64(AData[cPesPtsOffset + 4] shr 1);
     if FPtsCount = 0 then
     begin
-      FPtsFirst := Pts;
-      FPtsMin := Pts;
-      FPtsMax := Pts;
+      FPtsFirst := lPts;
+      FPtsMin := lPts;
+      FPtsMax := lPts;
       FBytesAtMin := FBytesTotal;
       FBytesAtMax := FBytesTotal;
     end
     else
     begin
       // unwrap the 33-bit clock relative to the first timestamp
-      if Pts < FPtsFirst - (cPtsWrap div 2) then
-        Inc(Pts, cPtsWrap);
-      if Pts < FPtsMin then
+      if lPts < FPtsFirst - (cPtsWrap div 2) then
+        Inc(lPts, cPtsWrap);
+      if lPts < FPtsMin then
       begin
-        FPtsMin := Pts;
+        FPtsMin := lPts;
         if FPtsCount < cPtsEarlySamples then
           FBytesAtMin := FBytesTotal;
       end;
-      if Pts > FPtsMax then
+      if lPts > FPtsMax then
       begin
-        FPtsMax := Pts;
+        FPtsMax := lPts;
         FBytesAtMax := FBytesTotal;
       end;
     end;
     Inc(FPtsCount);
   end;
-  if HdrLen < ALen then
-    AppendVes(@P[HdrLen], ALen - HdrLen);
+  if lHdrLen < ALen then
+    AppendVes(@AData[lHdrLen], ALen - lHdrLen);
 end;
 
-procedure TTsAnalyzer.Finish(var R: TProbeResult);
+procedure TTsAnalyzer.Finish(var AResult: TProbeResult);
 var
-  I, J, NalStart, NalType: Integer;
-  Span: Double;
-  Nal: TBytes;
-  Rate: Integer;
-  Got: Boolean;
+  i, j, lNalStart, lNalType: Integer;
+  lSpan: Double;
+  lNal: TBytes;
+  lRate: Integer;
+  lGot: Boolean;
 begin
-  R.Audio := FAudio;
+  AResult.Audio := FAudio;
   case FVideoType of
-    cStreamTypeMpeg1Video: R.VideoCodec := cCodecMpeg1;
-    cStreamTypeMpeg2Video: R.VideoCodec := cCodecMpeg2;
-    cStreamTypeH264: R.VideoCodec := cCodecH264;
-    cStreamTypeHevc: R.VideoCodec := cCodecHevc;
+    cStreamTypeMpeg1Video: AResult.VideoCodec := cCodecMpeg1;
+    cStreamTypeMpeg2Video: AResult.VideoCodec := cCodecMpeg2;
+    cStreamTypeH264: AResult.VideoCodec := cCodecH264;
+    cStreamTypeHevc: AResult.VideoCodec := cCodecHevc;
   end;
 
   // timestamps -> media duration, frame rate, bitrate
   if FPtsCount >= 2 then
   begin
-    Span := (FPtsMax - FPtsMin) / cPtsClockHz;
-    if Span > 0 then
+    lSpan := (FPtsMax - FPtsMin) / cPtsClockHz;
+    if lSpan > 0 then
     begin
-      R.MediaSeconds := Span;
-      R.Fps := RoundTo((FPtsCount - 1) / Span, -2);
+      AResult.MediaSeconds := lSpan;
+      AResult.Fps := RoundTo((FPtsCount - 1) / lSpan, -2);
       if FBytesAtMax > FBytesAtMin then
-        R.BitrateKbps := Round((FBytesAtMax - FBytesAtMin) * 8 / Span / 1000);
+        AResult.BitrateKbps := Round((FBytesAtMax - FBytesAtMin) * 8 / lSpan / 1000);
     end;
   end;
 
   // hunt the sequence parameters in the collected elementary stream
-  Got := False;
-  I := 0;
-  while (not Got) and (I + 4 < FVesLen) do
+  lGot := False;
+  i := 0;
+  while (not lGot) and (i + 4 < FVesLen) do
   begin
-    if (FVes[I] = 0) and (FVes[I + 1] = 0) and (FVes[I + 2] = 1) then
+    if (FVes[i] = 0) and (FVes[i + 1] = 0) and (FVes[i + 2] = 1) then
     begin
-      NalStart := I + cStartCodeSize;
+      lNalStart := i + cStartCodeSize;
       // find the next start code (end of this NAL)
-      J := NalStart;
-      while (J + 3 < FVesLen) and not ((FVes[J] = 0) and (FVes[J + 1] = 0) and
-        ((FVes[J + 2] = 1) or ((FVes[J + 2] = 0) and (FVes[J + 3] = 1)))) do
-        Inc(J);
-      if J + 3 >= FVesLen then
-        J := FVesLen;
+      j := lNalStart;
+      while (j + 3 < FVesLen) and not ((FVes[j] = 0) and (FVes[j + 1] = 0) and
+        ((FVes[j + 2] = 1) or ((FVes[j + 2] = 0) and (FVes[j + 3] = 1)))) do
+        Inc(j);
+      if j + 3 >= FVesLen then
+        j := FVesLen;
       case FVideoType of
         cStreamTypeH264:
           begin
-            NalType := FVes[NalStart] and cH264NalTypeMask;
-            if NalType = cH264NalSps then
+            lNalType := FVes[lNalStart] and cH264NalTypeMask;
+            if lNalType = cH264NalSps then
             begin
-              Nal := Unescape(@FVes[NalStart], J - NalStart);
-              Got := ParseH264Sps(Nal, R);
+              lNal := Unescape(@FVes[lNalStart], j - lNalStart);
+              lGot := ParseH264Sps(lNal, AResult);
             end;
           end;
         cStreamTypeHevc:
           begin
-            NalType := (FVes[NalStart] shr cHevcNalTypeShift) and cHevcNalTypeMask;
-            if NalType = cHevcNalSps then
+            lNalType := (FVes[lNalStart] shr cHevcNalTypeShift) and cHevcNalTypeMask;
+            if lNalType = cHevcNalSps then
             begin
-              Nal := Unescape(@FVes[NalStart], J - NalStart);
-              Got := ParseHevcSps(Nal, R);
+              lNal := Unescape(@FVes[lNalStart], j - lNalStart);
+              lGot := ParseHevcSps(lNal, AResult);
             end;
           end;
         cStreamTypeMpeg1Video, cStreamTypeMpeg2Video:
-          if (FVes[NalStart] = cMpeg2SequenceHeader) and (NalStart + 4 < FVesLen) then
+          if (FVes[lNalStart] = cMpeg2SequenceHeader) and (lNalStart + 4 < FVesLen) then
           begin
             // 12-bit width, 12-bit height, 4-bit aspect, 4-bit frame_rate_code
-            R.Width := (FVes[NalStart + 1] shl 4) or (FVes[NalStart + 2] shr 4);
-            R.Height := ((FVes[NalStart + 2] and $0F) shl 8) or FVes[NalStart + 3];
-            Rate := FVes[NalStart + 4] and cMpeg2FrameRateMask;
-            if (R.Fps = 0) and (Rate in [Low(cMpeg2FrameRates)..High(cMpeg2FrameRates)]) then
-              R.Fps := cMpeg2FrameRates[Rate];
-            R.BitDepth := cBitDepthBase;
+            AResult.Width := (FVes[lNalStart + 1] shl 4) or (FVes[lNalStart + 2] shr 4);
+            AResult.Height := ((FVes[lNalStart + 2] and $0F) shl 8) or FVes[lNalStart + 3];
+            lRate := FVes[lNalStart + 4] and cMpeg2FrameRateMask;
+            if (AResult.Fps = 0) and (lRate in [Low(cMpeg2FrameRates)..High(cMpeg2FrameRates)]) then
+              AResult.Fps := cMpeg2FrameRates[lRate];
+            AResult.BitDepth := cBitDepthBase;
             // sequence_extension follows: progressive_sequence bit
-            R.Interlaced := True;
-            for J := NalStart to Min(FVesLen - 6, NalStart + cMpeg2ExtScanBytes) do
-              if (FVes[J] = 0) and (FVes[J + 1] = 0) and (FVes[J + 2] = 1) and
-                 (FVes[J + 3] = cMpeg2ExtensionStart) and
-                 ((FVes[J + 4] shr 4) = cMpeg2SequenceExtId) then
+            AResult.Interlaced := True;
+            for j := lNalStart to Min(FVesLen - 6, lNalStart + cMpeg2ExtScanBytes) do
+              if (FVes[j] = 0) and (FVes[j + 1] = 0) and (FVes[j + 2] = 1) and
+                 (FVes[j + 3] = cMpeg2ExtensionStart) and
+                 ((FVes[j + 4] shr 4) = cMpeg2SequenceExtId) then
               begin
-                R.Interlaced := ((FVes[J + 5] shr 3) and 1) = 0;
+                AResult.Interlaced := ((FVes[j + 5] shr 3) and 1) = 0;
                 Break;
               end;
-            R.Profile := '';
-            Got := True;
+            AResult.Profile := '';
+            lGot := True;
           end;
       end;
-      I := NalStart;
+      i := lNalStart;
     end
     else
-      Inc(I);
+      Inc(i);
   end;
 end;
 
@@ -964,13 +1006,14 @@ end;
 
 destructor TProbeSink.Destroy;
 begin
-  FText.Free;
+  FreeAndNil(FText);
   inherited;
 end;
 
 function TProbeSink.Write(const Buffer; Count: Longint): Longint;
 var
-  Head: TBytes;
+  lHead: TBytes;
+  lKeep, lOld: Integer;
 begin
   Result := Count;
   if Count <= 0 then
@@ -980,18 +1023,18 @@ begin
     FFirstMs := FWatch.ElapsedMilliseconds;
     if FSniff then
     begin
-      SetLength(Head, Min(Count, cSniffBytes));
-      Move(Buffer, Head[0], Length(Head));
+      SetLength(lHead, Min(Count, cSniffBytes));
+      Move(Buffer, lHead[0], Length(lHead));
       // skip a UTF-8 BOM / leading whitespace before #EXTM3U
-      FIsPlaylist := Pos(cHlsHeader, TEncoding.ANSI.GetString(Head)) > 0;
+      FIsPlaylist := Pos(cHlsHeader, TEncoding.ANSI.GetString(lHead)) > 0;
     end;
   end;
   if Length(FHead) < cErrorHeadBytes then
   begin
-    var Keep := Min(Count, cErrorHeadBytes - Length(FHead));
-    var Old := Length(FHead);
-    SetLength(FHead, Old + Keep);
-    Move(Buffer, FHead[Old], Keep);
+    lKeep := Min(Count, cErrorHeadBytes - Length(FHead));
+    lOld := Length(FHead);
+    SetLength(FHead, lOld + lKeep);
+    Move(Buffer, FHead[lOld], lKeep);
   end;
   Inc(FBytes, Count);
   if FIsPlaylist then
@@ -1026,19 +1069,19 @@ end;
 
 function ResolveUrl(const ABase, ARef: string): string;
 var
-  U: TIdURI;
+  lUri: TIdURI;
 begin
   if ContainsText(ARef, cSchemeSeparator) then
     Exit(ARef);
-  U := TIdURI.Create(ABase);
+  lUri := TIdURI.Create(ABase);
   try
     if ARef.StartsWith('/') then
-      Result := U.Protocol + cSchemeSeparator + U.Host + IfThen(U.Port <> '', ':' + U.Port, '') + ARef
+      Result := lUri.Protocol + cSchemeSeparator + lUri.Host + IfThen(lUri.Port <> '', ':' + lUri.Port, '') + ARef
     else
-      Result := U.Protocol + cSchemeSeparator + U.Host + IfThen(U.Port <> '', ':' + U.Port, '') +
-        U.Path + ARef;
+      Result := lUri.Protocol + cSchemeSeparator + lUri.Host + IfThen(lUri.Port <> '', ':' + lUri.Port, '') +
+        lUri.Path + ARef;
   finally
-    U.Free;
+    FreeAndNil(lUri);
   end;
 end;
 
@@ -1048,23 +1091,23 @@ type
     LastUrl: string; // the URL actually served (after the provider's redirects)
     UserAgent: string; // per-source UA ('' = cProbeUserAgent)
     Referer: string;
-    procedure OnRedirect(Sender: TObject; var Dest: string; var NumRedirect: Integer;
-      var Handled: Boolean; var VMethod: string);
+    procedure OnRedirect(ASender: TObject; var ADest: string; var ANumRedirect: Integer;
+      var AHandled: Boolean; var AMethod: string);
   end;
 
-procedure TRedirectCounter.OnRedirect(Sender: TObject; var Dest: string;
-  var NumRedirect: Integer; var Handled: Boolean; var VMethod: string);
+procedure TRedirectCounter.OnRedirect(ASender: TObject; var ADest: string;
+  var ANumRedirect: Integer; var AHandled: Boolean; var AMethod: string);
 begin
   Inc(Count);
-  if ContainsText(Dest, cSchemeSeparator) then
-    LastUrl := Dest
+  if ContainsText(ADest, cSchemeSeparator) then
+    LastUrl := ADest
   else if LastUrl <> '' then
-    LastUrl := ResolveUrl(LastUrl, Dest);
+    LastUrl := ResolveUrl(LastUrl, ADest);
 end;
 
 function NewProbeHttp(ARedir: TRedirectCounter): TIdHTTP;
 var
-  SSL: TIdSSLIOHandlerSocketOpenSSL;
+  lSsl: TIdSSLIOHandlerSocketOpenSSL;
 begin
   Result := TIdHTTP.Create(nil);
   // look like VLC on the wire, not just in the User-Agent: some panels reject
@@ -1087,9 +1130,9 @@ begin
   if ARedir <> nil then
     Result.OnRedirect := ARedir.OnRedirect;
   // TLS handler always attached: plain-http portals often redirect to https nodes
-  SSL := TIdSSLIOHandlerSocketOpenSSL.Create(Result);
-  SSL.SSLOptions.SSLVersions := [sslvTLSv1_2];
-  Result.IOHandler := SSL;
+  lSsl := TIdSSLIOHandlerSocketOpenSSL.Create(Result);
+  lSsl.SSLOptions.SSLVersions := [sslvTLSv1_2];
+  Result.IOHandler := lSsl;
 end;
 
 /// GET AUrl into ASink. Returns the HTTP status (0 = no response); AError holds
@@ -1097,32 +1140,32 @@ end;
 function FetchIntoEx(const AUrl: string; ASink: TProbeSink; ARedir: TRedirectCounter;
   out AFinalUrl, AContentType, AError, AServer: string): Integer;
 var
-  Http: TIdHTTP;
+  lHttp: TIdHTTP;
 begin
   AError := '';
   AFinalUrl := AUrl;
   AContentType := '';
   ARedir.LastUrl := AUrl;
-  Http := NewProbeHttp(ARedir);
+  lHttp := NewProbeHttp(ARedir);
   try
     try
-      Http.Get(AUrl, ASink);
-      Result := Http.ResponseCode;
+      lHttp.Get(AUrl, ASink);
+      Result := lHttp.ResponseCode;
     except
       on EProbeEnough do
-        Result := Http.ResponseCode;
+        Result := lHttp.ResponseCode;
       on E: Exception do
       begin
-        Result := Http.ResponseCode;
+        Result := lHttp.ResponseCode;
         AError := E.Message;
       end;
     end;
-    AContentType := Http.Response.ContentType;
-    AServer := Http.Response.Server;
+    AContentType := lHttp.Response.ContentType;
+    AServer := lHttp.Response.Server;
     if ARedir.LastUrl <> '' then
       AFinalUrl := ARedir.LastUrl;
   finally
-    Http.Free;
+    FreeAndNil(lHttp);
   end;
 end;
 
@@ -1131,9 +1174,9 @@ end;
 function FetchInto(const AUrl: string; ASink: TProbeSink; ARedir: TRedirectCounter;
   out AFinalUrl, AContentType, AError: string): Integer;
 var
-  LServer: string;
+  lServer: string;
 begin
-  Result := FetchIntoEx(AUrl, ASink, ARedir, AFinalUrl, AContentType, AError, LServer);
+  Result := FetchIntoEx(AUrl, ASink, ARedir, AFinalUrl, AContentType, AError, lServer);
 end;
 
 function IsHttpSuccess(ACode: Integer): Boolean;
@@ -1153,217 +1196,221 @@ end;
 
 function AttrValue(const ALine, AName: string): string;
 var
-  P, E: Integer;
+  lPos, lEnd: Integer;
 begin
   Result := '';
-  P := Pos(AName + '=', UpperCase(ALine));
-  if P = 0 then
+  lPos := Pos(AName + '=', UpperCase(ALine));
+  if lPos = 0 then
     Exit;
-  Inc(P, Length(AName) + 1);
-  if (P <= Length(ALine)) and (ALine[P] = '"') then
+  Inc(lPos, Length(AName) + 1);
+  if (lPos <= Length(ALine)) and (ALine[lPos] = '"') then
   begin
-    E := PosEx('"', ALine, P + 1);
-    if E = 0 then
-      E := Length(ALine) + 1;
-    Result := Copy(ALine, P + 1, E - P - 1);
+    lEnd := PosEx('"', ALine, lPos + 1);
+    if lEnd = 0 then
+      lEnd := Length(ALine) + 1;
+    Result := Copy(ALine, lPos + 1, lEnd - lPos - 1);
   end
   else
   begin
-    E := PosEx(',', ALine, P);
-    if E = 0 then
-      E := Length(ALine) + 1;
-    Result := Copy(ALine, P, E - P);
+    lEnd := PosEx(',', ALine, lPos);
+    if lEnd = 0 then
+      lEnd := Length(ALine) + 1;
+    Result := Copy(ALine, lPos, lEnd - lPos);
   end;
 end;
 
-procedure ApplyHlsCodecs(const ACodecs, AResolution: string; var R: TProbeResult);
+procedure ApplyHlsCodecs(const ACodecs, AResolution: string; var AResult: TProbeResult);
 var
-  C: string;
-  Au: TProbeAudio;
-  X: Integer;
+  lCodec: string;
+  lAudio: TProbeAudio;
+  lPosX: Integer;
 begin
-  for C in ACodecs.Split([',']) do
+  for lCodec in ACodecs.Split([',']) do
   begin
-    if StartsText(cHlsCodecAvc1, C.Trim) and (R.VideoCodec = '') then R.VideoCodec := cCodecH264;
-    if (StartsText(cHlsCodecHvc1, C.Trim) or StartsText(cHlsCodecHev1, C.Trim)) and
-      (R.VideoCodec = '') then
-      R.VideoCodec := cCodecHevc;
-    if (Length(R.Audio) = 0) then
+    if StartsText(cHlsCodecAvc1, lCodec.Trim) and (AResult.VideoCodec = '') then
+      AResult.VideoCodec := cCodecH264;
+    if (StartsText(cHlsCodecHvc1, lCodec.Trim) or StartsText(cHlsCodecHev1, lCodec.Trim)) and
+      (AResult.VideoCodec = '') then
+      AResult.VideoCodec := cCodecHevc;
+    if (Length(AResult.Audio) = 0) then
     begin
-      Au.Language := '';
-      Au.Codec := '';
-      if StartsText(cHlsCodecMp4a, C.Trim) then Au.Codec := cCodecAac;
-      if StartsText(cHlsCodecAc3, C.Trim) then Au.Codec := cCodecAc3;
-      if StartsText(cHlsCodecEc3, C.Trim) then Au.Codec := cCodecEac3;
-      if Au.Codec <> '' then
-        R.Audio := [Au];
+      lAudio.Language := '';
+      lAudio.Codec := '';
+      if StartsText(cHlsCodecMp4a, lCodec.Trim) then
+        lAudio.Codec := cCodecAac;
+      if StartsText(cHlsCodecAc3, lCodec.Trim) then
+        lAudio.Codec := cCodecAc3;
+      if StartsText(cHlsCodecEc3, lCodec.Trim) then
+        lAudio.Codec := cCodecEac3;
+      if lAudio.Codec <> '' then
+        AResult.Audio := [lAudio];
     end;
   end;
-  X := Pos('X', UpperCase(AResolution));
-  if (R.Width = 0) and (X > 0) then
+  lPosX := Pos('X', UpperCase(AResolution));
+  if (AResult.Width = 0) and (lPosX > 0) then
   begin
-    R.Width := StrToIntDef(Copy(AResolution, 1, X - 1), 0);
-    R.Height := StrToIntDef(Copy(AResolution, X + 1, MaxInt), 0);
+    AResult.Width := StrToIntDef(Copy(AResolution, 1, lPosX - 1), 0);
+    AResult.Height := StrToIntDef(Copy(AResolution, lPosX + 1, MaxInt), 0);
   end;
 end;
 
 procedure ProbeHls(const APlaylist, ABaseUrl: string; AAnalyzer: TTsAnalyzer;
-  ARedir: TRedirectCounter; AWatch: TStopwatch; AMaxMs: Int64; var R: TProbeResult);
+  ARedir: TRedirectCounter; AWatch: TStopwatch; AMaxMs: Int64; var AResult: TProbeResult);
 var
-  Lines, Segs: TArray<string>;
-  Line, Url, Text, FinalUrl, Ct, Err, Codecs, Resol: string;
-  I, Best, Bw, Code, K, Start: Integer;
-  Sink: TProbeSink;
-  Fmp4: Boolean;
-  Wall: TStopwatch;
+  lLines, lSegs: TArray<string>;
+  lLine, lUrl, lText, lFinalUrl, lContentType, lErr, lCodecs, lResolution: string;
+  i, lBest, lBandwidth, lCode, k, lStart: Integer;
+  lSink: TProbeSink;
+  lFmp4: Boolean;
+  lWall: TStopwatch;
 begin
-  R.Container := cContainerHls;
-  Codecs := '';
-  Resol := '';
-  Text := APlaylist;
-  Url := ABaseUrl;
+  AResult.Container := cContainerHls;
+  lCodecs := '';
+  lResolution := '';
+  lText := APlaylist;
+  lUrl := ABaseUrl;
   // master playlist -> the highest-bandwidth variant
-  if ContainsText(Text, cHlsTagStreamInf) then
+  if ContainsText(lText, cHlsTagStreamInf) then
   begin
-    Lines := Text.Split([#10]);
-    Best := -1;
-    Url := '';
-    for I := 0 to High(Lines) do
+    lLines := lText.Split([#10]);
+    lBest := -1;
+    lUrl := '';
+    for i := 0 to High(lLines) do
     begin
-      Line := Lines[I].Trim;
-      if StartsText(cHlsTagStreamInf, Line) then
+      lLine := lLines[i].Trim;
+      if StartsText(cHlsTagStreamInf, lLine) then
       begin
-        Bw := StrToIntDef(AttrValue(Line, cHlsAttrBandwidth), 0);
-        if (Bw > Best) and (I < High(Lines)) then
+        lBandwidth := StrToIntDef(AttrValue(lLine, cHlsAttrBandwidth), 0);
+        if (lBandwidth > lBest) and (i < High(lLines)) then
         begin
-          Best := Bw;
-          Codecs := AttrValue(Line, cHlsAttrCodecs);
-          Resol := AttrValue(Line, cHlsAttrResolution);
-          K := I + 1;
-          while (K <= High(Lines)) and ((Lines[K].Trim = '') or Lines[K].Trim.StartsWith('#')) do
-            Inc(K);
-          if K <= High(Lines) then
-            Url := ResolveUrl(ABaseUrl, Lines[K].Trim);
+          lBest := lBandwidth;
+          lCodecs := AttrValue(lLine, cHlsAttrCodecs);
+          lResolution := AttrValue(lLine, cHlsAttrResolution);
+          k := i + 1;
+          while (k <= High(lLines)) and ((lLines[k].Trim = '') or lLines[k].Trim.StartsWith('#')) do
+            Inc(k);
+          if k <= High(lLines) then
+            lUrl := ResolveUrl(ABaseUrl, lLines[k].Trim);
         end;
       end;
     end;
-    ApplyHlsCodecs(Codecs, Resol, R);
-    if Url = '' then
+    ApplyHlsCodecs(lCodecs, lResolution, AResult);
+    if lUrl = '' then
     begin
-      R.Error := 'HLS master playlist without variants';
+      AResult.Error := 'HLS master playlist without variants';
       Exit;
     end;
-    Sink := TProbeSink.Create(AAnalyzer, cHlsVariantBudgetMs, cSniffPlaylist);
+    lSink := TProbeSink.Create(AAnalyzer, cHlsVariantBudgetMs, cSniffPlaylist);
     try
-      Code := FetchInto(Url, Sink, ARedir, FinalUrl, Ct, Err);
-      if (not IsHttpSuccess(Code)) or not Sink.FIsPlaylist then
+      lCode := FetchInto(lUrl, lSink, ARedir, lFinalUrl, lContentType, lErr);
+      if (not IsHttpSuccess(lCode)) or not lSink.FIsPlaylist then
       begin
-        R.Error := IfThen(Err <> '', Err, Format('HLS variant playlist: HTTP %d', [Code]));
+        AResult.Error := IfThen(lErr <> '', lErr, Format('HLS variant playlist: HTTP %d', [lCode]));
         Exit;
       end;
-      Text := Sink.PlaylistText;
-      Url := FinalUrl;
+      lText := lSink.PlaylistText;
+      lUrl := lFinalUrl;
     finally
-      Sink.Free;
+      FreeAndNil(lSink);
     end;
   end;
 
   // media playlist: segment URIs; take the newest few (live edge)
-  Fmp4 := ContainsText(Text, cHlsTagMap);
-  Segs := [];
-  for Line in Text.Split([#10]) do
-    if (Line.Trim <> '') and not Line.Trim.StartsWith('#') then
-      Segs := Segs + [ResolveUrl(Url, Line.Trim)];
-  if Length(Segs) = 0 then
+  lFmp4 := ContainsText(lText, cHlsTagMap);
+  lSegs := [];
+  for lLine in lText.Split([#10]) do
+    if (lLine.Trim <> '') and not lLine.Trim.StartsWith('#') then
+      lSegs := lSegs + [ResolveUrl(lUrl, lLine.Trim)];
+  if Length(lSegs) = 0 then
   begin
-    R.Error := 'HLS playlist without segments';
+    AResult.Error := 'HLS playlist without segments';
     Exit;
   end;
-  if Fmp4 then
+  if lFmp4 then
   begin
-    R.Container := cContainerHlsFmp4;
-    R.Ok := R.VideoCodec <> '';
-    if not R.Ok then
-      R.Error := 'fMP4 HLS: only the playlist could be read';
+    AResult.Container := cContainerHlsFmp4;
+    AResult.Ok := AResult.VideoCodec <> '';
+    if not AResult.Ok then
+      AResult.Error := 'fMP4 HLS: only the playlist could be read';
     Exit;
   end;
-  Start := Max(0, Length(Segs) - cHlsLiveEdgeSegments);
-  Wall := TStopwatch.StartNew;
-  for I := Start to High(Segs) do
+  lStart := Max(0, Length(lSegs) - cHlsLiveEdgeSegments);
+  lWall := TStopwatch.StartNew;
+  for i := lStart to High(lSegs) do
   begin
     if AWatch.ElapsedMilliseconds >= AMaxMs then
       Break;
     AAnalyzer.ResetSync;
-    Sink := TProbeSink.Create(AAnalyzer, cHlsSegmentBudgetMs, cNoSniff);
+    lSink := TProbeSink.Create(AAnalyzer, cHlsSegmentBudgetMs, cNoSniff);
     try
-      Code := FetchInto(Segs[I], Sink, ARedir, FinalUrl, Ct, Err);
-      Inc(R.Bytes, Sink.FBytes);
-      if not IsHttpSuccess(Code) then
+      lCode := FetchInto(lSegs[i], lSink, ARedir, lFinalUrl, lContentType, lErr);
+      Inc(AResult.Bytes, lSink.FBytes);
+      if not IsHttpSuccess(lCode) then
       begin
-        R.Error := IfThen(Err <> '', Err, Format('HLS segment: HTTP %d', [Code]));
+        AResult.Error := IfThen(lErr <> '', lErr, Format('HLS segment: HTTP %d', [lCode]));
         Break;
       end;
     finally
-      Sink.Free;
+      FreeAndNil(lSink);
     end;
   end;
-  R.WallSeconds := Wall.ElapsedMilliseconds / 1000;
+  AResult.WallSeconds := lWall.ElapsedMilliseconds / 1000;
 end;
 
 /// 'HTTP 461 (server nginx): <the provider's own text>' — tags stripped,
 /// whitespace collapsed, at most 200 chars; credentials never appear in a body.
 function HttpErrorText(ACode: Integer; const AServer: string; const ABody: TBytes): string;
 var
-  Txt: string;
-  Ch: Char;
-  InTag: Boolean;
-  Sb: TStringBuilder;
+  lText: string;
+  lChar: Char;
+  lInTag: Boolean;
+  lBuilder: TStringBuilder;
 begin
   Result := Format('HTTP %d', [ACode]);
   if AServer.Trim <> '' then
     Result := Result + ' (' + AServer.Trim + ')';
   if Length(ABody) = 0 then
     Exit;
-  Txt := TEncoding.UTF8.GetString(ABody);
-  Sb := TStringBuilder.Create;
+  lText := TEncoding.UTF8.GetString(ABody);
+  lBuilder := TStringBuilder.Create;
   try
-    InTag := False;
-    for Ch in Txt do
-      if Ch = '<' then
-        InTag := True
-      else if Ch = '>' then
+    lInTag := False;
+    for lChar in lText do
+      if lChar = '<' then
+        lInTag := True
+      else if lChar = '>' then
       begin
-        InTag := False;
-        Sb.Append(' ');
+        lInTag := False;
+        lBuilder.Append(' ');
       end
-      else if not InTag then
-        if Ord(Ch) <= 32 then // control chars / whitespace
-          Sb.Append(' ')
+      else if not lInTag then
+        if Ord(lChar) <= 32 then // control chars / whitespace
+          lBuilder.Append(' ')
         else
-          Sb.Append(Ch);
-    Txt := Sb.ToString;
+          lBuilder.Append(lChar);
+    lText := lBuilder.ToString;
   finally
-    Sb.Free;
+    FreeAndNil(lBuilder);
   end;
-  while Pos('  ', Txt) > 0 do
-    Txt := StringReplace(Txt, '  ', ' ', [rfReplaceAll]);
-  Txt := Txt.Trim;
-  if Length(Txt) > cErrorTextMaxLen then
-    Txt := Copy(Txt, 1, cErrorTextMaxLen) + '...';
-  if Txt <> '' then
-    Result := Result + ': ' + Txt;
+  while Pos('  ', lText) > 0 do
+    lText := StringReplace(lText, '  ', ' ', [rfReplaceAll]);
+  lText := lText.Trim;
+  if Length(lText) > cErrorTextMaxLen then
+    lText := Copy(lText, 1, cErrorTextMaxLen) + '...';
+  if lText <> '' then
+    Result := Result + ': ' + lText;
 end;
 
 function ProbeStream(const AUrl: string; AMaxSeconds: Integer;
   const AUserAgent, AReferer: string): TProbeResult;
 var
-  Analyzer: TTsAnalyzer;
-  Sink: TProbeSink;
-  Redir: TRedirectCounter;
-  Watch: TStopwatch;
-  Code: Integer;
-  FinalUrl, Ct, Err, Server: string;
-  MaxMs: Int64;
+  lAnalyzer: TTsAnalyzer;
+  lSink: TProbeSink;
+  lRedir: TRedirectCounter;
+  lWatch: TStopwatch;
+  lCode: Integer;
+  lFinalUrl, lContentType, lErr, lServer: string;
+  lMaxMs: Int64;
 begin
   Result := Default(TProbeResult);
   if AUrl.Trim = '' then
@@ -1371,76 +1418,77 @@ begin
     Result.Error := 'no stream URL';
     Exit;
   end;
-  MaxMs := EnsureRange(AMaxSeconds, cProbeMinSeconds, cProbeMaxSeconds) * 1000;
+  lMaxMs := EnsureRange(AMaxSeconds, cProbeMinSeconds, cProbeMaxSeconds) * 1000;
   GProbeLock.Acquire;
   try
-    Analyzer := TTsAnalyzer.Create;
-    Redir := TRedirectCounter.Create;
-    Redir.UserAgent := AUserAgent;
-    Redir.Referer := AReferer;
+    lAnalyzer := nil;
+    lRedir := nil;
     try
+      lAnalyzer := TTsAnalyzer.Create;
+      lRedir := TRedirectCounter.Create;
+      lRedir.UserAgent := AUserAgent;
+      lRedir.Referer := AReferer;
       try
-        Watch := TStopwatch.StartNew;
-        Sink := TProbeSink.Create(Analyzer, MaxMs, cSniffPlaylist);
+        lWatch := TStopwatch.StartNew;
+        lSink := TProbeSink.Create(lAnalyzer, lMaxMs, cSniffPlaylist);
         try
-          Code := FetchIntoEx(AUrl, Sink, Redir, FinalUrl, Ct, Err, Server);
+          lCode := FetchIntoEx(AUrl, lSink, lRedir, lFinalUrl, lContentType, lErr, lServer);
           // a refusal (connection limit / anti-flood: 429, 458, 461, 503, ...) is
           // often transient right after another connection closed: retry once
-          if IsRefusalStatus(Code) then
+          if IsRefusalStatus(lCode) then
           begin
-            Sink.Free;
-            Sink := nil;
-            Analyzer.Free;
-            Analyzer := TTsAnalyzer.Create;
+            FreeAndNil(lSink);
+            FreeAndNil(lAnalyzer);
+            lAnalyzer := TTsAnalyzer.Create;
             Sleep(cRefusalRetryDelayMs);
-            Redir.Count := 0;
-            Watch := TStopwatch.StartNew;
-            Sink := TProbeSink.Create(Analyzer, MaxMs, cSniffPlaylist);
-            Code := FetchIntoEx(AUrl, Sink, Redir, FinalUrl, Ct, Err, Server);
+            lRedir.Count := 0;
+            lWatch := TStopwatch.StartNew;
+            lSink := TProbeSink.Create(lAnalyzer, lMaxMs, cSniffPlaylist);
+            lCode := FetchIntoEx(AUrl, lSink, lRedir, lFinalUrl, lContentType, lErr, lServer);
           end;
-          Result.FirstByteMs := Max(0, Integer(Sink.FFirstMs));
-          Result.Bytes := Sink.FBytes;
-          if Sink.FFirstMs >= 0 then
-            Result.WallSeconds := (Watch.ElapsedMilliseconds - Sink.FFirstMs) / 1000;
-          if (Code >= cHttpStatusErrorMin) or ((Code = 0) and (Sink.FBytes = 0)) then
+          Result.FirstByteMs := Max(0, Integer(lSink.FFirstMs));
+          Result.Bytes := lSink.FBytes;
+          if lSink.FFirstMs >= 0 then
+            Result.WallSeconds := (lWatch.ElapsedMilliseconds - lSink.FFirstMs) / 1000;
+          if (lCode >= cHttpStatusErrorMin) or ((lCode = 0) and (lSink.FBytes = 0)) then
           begin
-            if Code >= cHttpStatusErrorMin then
-              Result.Error := HttpErrorText(Code, Server, Sink.FHead)
+            if lCode >= cHttpStatusErrorMin then
+              Result.Error := HttpErrorText(lCode, lServer, lSink.FHead)
             else
-              Result.Error := IfThen(Err <> '', Err, 'no response');
+              Result.Error := IfThen(lErr <> '', lErr, 'no response');
             Exit;
           end;
-          if Sink.FIsPlaylist then
-            ProbeHls(Sink.PlaylistText, FinalUrl, Analyzer, Redir, Watch, MaxMs, Result)
+          if lSink.FIsPlaylist then
+            ProbeHls(lSink.PlaylistText, lFinalUrl, lAnalyzer, lRedir, lWatch, lMaxMs, Result)
           else
           begin
             Result.Container := cContainerMpegTs;
-            if (Err <> '') and (Analyzer.BytesTotal > 0) then
-              Result.Error := 'stalled: ' + Err  // got data, then the server stopped
-            else if Err <> '' then
-              Result.Error := Err
-            else if (not Sink.FLimitHit) and (Analyzer.BytesTotal > 0) then
+            if (lErr <> '') and (lAnalyzer.BytesTotal > 0) then
+              Result.Error := 'stalled: ' + lErr  // got data, then the server stopped
+            else if lErr <> '' then
+              Result.Error := lErr
+            else if (not lSink.FLimitHit) and (lAnalyzer.BytesTotal > 0) then
               Result.Error := 'stream ended early';
-            if (Analyzer.BytesTotal = 0) and (Sink.FBytes > 0) then
+            if (lAnalyzer.BytesTotal = 0) and (lSink.FBytes > 0) then
             begin
-              Result.Container := IfThen(Ct <> '', Ct, 'unknown');
+              Result.Container := IfThen(lContentType <> '', lContentType, 'unknown');
               Result.Error := 'not an MPEG-TS stream (' + Result.Container + ')';
               Exit;
             end;
           end;
         finally
-          Sink.Free;
+          FreeAndNil(lSink);
         end;
         if Result.Container <> cContainerHlsFmp4 then
         begin
-          Analyzer.Finish(Result);
+          lAnalyzer.Finish(Result);
           if Result.Container = cContainerHls then
-            Result.Bytes := Analyzer.BytesTotal;
+            Result.Bytes := lAnalyzer.BytesTotal;
           Result.Ok := (Result.VideoCodec <> '') or (Length(Result.Audio) > 0);
           if (not Result.Ok) and (Result.Error = '') then
             Result.Error := 'no video found in the stream';
         end;
-        Result.Redirects := Redir.Count;
+        Result.Redirects := lRedir.Count;
       except
         on E: Exception do
         begin
@@ -1449,8 +1497,8 @@ begin
         end;
       end;
     finally
-      Redir.Free;
-      Analyzer.Free;
+      FreeAndNil(lRedir);
+      FreeAndNil(lAnalyzer);
     end;
   finally
     GProbeLock.Release;
@@ -1461,6 +1509,6 @@ initialization
   GProbeLock := TCriticalSection.Create;
 
 finalization
-  GProbeLock.Free;
+  FreeAndNil(GProbeLock);
 
 end.

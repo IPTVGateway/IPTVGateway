@@ -18,6 +18,7 @@ program IPTVPlayService;
 {$APPTYPE CONSOLE}
 
 uses
+  // RTL
   System.SysUtils,
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
@@ -75,7 +76,7 @@ var
   GLogLock: TObject; // Writeln from many threads (Indy workers, ingest, relay) garbles lines
 
 {$IFDEF MSWINDOWS}
-function ConsoleCtrlHandler(CtrlType: DWORD): BOOL; stdcall;
+function ConsoleCtrlHandler(ACtrlType: DWORD): BOOL; stdcall;
 begin
   if Assigned(GRunner) then
     GRunner.SignalStop;   // CTRL_C / CTRL_CLOSE / shutdown
@@ -84,7 +85,7 @@ end;
 {$ENDIF}
 
 {$IFDEF POSIX}
-procedure PosixSignalHandler(SigNum: Integer); cdecl;
+procedure PosixSignalHandler(ASigNum: Integer); cdecl;
 begin
   GStopRequested := 1;   // SIGTERM (systemd stop) / SIGINT (Ctrl+C); see the main loop
 end;

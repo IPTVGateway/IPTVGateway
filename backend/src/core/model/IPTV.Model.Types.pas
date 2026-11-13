@@ -32,12 +32,15 @@ const
   cSepQuadDashHeavy = #$250B;      // ┋ heavy quadruple-dash vertical
   cSepFullwidthBar = #$FF5C;       // ｜ fullwidth vertical line
 
+/// Parses a source kind name (case-insensitive); unknown names give skM3U.
 function SourceKindFromString(const AValue: string): TSourceKind;
+/// Parses a content type name (case-insensitive); unknown names give ctLive.
 function ContentTypeFromString(const AValue: string): TContentType;
 
 implementation
 
 uses
+  // RTL
   System.SysUtils;
 
 function SourceKindFromString(const AValue: string): TSourceKind;
@@ -52,11 +55,11 @@ end;
 
 function ContentTypeFromString(const AValue: string): TContentType;
 var
-  CT: TContentType;
+  lContentType: TContentType;
 begin
-  for CT := Low(TContentType) to High(TContentType) do
-    if SameText(AValue, ContentTypeNames[CT]) then
-      Exit(CT);
+  for lContentType := Low(TContentType) to High(TContentType) do
+    if SameText(AValue, ContentTypeNames[lContentType]) then
+      Exit(lContentType);
   Result := ctLive;
 end;
 

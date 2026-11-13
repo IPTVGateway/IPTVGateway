@@ -13,45 +13,70 @@ unit IPTV.Storage.SQLite;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections,
-  FireDAC.Stan.Intf, // core FireDAC types
-  FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Async, FireDAC.Stan.Param,
-  FireDAC.DApt, FireDAC.Phys.SQLite, FireDAC.Phys.SQLiteDef,
-  FireDAC.Phys.SQLiteWrapper.Stat, // statically link the SQLite engine into the host
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.Generics.Collections,
   Data.DB,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
-  IPTV.Model.CustomList, IPTV.Storage.Intf;
+  // third-party (FireDAC)
+  FireDAC.Stan.Intf, // core FireDAC types
+  FireDAC.Comp.Client,
+  FireDAC.Stan.Def,
+  FireDAC.Stan.Async,
+  FireDAC.Stan.Param,
+  FireDAC.DApt,
+  FireDAC.Phys.SQLite,
+  FireDAC.Phys.SQLiteDef,
+  FireDAC.Phys.SQLiteWrapper.Stat, // statically link the SQLite engine into the host
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
+  IPTV.Model.CustomList,
+  IPTV.Storage.Intf;
 
 type
+  /// FireDAC/SQLite implementation of IStore (one connection; see the unit header).
   TSQLiteStore = class(TInterfacedObject, IStore)
   private
     FConn: TFDConnection;
+    /// A new query on FConn (caller frees it).
     function NewQuery: TFDQuery;
+    /// Execute one SQL statement without parameters.
     procedure Exec(const ASql: string);
-    procedure TouchLineup; // stamp lineup_changed_utc (Plex-rescan reminder)
-    procedure MigrateM3uStreamIds; // one-time: re-key M3U streams credential-insensitively
+    /// Stamp lineup_changed_utc (Plex-rescan reminder).
+    procedure TouchLineup;
+    /// One-time migration: re-key M3U streams credential-insensitively.
+    procedure MigrateM3uStreamIds;
     /// (Re)compute streams.hidden / categories.hidden for one source from its
     /// name filters. AForce=False skips it when the filters didn't change.
     procedure RecomputeHidden(ASourceId: Integer; AForce: Boolean);
+    /// Undo old quote-doubling in the stored filter/strip tokens; VACUUM when worthwhile.
     procedure RepairSourceTokens;
+    /// Content hash of a stream's metadata (change detection).
     function StreamHash(const AItem: TStreamItem): string;
+    /// Match the channels to the extra (third-party) guides; sets ExtraGuideId.
     procedure ApplyExtraGuides(AChannels: TOutputChannelList);
     // row -> object
-    function ReadSource(Q: TFDQuery): TSourceConfig;
-    function ReadCategory(Q: TFDQuery): TCategory;
-    function ReadStream(Q: TFDQuery): TStreamItem;
-    function ReadProgramme(Q: TFDQuery): TEpgProgramme;
-    function ReadList(Q: TFDQuery): TCustomList;
-    function ReadGroup(Q: TFDQuery): TCustomGroup;
-    function ReadItem(Q: TFDQuery): TCustomItem;
+    /// Read the current row of AQuery into a new object (caller owns it).
+    function ReadSource(AQuery: TFDQuery): TSourceConfig;
+    function ReadCategory(AQuery: TFDQuery): TCategory;
+    function ReadStream(AQuery: TFDQuery): TStreamItem;
+    function ReadProgramme(AQuery: TFDQuery): TEpgProgramme;
+    function ReadList(AQuery: TFDQuery): TCustomList;
+    function ReadGroup(AQuery: TFDQuery): TCustomGroup;
+    function ReadItem(AQuery: TFDQuery): TCustomItem;
   public
     /// AUseWal turns on WAL journal mode — ONLY safe with a real filesystem and
     /// the separate read/write connection setup (opt-in). Default off: a single
     /// serialised connection on a rollback journal, which works everywhere
     /// (including the Unraid /mnt/user FUSE share, where WAL silently breaks).
     constructor Create(const ADatabasePath: string; AUseWal: Boolean = False);
+    /// Closes and frees the connection.
     destructor Destroy; override;
 
+    /// IStore implementation (see IPTV.Storage.Intf).
     procedure Init;
 
     function LoadSources: TObjectList<TSourceConfig>;
@@ -122,7 +147,13 @@ type
 implementation
 
 uses
-  System.Hash, System.StrUtils, System.Generics.Defaults, System.DateUtils, System.Math,
+  // RTL
+  System.Hash,
+  System.StrUtils,
+  System.Generics.Defaults,
+  System.DateUtils,
+  System.Math,
+  // own units
   IPTV.Core.Utils;
 
 const
@@ -213,9 +244,9 @@ const
 // VOD titles use them freely, which would explode the discovered-prefix list.
 // Includes the Unicode vertical bars providers decorate names with (┃ │ ¦ ｜ …) —
 // these are > #255 so a CharInSet (AnsiChar) set can't see them; test via a case.
-function IsStrongDelim(C: Char): Boolean;
+function IsStrongDelim(AChar: Char): Boolean;
 begin
-  case C of
+  case AChar of
     '|', ':', #$203A, #$00BB,            // | : › »
     #$00A6, #$2502, #$2503, #$2506,      // ¦ │ ┃ ┆
     #$2507, #$250A, #$250B, #$FF5C:      // ┇ ┊ ┋ ｜
@@ -227,39 +258,39 @@ end;
 
 function ExtractNamePrefix(const AName: string): string;
 var
-  S, Token: string;
-  I, Start: Integer;
+  lName, lToken: string;
+  i, lStart: Integer;
 begin
-  S := AName.Trim;
-  if S = '' then
+  lName := AName.Trim;
+  if lName = '' then
     Exit('');
   // skip a leading delimiter run so "|NL| ..." / "┃NL┃ ..." yields "|NL|" / "┃NL┃"
-  Start := 1;
-  while (Start <= Length(S)) and IsStrongDelim(S[Start]) do
-    Inc(Start);
-  for I := Start to Length(S) do
-    if IsStrongDelim(S[I]) then
-      Exit(Copy(S, 1, I).Trim); // keep everything up to and incl. the delimiter
+  lStart := 1;
+  while (lStart <= Length(lName)) and IsStrongDelim(lName[lStart]) do
+    Inc(lStart);
+  for i := lStart to Length(lName) do
+    if IsStrongDelim(lName[i]) then
+      Exit(Copy(lName, 1, i).Trim); // keep everything up to and incl. the delimiter
   // no delimiter: accept only a short all-caps leading token (a country/lang code
   // like "NL", "UK"), never an ordinary first word ("The", "Het", ...)
-  I := Pos(' ', S);
-  if I > 1 then
-    Token := Copy(S, 1, I - 1)
+  i := Pos(' ', lName);
+  if i > 1 then
+    lToken := Copy(lName, 1, i - 1)
   else
-    Token := S;
-  if (Length(Token) <= cMaxBarePrefixLen) and (Token = UpperCase(Token)) and (Token <> '') then
-    Result := Token
+    lToken := lName;
+  if (Length(lToken) <= cMaxBarePrefixLen) and (lToken = UpperCase(lToken)) and (lToken <> '') then
+    Result := lToken
   else
     Result := '';
 end;
 
 function IdsToCsv(const AIds: TArray<Integer>): string;
 var
-  I: Integer;
+  i: Integer;
 begin
   Result := '';
-  for I := 0 to High(AIds) do
-    Result := Result + IfThen(I > 0, ',', '') + AIds[I].ToString;
+  for i := 0 to High(AIds) do
+    Result := Result + IfThen(i > 0, ',', '') + AIds[i].ToString;
 end;
 
 const
@@ -329,6 +360,8 @@ const
 { TSQLiteStore }
 
 constructor TSQLiteStore.Create(const ADatabasePath: string; AUseWal: Boolean);
+var
+  lQuery: TFDQuery;
 begin
   inherited Create;
   FConn := TFDConnection.Create(nil);
@@ -361,14 +394,18 @@ begin
     // open (and finalise) the pragma as a query: PRAGMA journal_mode returns a row,
     // and finalising it cleanly lets a WAL checkpoint run on close (an unfinalised
     // ExecSQL statement holds a read lock and leaves the file 'in use').
-    var Q := NewQuery;
-    try Q.Open('PRAGMA journal_mode=WAL'); finally Q.Free; end;
+    lQuery := NewQuery;
+    try
+      lQuery.Open('PRAGMA journal_mode=WAL');
+    finally
+      FreeAndNil(lQuery);
+    end;
   end;
 end;
 
 destructor TSQLiteStore.Destroy;
 begin
-  FConn.Free;
+  FreeAndNil(FConn);
   inherited;
 end;
 
@@ -407,13 +444,13 @@ procedure TSQLiteStore.Init;
   end;
 
 var
-  S: string;
-  Q: TFDQuery;
-  Ids: TArray<Integer>;
-  SrcId: Integer;
+  lSql: string;
+  lQuery: TFDQuery;
+  lIds: TArray<Integer>;
+  lSrcId: Integer;
 begin
-  for S in SCHEMA do
-    Exec(S);
+  for lSql in SCHEMA do
+    Exec(lSql);
 
   // migrate older DBs that predate the per-source filter columns
   AddColumn('sources', 'include_filters TEXT NOT NULL DEFAULT ''''');
@@ -488,20 +525,20 @@ begin
   RepairSourceTokens;
 
   // bring every source's hidden flags up to date (no-op when unchanged)
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT id FROM sources');
-    Ids := [];
-    while not Q.Eof do
+    lQuery.Open('SELECT id FROM sources');
+    lIds := [];
+    while not lQuery.Eof do
     begin
-      Ids := Ids + [Q.Fields[0].AsInteger];
-      Q.Next;
+      lIds := lIds + [lQuery.Fields[0].AsInteger];
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
-  for SrcId in Ids do
-    RecomputeHidden(SrcId, cRecomputeIfChanged);
+  for lSrcId in lIds do
+    RecomputeHidden(lSrcId, cRecomputeIfChanged);
 end;
 
 // Undo the quote-doubling of old StrArrayToCsv (see IPTV.Core.Utils) and drop
@@ -509,173 +546,175 @@ end;
 // multi-hundred-MB value); then VACUUM once if that freed a lot of space.
 procedure TSQLiteStore.RepairSourceTokens;
 var
-  Q: TFDQuery;
-  Ids: TArray<Integer>;
-  Id: Integer;
-  Inc, Exc, NewInc, NewExc: string;
-  Changed: Boolean;
+  lQuery: TFDQuery;
+  lIds: TArray<Integer>;
+  lId: Integer;
+  lInc, lExc, lNewInc, lNewExc: string;
+  lChanged: Boolean;
+  lCol: string;
 begin
-  Changed := False;
-  for var Col in TArray<string>.Create('include_filters', 'exclude_filters', 'strip_prefixes', 'strip_suffixes') do
+  lChanged := False;
+  for lCol in TArray<string>.Create('include_filters', 'exclude_filters', 'strip_prefixes', 'strip_suffixes') do
     if FConn.ExecSQL(Format('''
       UPDATE sources SET %0:s = replace(%0:s, '"', '')
       WHERE instr(%0:s, '"') > 0
-      ''', [Col])) > 0 then
-      Changed := True;
+      ''', [lCol])) > 0 then
+      lChanged := True;
 
-  Ids := [];
-  Q := NewQuery;
+  lIds := [];
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT id FROM sources');
-    while not Q.Eof do
+    lQuery.Open('SELECT id FROM sources');
+    while not lQuery.Eof do
     begin
-      Ids := Ids + [Q.Fields[0].AsInteger];
-      Q.Next;
+      lIds := lIds + [lQuery.Fields[0].AsInteger];
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
-  for Id in Ids do
+  for lId in lIds do
   begin
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
-      Q.Open('SELECT include_filters, exclude_filters FROM sources WHERE id = :id', [Id]);
-      Inc := Q.Fields[0].AsString;
-      Exc := Q.Fields[1].AsString;
+      lQuery.Open('SELECT include_filters, exclude_filters FROM sources WHERE id = :id', [lId]);
+      lInc := lQuery.Fields[0].AsString;
+      lExc := lQuery.Fields[1].AsString;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
-    NewInc := StrArrayToCsv(CleanFilterTokens(CsvToStrArray(Inc)));
-    NewExc := StrArrayToCsv(CleanFilterTokens(CsvToStrArray(Exc)));
-    if (NewInc <> Inc) or (NewExc <> Exc) then
+    lNewInc := StrArrayToCsv(CleanFilterTokens(CsvToStrArray(lInc)));
+    lNewExc := StrArrayToCsv(CleanFilterTokens(CsvToStrArray(lExc)));
+    if (lNewInc <> lInc) or (lNewExc <> lExc) then
     begin
       // explicit types: a plain open array binds strings as ANSI on Win32 (CP1252),
       // which turned Unicode tokens like the heavy bar into '?'
       FConn.ExecSQL('UPDATE sources SET include_filters = :i, exclude_filters = :e WHERE id = :id',
-        [NewInc, NewExc, Id], [ftWideString, ftWideString, ftInteger]);
-      Changed := True;
+        [lNewInc, lNewExc, lId], [ftWideString, ftWideString, ftInteger]);
+      lChanged := True;
     end;
   end;
 
-  if Changed then
+  if lChanged then
   begin
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
-      Q.Open('''
+      lQuery.Open('''
         SELECT (SELECT freelist_count FROM pragma_freelist_count) *
         (SELECT page_size FROM pragma_page_size)
         ''');
-      if Q.Fields[0].AsLargeInt > cVacuumAboveBytes then
+      if lQuery.Fields[0].AsLargeInt > cVacuumAboveBytes then
       begin
-        Q.Close;
+        lQuery.Close;
         Exec('VACUUM');
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
   end;
 end;
 
 procedure TSQLiteStore.RecomputeHidden(ASourceId: Integer; AForce: Boolean);
 var
-  Q: TFDQuery;
-  Src: TSourceConfig;
-  PF: TPreparedNameFilter;
-  Sig, Key, Table: string;
-  ToHide, ToShow: TList<Integer>;
-  WithVisible: THashSet<string>; // 'contenttype|category upstream id' having a visible stream
-  Passes: Boolean;
+  lQuery: TFDQuery;
+  lSource: TSourceConfig;
+  lFilter: TPreparedNameFilter;
+  lSig, lKey, lTable: string;
+  lToHide, lToShow: TList<Integer>;
+  lWithVisible: THashSet<string>; // 'contenttype|category upstream id' having a visible stream
+  lPasses: Boolean;
 
   procedure Apply(const AIds: TList<Integer>; AValue: Integer);
   var
-    I, J: Integer;
-    SB: TStringBuilder;
+    i, j: Integer;
+    lBuilder: TStringBuilder;
   begin
-    I := 0;
-    while I < AIds.Count do
+    i := 0;
+    while i < AIds.Count do
     begin
-      SB := TStringBuilder.Create;
+      lBuilder := TStringBuilder.Create;
       try
-        for J := I to Min(I + cHiddenUpdateChunk, AIds.Count) - 1 do
+        for j := i to Min(i + cHiddenUpdateChunk, AIds.Count) - 1 do
         begin
-          if J > I then
-            SB.Append(',');
-          SB.Append(AIds[J]);
+          if j > i then
+            lBuilder.Append(',');
+          lBuilder.Append(AIds[j]);
         end;
-        Exec(Format('UPDATE %s SET hidden=%d WHERE id IN (%s)', [Table, AValue, SB.ToString]));
+        Exec(Format('UPDATE %s SET hidden=%d WHERE id IN (%s)', [lTable, AValue, lBuilder.ToString]));
       finally
-        SB.Free;
+        FreeAndNil(lBuilder);
       end;
-      Inc(I, cHiddenUpdateChunk);
+      Inc(i, cHiddenUpdateChunk);
     end;
   end;
 
 begin
-  Src := nil;
-  Q := NewQuery;
+  lSource := nil;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT * FROM sources WHERE id=:id', [ASourceId]);
-    if Q.Eof then
+    lQuery.Open('SELECT * FROM sources WHERE id=:id', [ASourceId]);
+    if lQuery.Eof then
       Exit;
-    Src := ReadSource(Q);
-    Q.Close;
+    lSource := ReadSource(lQuery);
+    lQuery.Close;
     // 'v2': groups with a visible channel stay visible — bumping it recomputes
     // every source once after an upgrade
-    Sig := THashBobJenkins.GetHashString(cHiddenSigVersion + cHiddenSigVersionSep +
-      StrArrayToCsv(Src.IncludeFilters, cHiddenSigItemSep) + cHiddenSigListSep +
-      StrArrayToCsv(Src.ExcludeFilters, cHiddenSigItemSep));
-    Key := cStateHiddenSigPrefix + ASourceId.ToString;
-    if (not AForce) and (GetState(Key) = Sig) then
+    lSig := THashBobJenkins.GetHashString(cHiddenSigVersion + cHiddenSigVersionSep +
+      StrArrayToCsv(lSource.IncludeFilters, cHiddenSigItemSep) + cHiddenSigListSep +
+      StrArrayToCsv(lSource.ExcludeFilters, cHiddenSigItemSep));
+    lKey := cStateHiddenSigPrefix + ASourceId.ToString;
+    if (not AForce) and (GetState(lKey) = lSig) then
       Exit;
-    PF := PrepareNameFilter(Src.IncludeFilters, Src.ExcludeFilters);
-    ToHide := TList<Integer>.Create;
-    ToShow := TList<Integer>.Create;
-    WithVisible := THashSet<string>.Create;
+    lFilter := PrepareNameFilter(lSource.IncludeFilters, lSource.ExcludeFilters);
+    lToHide := TList<Integer>.Create;
+    lToShow := TList<Integer>.Create;
+    lWithVisible := THashSet<string>.Create;
     try
       FConn.StartTransaction;
       try
         // streams FIRST: a group stays visible when it holds a visible channel
         // (e.g. include "UFC" keeps the UFC channels AND their "WORLD SPORTS"
         // group), unless an exclude token matches the group name itself
-        for Table in TArray<string>.Create(cTableStreams, cTableCategories) do
+        for lTable in TArray<string>.Create(cTableStreams, cTableCategories) do
         begin
-          ToHide.Clear;
-          ToShow.Clear;
-          if Table = cTableCategories then
+          lToHide.Clear;
+          lToShow.Clear;
+          if lTable = cTableCategories then
           begin
-            Q.Open('''
+            lQuery.Open('''
               SELECT DISTINCT content_type, category_upstream_id FROM streams
               WHERE source_id=:s AND hidden=0
               ''', [ASourceId]);
-            while not Q.Eof do
+            while not lQuery.Eof do
             begin
-              WithVisible.Add(Q.Fields[0].AsString + cKeySep + Q.Fields[1].AsString);
-              Q.Next;
+              lWithVisible.Add(lQuery.Fields[0].AsString + cKeySep + lQuery.Fields[1].AsString);
+              lQuery.Next;
             end;
-            Q.Close;
-            Q.Open('SELECT id, name, hidden, content_type, upstream_id FROM categories WHERE source_id=:s', [ASourceId]);
+            lQuery.Close;
+            lQuery.Open('SELECT id, name, hidden, content_type, upstream_id FROM categories WHERE source_id=:s',
+              [ASourceId]);
           end
           else
-            Q.Open('SELECT id, name, hidden FROM streams WHERE source_id=:s', [ASourceId]);
-          while not Q.Eof do
+            lQuery.Open('SELECT id, name, hidden FROM streams WHERE source_id=:s', [ASourceId]);
+          while not lQuery.Eof do
           begin
-            Passes := PreparedNamePasses(PF, Q.Fields[1].AsWideString);
-            if (not Passes) and (Table = cTableCategories) and
-               WithVisible.Contains(Q.Fields[3].AsString + cKeySep + Q.Fields[4].AsString) and
-               not PreparedNameExcluded(PF, Q.Fields[1].AsWideString) then
-              Passes := True;
-            if Passes then
+            lPasses := PreparedNamePasses(lFilter, lQuery.Fields[1].AsWideString);
+            if (not lPasses) and (lTable = cTableCategories) and
+               lWithVisible.Contains(lQuery.Fields[3].AsString + cKeySep + lQuery.Fields[4].AsString) and
+               not PreparedNameExcluded(lFilter, lQuery.Fields[1].AsWideString) then
+              lPasses := True;
+            if lPasses then
             begin
-              if Q.Fields[2].AsInteger <> 0 then
-                ToShow.Add(Q.Fields[0].AsInteger);
+              if lQuery.Fields[2].AsInteger <> 0 then
+                lToShow.Add(lQuery.Fields[0].AsInteger);
             end
-            else if Q.Fields[2].AsInteger = 0 then
-              ToHide.Add(Q.Fields[0].AsInteger);
-            Q.Next;
+            else if lQuery.Fields[2].AsInteger = 0 then
+              lToHide.Add(lQuery.Fields[0].AsInteger);
+            lQuery.Next;
           end;
-          Q.Close;
-          Apply(ToHide, cHiddenOn);
-          Apply(ToShow, cHiddenOff);
+          lQuery.Close;
+          Apply(lToHide, cHiddenOn);
+          Apply(lToShow, cHiddenOff);
         end;
         FConn.Commit;
       except
@@ -683,14 +722,14 @@ begin
         raise;
       end;
     finally
-      ToHide.Free;
-      ToShow.Free;
-      WithVisible.Free;
+      FreeAndNil(lToHide);
+      FreeAndNil(lToShow);
+      FreeAndNil(lWithVisible);
     end;
-    SetState(Key, Sig);
+    SetState(lKey, lSig);
   finally
-    Q.Free;
-    Src.Free;
+    FreeAndNil(lQuery);
+    FreeAndNil(lSource);
   end;
 end;
 
@@ -701,186 +740,189 @@ procedure TSQLiteStore.MigrateM3uStreamIds;
 // credential-insensitive id (M3uStreamId) so current curation survives and the
 // NEXT refresh matches in place. Guarded by an app_state flag so it runs once.
 type
-  TSrcInfo = record Id: Integer; User, Pass: string; end;
+  TSrcInfo = record
+    Id: Integer;
+    User, Pass: string;
+  end;
 var
-  Q, Upd: TFDQuery;
-  Srcs: TList<TSrcInfo>;
-  Si, NewSi: TSrcInfo;
-  Ids: TList<Integer>;
-  NewIds: TList<string>;
-  K: Integer;
-  Nid: string;
+  lQuery, lUpdate: TFDQuery;
+  lSrcs: TList<TSrcInfo>;
+  lSi, lNewSi: TSrcInfo;
+  lIds: TList<Integer>;
+  lNewIds: TList<string>;
+  k: Integer;
+  lNid: string;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT value FROM app_state WHERE key=:k', [cStateM3uStreamIdV2]);
-    if not Q.Eof then
+    lQuery.Open('SELECT value FROM app_state WHERE key=:k', [cStateM3uStreamIdV2]);
+    if not lQuery.Eof then
       Exit; // already migrated
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 
-  Srcs := TList<TSrcInfo>.Create;
-  Ids := TList<Integer>.Create;
-  NewIds := TList<string>.Create;
+  lSrcs := TList<TSrcInfo>.Create;
+  lIds := TList<Integer>.Create;
+  lNewIds := TList<string>.Create;
   try
     // collect m3u sources first (don't keep a cursor open while updating)
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
-      Q.Open('SELECT id, username, password, url FROM sources WHERE kind=''m3u''');
-      while not Q.Eof do
+      lQuery.Open('SELECT id, username, password, url FROM sources WHERE kind=''m3u''');
+      while not lQuery.Eof do
       begin
-        NewSi.Id := Q.FieldByName('id').AsInteger;
-        NewSi.User := Q.FieldByName('username').AsString;
-        NewSi.Pass := Q.FieldByName('password').AsString;
-        if NewSi.User = '' then
-          NewSi.User := UrlQueryParam(Q.FieldByName('url').AsString, cUrlParamUsername);
-        if NewSi.Pass = '' then
-          NewSi.Pass := UrlQueryParam(Q.FieldByName('url').AsString, cUrlParamPassword);
-        Srcs.Add(NewSi);
-        Q.Next;
+        lNewSi.Id := lQuery.FieldByName('id').AsInteger;
+        lNewSi.User := lQuery.FieldByName('username').AsString;
+        lNewSi.Pass := lQuery.FieldByName('password').AsString;
+        if lNewSi.User = '' then
+          lNewSi.User := UrlQueryParam(lQuery.FieldByName('url').AsString, cUrlParamUsername);
+        if lNewSi.Pass = '' then
+          lNewSi.Pass := UrlQueryParam(lQuery.FieldByName('url').AsString, cUrlParamPassword);
+        lSrcs.Add(lNewSi);
+        lQuery.Next;
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
 
-    Upd := NewQuery;
+    lUpdate := NewQuery;
     try
-      Upd.SQL.Text := 'UPDATE streams SET upstream_id=:new WHERE id=:id';
-      for Si in Srcs do
+      lUpdate.SQL.Text := 'UPDATE streams SET upstream_id=:new WHERE id=:id';
+      for lSi in lSrcs do
       begin
         // collect this source's re-keyed rows, then close the cursor before updating
-        Ids.Clear;
-        NewIds.Clear;
-        Q := NewQuery;
+        lIds.Clear;
+        lNewIds.Clear;
+        lQuery := NewQuery;
         try
-          Q.Open('SELECT id, upstream_url, upstream_id FROM streams WHERE source_id=:s', [Si.Id]);
-          while not Q.Eof do
+          lQuery.Open('SELECT id, upstream_url, upstream_id FROM streams WHERE source_id=:s', [lSi.Id]);
+          while not lQuery.Eof do
           begin
-            Nid := M3uStreamId(Q.FieldByName('upstream_url').AsString, Si.User, Si.Pass);
-            if Nid <> Q.FieldByName('upstream_id').AsString then
+            lNid := M3uStreamId(lQuery.FieldByName('upstream_url').AsString, lSi.User, lSi.Pass);
+            if lNid <> lQuery.FieldByName('upstream_id').AsString then
             begin
-              Ids.Add(Q.FieldByName('id').AsInteger);
-              NewIds.Add(Nid);
+              lIds.Add(lQuery.FieldByName('id').AsInteger);
+              lNewIds.Add(lNid);
             end;
-            Q.Next;
+            lQuery.Next;
           end;
         finally
-          Q.Free;
+          FreeAndNil(lQuery);
         end;
 
-        for K := 0 to Ids.Count - 1 do
+        for k := 0 to lIds.Count - 1 do
         try
-          Upd.ParamByName('new').AsWideString := NewIds[K];
-          Upd.ParamByName('id').AsInteger := Ids[K];
-          Upd.ExecSQL;
+          lUpdate.ParamByName('new').AsWideString := lNewIds[k];
+          lUpdate.ParamByName('id').AsInteger := lIds[k];
+          lUpdate.ExecSQL;
         except
           // a UNIQUE(source_id,content_type,upstream_id) clash (two rows that differ
           // only by credentials) — leave this row's old id; harmless and very rare.
         end;
       end;
     finally
-      Upd.Free;
+      FreeAndNil(lUpdate);
     end;
 
     Exec('INSERT OR REPLACE INTO app_state(key,value) VALUES(''' + cStateM3uStreamIdV2 + ''',''1'')');
   finally
-    Srcs.Free;
-    Ids.Free;
-    NewIds.Free;
+    FreeAndNil(lSrcs);
+    FreeAndNil(lIds);
+    FreeAndNil(lNewIds);
   end;
 end;
 
 // ── Sources ──────────────────────────────────────────────────────────────
 
-function TSQLiteStore.ReadSource(Q: TFDQuery): TSourceConfig;
+function TSQLiteStore.ReadSource(AQuery: TFDQuery): TSourceConfig;
 begin
   Result := TSourceConfig.Create;
-  Result.Id := Q.FieldByName('id').AsInteger;
-  Result.Name := Q.FieldByName('name').AsString;
-  Result.Kind := SourceKindFromString(Q.FieldByName('kind').AsString);
-  Result.Url := Q.FieldByName('url').AsString;
-  Result.Username := Q.FieldByName('username').AsString;
-  Result.Password := Q.FieldByName('password').AsString;
-  Result.EpgUrl := Q.FieldByName('epg_url').AsString;
-  Result.UserAgent := Q.FieldByName('user_agent').AsString;
-  Result.Referer := Q.FieldByName('referer').AsString;
-  Result.ForceHls := Q.FieldByName('force_hls').AsInteger <> 0;
-  Result.Enabled := Q.FieldByName('enabled').AsInteger <> 0;
-  Result.ContentTypes := StrToContentTypes(Q.FieldByName('content_types').AsString);
-  Result.IncludeFilters := CsvToStrArray(Q.FieldByName('include_filters').AsString);
-  Result.ExcludeFilters := CsvToStrArray(Q.FieldByName('exclude_filters').AsString);
+  Result.Id := AQuery.FieldByName('id').AsInteger;
+  Result.Name := AQuery.FieldByName('name').AsString;
+  Result.Kind := SourceKindFromString(AQuery.FieldByName('kind').AsString);
+  Result.Url := AQuery.FieldByName('url').AsString;
+  Result.Username := AQuery.FieldByName('username').AsString;
+  Result.Password := AQuery.FieldByName('password').AsString;
+  Result.EpgUrl := AQuery.FieldByName('epg_url').AsString;
+  Result.UserAgent := AQuery.FieldByName('user_agent').AsString;
+  Result.Referer := AQuery.FieldByName('referer').AsString;
+  Result.ForceHls := AQuery.FieldByName('force_hls').AsInteger <> 0;
+  Result.Enabled := AQuery.FieldByName('enabled').AsInteger <> 0;
+  Result.ContentTypes := StrToContentTypes(AQuery.FieldByName('content_types').AsString);
+  Result.IncludeFilters := CsvToStrArray(AQuery.FieldByName('include_filters').AsString);
+  Result.ExcludeFilters := CsvToStrArray(AQuery.FieldByName('exclude_filters').AsString);
   // strip prefixes use ';' so a token may itself contain spaces/commas/pipes
-  Result.StripPrefixes := CsvToStrArray(Q.FieldByName('strip_prefixes').AsString, cStripTokenSep);
-  Result.StripSuffixes := CsvToStrArray(Q.FieldByName('strip_suffixes').AsString, cStripTokenSep);
-  Result.LastRefreshUtc := IsoUtcToDateTime(Q.FieldByName('last_refresh_utc').AsString);
-  Result.AccountStatus := Q.FieldByName('account_status').AsString;
-  Result.ExpiresUtc := IsoUtcToDateTime(Q.FieldByName('expires_utc').AsString);
-  Result.MaxConnections := Q.FieldByName('max_connections').AsInteger;
-  Result.TzOffsetMin := Q.FieldByName('tz_offset_min').AsInteger;
-  Result.PreferOwnEpg := Q.FieldByName('prefer_own_epg').AsInteger <> 0;
+  Result.StripPrefixes := CsvToStrArray(AQuery.FieldByName('strip_prefixes').AsString, cStripTokenSep);
+  Result.StripSuffixes := CsvToStrArray(AQuery.FieldByName('strip_suffixes').AsString, cStripTokenSep);
+  Result.LastRefreshUtc := IsoUtcToDateTime(AQuery.FieldByName('last_refresh_utc').AsString);
+  Result.AccountStatus := AQuery.FieldByName('account_status').AsString;
+  Result.ExpiresUtc := IsoUtcToDateTime(AQuery.FieldByName('expires_utc').AsString);
+  Result.MaxConnections := AQuery.FieldByName('max_connections').AsInteger;
+  Result.TzOffsetMin := AQuery.FieldByName('tz_offset_min').AsInteger;
+  Result.PreferOwnEpg := AQuery.FieldByName('prefer_own_epg').AsInteger <> 0;
 end;
 
 function TSQLiteStore.LoadSources: TObjectList<TSourceConfig>;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   Result := TObjectList<TSourceConfig>.Create(True);
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT * FROM sources ORDER BY name COLLATE NOCASE');
-    while not Q.Eof do
+    lQuery.Open('SELECT * FROM sources ORDER BY name COLLATE NOCASE');
+    while not lQuery.Eof do
     begin
-      Result.Add(ReadSource(Q));
-      Q.Next;
+      Result.Add(ReadSource(lQuery));
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 function TSQLiteStore.SaveSource(const ASource: TSourceConfig): Integer;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     if ASource.Id = 0 then
-      Q.SQL.Text :=
+      lQuery.SQL.Text :=
         '''
         INSERT INTO sources(name,kind,url,username,password,epg_url,user_agent,referer,force_hls,enabled,content_types,include_filters,exclude_filters,strip_prefixes,strip_suffixes,last_refresh_utc,account_status,expires_utc,max_connections,tz_offset_min,prefer_own_epg)
         VALUES(:name,:kind,:url,:username,:password,:epg_url,:user_agent,:referer,:force_hls,:enabled,:content_types,:include_filters,:exclude_filters,:strip_prefixes,:strip_suffixes,:last_refresh_utc,:account_status,:expires_utc,:max_connections,:tz_offset_min,:prefer_own_epg)
         '''
     else
     begin
-      Q.SQL.Text :=
+      lQuery.SQL.Text :=
         '''
         UPDATE sources SET name=:name,kind=:kind,url=:url,username=:username,password=:password,epg_url=:epg_url,user_agent=:user_agent,referer=:referer,force_hls=:force_hls,enabled=:enabled,content_types=:content_types,include_filters=:include_filters,exclude_filters=:exclude_filters,strip_prefixes=:strip_prefixes,strip_suffixes=:strip_suffixes,last_refresh_utc=:last_refresh_utc,account_status=:account_status,expires_utc=:expires_utc,max_connections=:max_connections,tz_offset_min=:tz_offset_min,prefer_own_epg=:prefer_own_epg WHERE id=:id
         ''';
-      Q.ParamByName('id').AsInteger := ASource.Id;
+      lQuery.ParamByName('id').AsInteger := ASource.Id;
     end;
-    Q.ParamByName('name').AsWideString := ASource.Name;
-    Q.ParamByName('kind').AsWideString := SourceKindNames[ASource.Kind];
-    Q.ParamByName('url').AsWideString := ASource.Url;
-    Q.ParamByName('username').AsWideString := ASource.Username;
-    Q.ParamByName('password').AsWideString := ASource.Password;
-    Q.ParamByName('epg_url').AsWideString := ASource.EpgUrl;
-    Q.ParamByName('user_agent').AsWideString := ASource.UserAgent;
-    Q.ParamByName('referer').AsWideString := ASource.Referer;
-    Q.ParamByName('force_hls').AsInteger := Ord(ASource.ForceHls);
-    Q.ParamByName('enabled').AsInteger := Ord(ASource.Enabled);
-    Q.ParamByName('content_types').AsWideString := ContentTypesToStr(ASource.ContentTypes);
-    Q.ParamByName('include_filters').AsWideString := StrArrayToCsv(ASource.IncludeFilters);
-    Q.ParamByName('exclude_filters').AsWideString := StrArrayToCsv(ASource.ExcludeFilters);
-    Q.ParamByName('strip_prefixes').AsWideString := StrArrayToCsv(ASource.StripPrefixes, cStripTokenSep);
-    Q.ParamByName('strip_suffixes').AsWideString := StrArrayToCsv(ASource.StripSuffixes, cStripTokenSep);
-    Q.ParamByName('last_refresh_utc').AsWideString := DateTimeToIsoUtc(ASource.LastRefreshUtc);
-    Q.ParamByName('account_status').AsWideString := ASource.AccountStatus;
-    Q.ParamByName('expires_utc').AsWideString := DateTimeToIsoUtc(ASource.ExpiresUtc);
-    Q.ParamByName('max_connections').AsInteger := ASource.MaxConnections;
-    Q.ParamByName('tz_offset_min').AsInteger := ASource.TzOffsetMin;
-    Q.ParamByName('prefer_own_epg').AsInteger := Ord(ASource.PreferOwnEpg);
-    Q.ExecSQL;
+    lQuery.ParamByName('name').AsWideString := ASource.Name;
+    lQuery.ParamByName('kind').AsWideString := SourceKindNames[ASource.Kind];
+    lQuery.ParamByName('url').AsWideString := ASource.Url;
+    lQuery.ParamByName('username').AsWideString := ASource.Username;
+    lQuery.ParamByName('password').AsWideString := ASource.Password;
+    lQuery.ParamByName('epg_url').AsWideString := ASource.EpgUrl;
+    lQuery.ParamByName('user_agent').AsWideString := ASource.UserAgent;
+    lQuery.ParamByName('referer').AsWideString := ASource.Referer;
+    lQuery.ParamByName('force_hls').AsInteger := Ord(ASource.ForceHls);
+    lQuery.ParamByName('enabled').AsInteger := Ord(ASource.Enabled);
+    lQuery.ParamByName('content_types').AsWideString := ContentTypesToStr(ASource.ContentTypes);
+    lQuery.ParamByName('include_filters').AsWideString := StrArrayToCsv(ASource.IncludeFilters);
+    lQuery.ParamByName('exclude_filters').AsWideString := StrArrayToCsv(ASource.ExcludeFilters);
+    lQuery.ParamByName('strip_prefixes').AsWideString := StrArrayToCsv(ASource.StripPrefixes, cStripTokenSep);
+    lQuery.ParamByName('strip_suffixes').AsWideString := StrArrayToCsv(ASource.StripSuffixes, cStripTokenSep);
+    lQuery.ParamByName('last_refresh_utc').AsWideString := DateTimeToIsoUtc(ASource.LastRefreshUtc);
+    lQuery.ParamByName('account_status').AsWideString := ASource.AccountStatus;
+    lQuery.ParamByName('expires_utc').AsWideString := DateTimeToIsoUtc(ASource.ExpiresUtc);
+    lQuery.ParamByName('max_connections').AsInteger := ASource.MaxConnections;
+    lQuery.ParamByName('tz_offset_min').AsInteger := ASource.TzOffsetMin;
+    lQuery.ParamByName('prefer_own_epg').AsInteger := Ord(ASource.PreferOwnEpg);
+    lQuery.ExecSQL;
 
     if ASource.Id = 0 then
       Result := FConn.GetLastAutoGenValue('')
@@ -888,7 +930,7 @@ begin
       Result := ASource.Id;
     ASource.Id := Result;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
   RecomputeHidden(Result, cRecomputeIfChanged); // filters may have changed (no-op otherwise)
 end;
@@ -929,25 +971,25 @@ end;
 
 procedure TSQLiteStore.MergeSnapshot(const ASnapshot: TSourceSnapshot);
 var
-  Cat: TCategory;
-  S: TStreamItem;
-  Now_, Key, lOldCt: string;
-  CatKeys, StrKeys, lSnapKeys: TDictionary<string, Boolean>;
+  lCat: TCategory;
+  lStream: TStreamItem;
+  lNow, lKey, lOldCt: string;
+  lCatKeys, lStrKeys, lSnapKeys: TDictionary<string, Boolean>;
   lTypeByUid: TDictionary<string, string>; // upstream id -> stored content type
-  LoadQ, CatIns, CatUpd, StrIns, StrUpd, lReKey: TFDQuery;
+  lLoadQuery, lCatIns, lCatUpd, lStrIns, lStrUpd, lReKey: TFDQuery;
   lIsM3U: Boolean;
 
   function LoadKeys(const ATable: string): TDictionary<string, Boolean>;
   begin
     Result := TDictionary<string, Boolean>.Create;
-    LoadQ.Close;
-    LoadQ.Open('SELECT content_type, upstream_id FROM ' + ATable + ' WHERE source_id=:s',
+    lLoadQuery.Close;
+    lLoadQuery.Open('SELECT content_type, upstream_id FROM ' + ATable + ' WHERE source_id=:s',
       [ASnapshot.SourceId]);
-    while not LoadQ.Eof do
+    while not lLoadQuery.Eof do
     begin
-      Result.AddOrSetValue(LoadQ.FieldByName('content_type').AsString + cKeySep +
-        LoadQ.FieldByName('upstream_id').AsString, True);
-      LoadQ.Next;
+      Result.AddOrSetValue(lLoadQuery.FieldByName('content_type').AsString + cKeySep +
+        lLoadQuery.FieldByName('upstream_id').AsString, True);
+      lLoadQuery.Next;
     end;
   end;
 
@@ -960,65 +1002,72 @@ var
   end;
 
 begin
-  Now_ := DateTimeToIsoUtc(NowUtc);
-  LoadQ := NewQuery; CatIns := NewQuery; CatUpd := NewQuery; StrIns := NewQuery; StrUpd := NewQuery;
+  lNow := DateTimeToIsoUtc(NowUtc);
+  lLoadQuery := NewQuery;
+  lCatIns := NewQuery;
+  lCatUpd := NewQuery;
+  lStrIns := NewQuery;
+  lStrUpd := NewQuery;
   lReKey := NewQuery;
-  CatKeys := nil; StrKeys := nil; lSnapKeys := nil; lTypeByUid := nil;
+  lCatKeys := nil;
+  lStrKeys := nil;
+  lSnapKeys := nil;
+  lTypeByUid := nil;
   try
     // one read each instead of a SELECT per row; lets us decide insert vs update
     // (and so flag is_new) in memory.
-    CatKeys := LoadKeys(cTableCategories);
-    StrKeys := LoadKeys(cTableStreams);
+    lCatKeys := LoadKeys(cTableCategories);
+    lStrKeys := LoadKeys(cTableStreams);
     lTypeByUid := TDictionary<string, string>.Create;
-    for Key in StrKeys.Keys do
-      lTypeByUid.AddOrSetValue(Key.Substring(Key.IndexOf(cKeySep) + 1), Key.Substring(0, Key.IndexOf(cKeySep)));
+    for lKey in lStrKeys.Keys do
+      lTypeByUid.AddOrSetValue(lKey.Substring(lKey.IndexOf(cKeySep) + 1), lKey.Substring(0, lKey.IndexOf(cKeySep)));
     lSnapKeys := TDictionary<string, Boolean>.Create;
-    for S in ASnapshot.Streams do
-      lSnapKeys.AddOrSetValue(ContentTypeNames[S.ContentType] + cKeySep + S.UpstreamId, True);
-    LoadQ.Close;
-    LoadQ.Open('SELECT kind FROM sources WHERE id=:s', [ASnapshot.SourceId]);
-    lIsM3U := (not LoadQ.IsEmpty) and SameText(LoadQ.Fields[0].AsString, SourceKindNames[skM3U]);
-    LoadQ.Close;
+    for lStream in ASnapshot.Streams do
+      lSnapKeys.AddOrSetValue(ContentTypeNames[lStream.ContentType] + cKeySep + lStream.UpstreamId, True);
+    lLoadQuery.Close;
+    lLoadQuery.Open('SELECT kind FROM sources WHERE id=:s', [ASnapshot.SourceId]);
+    lIsM3U := (not lLoadQuery.IsEmpty) and SameText(lLoadQuery.Fields[0].AsString, SourceKindNames[skM3U]);
+    lLoadQuery.Close;
 
     // prepared once, reused per row (no SQL re-parse per item)
-    CatIns.SQL.Text := 'INSERT INTO categories(source_id,upstream_id,content_type,name,is_new) VALUES(:s,:u,:c,:n,1)';
-    CatUpd.SQL.Text := 'UPDATE categories SET name=:n WHERE source_id=:s AND content_type=:c AND upstream_id=:u';
-    StrIns.SQL.Text := '''
+    lCatIns.SQL.Text := 'INSERT INTO categories(source_id,upstream_id,content_type,name,is_new) VALUES(:s,:u,:c,:n,1)';
+    lCatUpd.SQL.Text := 'UPDATE categories SET name=:n WHERE source_id=:s AND content_type=:c AND upstream_id=:u';
+    lStrIns.SQL.Text := '''
       INSERT INTO streams(source_id,upstream_id,content_type,name,logo,group_title,category_upstream_id,tvg_id,tvg_name,upstream_url,content_hash,archive_days,is_new,first_seen_utc,last_seen_utc)
       VALUES(:s,:u,:c,:n,:logo,:grp,:cat,:tvg,:tvgn,:url,:hash,:arch,1,:now,:now)
       ''';
-    StrUpd.SQL.Text := '''
+    lStrUpd.SQL.Text := '''
       UPDATE streams SET name=:n,logo=:logo,group_title=:grp,category_upstream_id=:cat,tvg_id=:tvg,tvg_name=:tvgn,upstream_url=:url,content_hash=:hash,archive_days=:arch,last_seen_utc=:now
       WHERE source_id=:s AND content_type=:c AND upstream_id=:u
       ''';
 
     FConn.StartTransaction;
     try
-      for Cat in ASnapshot.Categories do
+      for lCat in ASnapshot.Categories do
       begin
-        Key := ContentTypeNames[Cat.ContentType] + cKeySep + Cat.UpstreamId;
-        if CatKeys.ContainsKey(Key) then
+        lKey := ContentTypeNames[lCat.ContentType] + cKeySep + lCat.UpstreamId;
+        if lCatKeys.ContainsKey(lKey) then
         begin
-          CatUpd.ParamByName('n').AsWideString := Cat.Name;
-          CatUpd.ParamByName('s').AsInteger := ASnapshot.SourceId;
-          CatUpd.ParamByName('c').AsWideString := ContentTypeNames[Cat.ContentType];
-          CatUpd.ParamByName('u').AsWideString := Cat.UpstreamId;
-          CatUpd.ExecSQL;
+          lCatUpd.ParamByName('n').AsWideString := lCat.Name;
+          lCatUpd.ParamByName('s').AsInteger := ASnapshot.SourceId;
+          lCatUpd.ParamByName('c').AsWideString := ContentTypeNames[lCat.ContentType];
+          lCatUpd.ParamByName('u').AsWideString := lCat.UpstreamId;
+          lCatUpd.ExecSQL;
         end
         else
         begin
-          CatIns.ParamByName('s').AsInteger := ASnapshot.SourceId;
-          CatIns.ParamByName('u').AsWideString := Cat.UpstreamId;
-          CatIns.ParamByName('c').AsWideString := ContentTypeNames[Cat.ContentType];
-          CatIns.ParamByName('n').AsWideString := Cat.Name;
-          CatIns.ExecSQL;
-          CatKeys.AddOrSetValue(Key, True);
+          lCatIns.ParamByName('s').AsInteger := ASnapshot.SourceId;
+          lCatIns.ParamByName('u').AsWideString := lCat.UpstreamId;
+          lCatIns.ParamByName('c').AsWideString := ContentTypeNames[lCat.ContentType];
+          lCatIns.ParamByName('n').AsWideString := lCat.Name;
+          lCatIns.ExecSQL;
+          lCatKeys.AddOrSetValue(lKey, True);
         end;
       end;
 
-      for S in ASnapshot.Streams do
+      for lStream in ASnapshot.Streams do
       begin
-        Key := ContentTypeNames[S.ContentType] + cKeySep + S.UpstreamId;
+        lKey := ContentTypeNames[lStream.ContentType] + cKeySep + lStream.UpstreamId;
         // The same upstream item now arrives as another content type (the reader's
         // classification changed, e.g. Xtream radio_streams live -> radio, or an M3U
         // "NL| FILM" group movie -> live): re-key the stored row in place, so the
@@ -1026,61 +1075,62 @@ begin
         // type is gone from this snapshot, and only where the upstream id names the
         // same thing across types (M3U: URL-derived; Xtream: live <-> radio share
         // the live stream ids - a VOD id 123 is not live channel 123).
-        if (not StrKeys.ContainsKey(Key)) and lTypeByUid.TryGetValue(S.UpstreamId, lOldCt) and
-           (lOldCt <> ContentTypeNames[S.ContentType]) and
-           not lSnapKeys.ContainsKey(lOldCt + cKeySep + S.UpstreamId) and
-           (lIsM3U or (MatchText(lOldCt, [ContentTypeNames[ctLive], ContentTypeNames[ctRadio]]) and (S.ContentType in [ctLive, ctRadio]))) then
+        if (not lStrKeys.ContainsKey(lKey)) and lTypeByUid.TryGetValue(lStream.UpstreamId, lOldCt) and
+           (lOldCt <> ContentTypeNames[lStream.ContentType]) and
+           not lSnapKeys.ContainsKey(lOldCt + cKeySep + lStream.UpstreamId) and
+           (lIsM3U or (MatchText(lOldCt, [ContentTypeNames[ctLive], ContentTypeNames[ctRadio]]) and
+             (lStream.ContentType in [ctLive, ctRadio]))) then
         begin
           lReKey.SQL.Text := '''
             UPDATE list_items SET content_type = :n
             WHERE stream_item_id IN (SELECT id FROM streams WHERE source_id = :s AND content_type = :o AND upstream_id = :u)
             ''';
-          BindReKey(ContentTypeNames[S.ContentType], lOldCt, S.UpstreamId);
+          BindReKey(ContentTypeNames[lStream.ContentType], lOldCt, lStream.UpstreamId);
           lReKey.ExecSQL;
           lReKey.SQL.Text := '''
             UPDATE streams SET content_type = :n
             WHERE source_id = :s AND content_type = :o AND upstream_id = :u
             ''';
-          BindReKey(ContentTypeNames[S.ContentType], lOldCt, S.UpstreamId);
+          BindReKey(ContentTypeNames[lStream.ContentType], lOldCt, lStream.UpstreamId);
           lReKey.ExecSQL;
-          StrKeys.Remove(lOldCt + cKeySep + S.UpstreamId);
-          StrKeys.AddOrSetValue(Key, True);
-          lTypeByUid.AddOrSetValue(S.UpstreamId, ContentTypeNames[S.ContentType]);
+          lStrKeys.Remove(lOldCt + cKeySep + lStream.UpstreamId);
+          lStrKeys.AddOrSetValue(lKey, True);
+          lTypeByUid.AddOrSetValue(lStream.UpstreamId, ContentTypeNames[lStream.ContentType]);
         end;
-        if StrKeys.ContainsKey(Key) then
+        if lStrKeys.ContainsKey(lKey) then
         begin
-          StrUpd.ParamByName('n').AsWideString := S.Name;
-          StrUpd.ParamByName('logo').AsWideString := S.Logo;
-          StrUpd.ParamByName('grp').AsWideString := S.GroupTitle;
-          StrUpd.ParamByName('cat').AsWideString := S.CategoryUpstreamId;
-          StrUpd.ParamByName('tvg').AsWideString := S.TvgId;
-          StrUpd.ParamByName('tvgn').AsWideString := S.TvgName;
-          StrUpd.ParamByName('url').AsWideString := S.UpstreamUrl;
-          StrUpd.ParamByName('hash').AsWideString := StreamHash(S);
-          StrUpd.ParamByName('arch').AsInteger := S.ArchiveDays;
-          StrUpd.ParamByName('now').AsWideString := Now_;
-          StrUpd.ParamByName('s').AsInteger := ASnapshot.SourceId;
-          StrUpd.ParamByName('c').AsWideString := ContentTypeNames[S.ContentType];
-          StrUpd.ParamByName('u').AsWideString := S.UpstreamId;
-          StrUpd.ExecSQL;
+          lStrUpd.ParamByName('n').AsWideString := lStream.Name;
+          lStrUpd.ParamByName('logo').AsWideString := lStream.Logo;
+          lStrUpd.ParamByName('grp').AsWideString := lStream.GroupTitle;
+          lStrUpd.ParamByName('cat').AsWideString := lStream.CategoryUpstreamId;
+          lStrUpd.ParamByName('tvg').AsWideString := lStream.TvgId;
+          lStrUpd.ParamByName('tvgn').AsWideString := lStream.TvgName;
+          lStrUpd.ParamByName('url').AsWideString := lStream.UpstreamUrl;
+          lStrUpd.ParamByName('hash').AsWideString := StreamHash(lStream);
+          lStrUpd.ParamByName('arch').AsInteger := lStream.ArchiveDays;
+          lStrUpd.ParamByName('now').AsWideString := lNow;
+          lStrUpd.ParamByName('s').AsInteger := ASnapshot.SourceId;
+          lStrUpd.ParamByName('c').AsWideString := ContentTypeNames[lStream.ContentType];
+          lStrUpd.ParamByName('u').AsWideString := lStream.UpstreamId;
+          lStrUpd.ExecSQL;
         end
         else
         begin
-          StrIns.ParamByName('s').AsInteger := ASnapshot.SourceId;
-          StrIns.ParamByName('u').AsWideString := S.UpstreamId;
-          StrIns.ParamByName('c').AsWideString := ContentTypeNames[S.ContentType];
-          StrIns.ParamByName('n').AsWideString := S.Name;
-          StrIns.ParamByName('logo').AsWideString := S.Logo;
-          StrIns.ParamByName('grp').AsWideString := S.GroupTitle;
-          StrIns.ParamByName('cat').AsWideString := S.CategoryUpstreamId;
-          StrIns.ParamByName('tvg').AsWideString := S.TvgId;
-          StrIns.ParamByName('tvgn').AsWideString := S.TvgName;
-          StrIns.ParamByName('url').AsWideString := S.UpstreamUrl;
-          StrIns.ParamByName('hash').AsWideString := StreamHash(S);
-          StrIns.ParamByName('arch').AsInteger := S.ArchiveDays;
-          StrIns.ParamByName('now').AsWideString := Now_;
-          StrIns.ExecSQL;
-          StrKeys.AddOrSetValue(Key, True); // guard against duplicates within one snapshot
+          lStrIns.ParamByName('s').AsInteger := ASnapshot.SourceId;
+          lStrIns.ParamByName('u').AsWideString := lStream.UpstreamId;
+          lStrIns.ParamByName('c').AsWideString := ContentTypeNames[lStream.ContentType];
+          lStrIns.ParamByName('n').AsWideString := lStream.Name;
+          lStrIns.ParamByName('logo').AsWideString := lStream.Logo;
+          lStrIns.ParamByName('grp').AsWideString := lStream.GroupTitle;
+          lStrIns.ParamByName('cat').AsWideString := lStream.CategoryUpstreamId;
+          lStrIns.ParamByName('tvg').AsWideString := lStream.TvgId;
+          lStrIns.ParamByName('tvgn').AsWideString := lStream.TvgName;
+          lStrIns.ParamByName('url').AsWideString := lStream.UpstreamUrl;
+          lStrIns.ParamByName('hash').AsWideString := StreamHash(lStream);
+          lStrIns.ParamByName('arch').AsInteger := lStream.ArchiveDays;
+          lStrIns.ParamByName('now').AsWideString := lNow;
+          lStrIns.ExecSQL;
+          lStrKeys.AddOrSetValue(lKey, True); // guard against duplicates within one snapshot
         end;
       end;
       FConn.Commit;
@@ -1089,47 +1139,55 @@ begin
       raise;
     end;
   finally
-    CatKeys.Free; StrKeys.Free; lSnapKeys.Free; lTypeByUid.Free;
-    lReKey.Free; StrUpd.Free; StrIns.Free; CatUpd.Free; CatIns.Free; LoadQ.Free;
+    FreeAndNil(lCatKeys);
+    FreeAndNil(lStrKeys);
+    FreeAndNil(lSnapKeys);
+    FreeAndNil(lTypeByUid);
+    FreeAndNil(lReKey);
+    FreeAndNil(lStrUpd);
+    FreeAndNil(lStrIns);
+    FreeAndNil(lCatUpd);
+    FreeAndNil(lCatIns);
+    FreeAndNil(lLoadQuery);
   end;
   // new rows arrive with hidden=0: re-apply this source's filters to them
   RecomputeHidden(ASnapshot.SourceId, cRecomputeForce);
 end;
 
-function TSQLiteStore.ReadCategory(Q: TFDQuery): TCategory;
+function TSQLiteStore.ReadCategory(AQuery: TFDQuery): TCategory;
 begin
   Result := TCategory.Create;
-  Result.Id := Q.FieldByName('id').AsInteger;
-  Result.SourceId := Q.FieldByName('source_id').AsInteger;
-  Result.UpstreamId := Q.FieldByName('upstream_id').AsString;
-  Result.ContentType := ContentTypeFromString(Q.FieldByName('content_type').AsString);
-  Result.Name := Q.FieldByName('name').AsString;
-  Result.IsNew := Q.FieldByName('is_new').AsInteger <> 0;
-  Result.SeenAtUtc := IsoUtcToDateTime(Q.FieldByName('seen_at_utc').AsString);
+  Result.Id := AQuery.FieldByName('id').AsInteger;
+  Result.SourceId := AQuery.FieldByName('source_id').AsInteger;
+  Result.UpstreamId := AQuery.FieldByName('upstream_id').AsString;
+  Result.ContentType := ContentTypeFromString(AQuery.FieldByName('content_type').AsString);
+  Result.Name := AQuery.FieldByName('name').AsString;
+  Result.IsNew := AQuery.FieldByName('is_new').AsInteger <> 0;
+  Result.SeenAtUtc := IsoUtcToDateTime(AQuery.FieldByName('seen_at_utc').AsString);
 end;
 
-function TSQLiteStore.ReadStream(Q: TFDQuery): TStreamItem;
+function TSQLiteStore.ReadStream(AQuery: TFDQuery): TStreamItem;
 begin
   Result := TStreamItem.Create;
-  Result.Id := Q.FieldByName('id').AsInteger;
-  Result.SourceId := Q.FieldByName('source_id').AsInteger;
-  Result.UpstreamId := Q.FieldByName('upstream_id').AsString;
-  Result.ContentType := ContentTypeFromString(Q.FieldByName('content_type').AsString);
-  Result.Name := Q.FieldByName('name').AsWideString;
-  Result.Logo := Q.FieldByName('logo').AsWideString;
-  Result.GroupTitle := Q.FieldByName('group_title').AsWideString;
-  Result.CategoryUpstreamId := Q.FieldByName('category_upstream_id').AsString;
-  Result.TvgId := Q.FieldByName('tvg_id').AsString;
-  Result.TvgName := Q.FieldByName('tvg_name').AsString;
-  Result.UpstreamUrl := Q.FieldByName('upstream_url').AsString;
-  Result.ContentHash := Q.FieldByName('content_hash').AsString;
+  Result.Id := AQuery.FieldByName('id').AsInteger;
+  Result.SourceId := AQuery.FieldByName('source_id').AsInteger;
+  Result.UpstreamId := AQuery.FieldByName('upstream_id').AsString;
+  Result.ContentType := ContentTypeFromString(AQuery.FieldByName('content_type').AsString);
+  Result.Name := AQuery.FieldByName('name').AsWideString;
+  Result.Logo := AQuery.FieldByName('logo').AsWideString;
+  Result.GroupTitle := AQuery.FieldByName('group_title').AsWideString;
+  Result.CategoryUpstreamId := AQuery.FieldByName('category_upstream_id').AsString;
+  Result.TvgId := AQuery.FieldByName('tvg_id').AsString;
+  Result.TvgName := AQuery.FieldByName('tvg_name').AsString;
+  Result.UpstreamUrl := AQuery.FieldByName('upstream_url').AsString;
+  Result.ContentHash := AQuery.FieldByName('content_hash').AsString;
   // FindField: a few callers select an explicit column list
-  if Q.FindField('archive_days') <> nil then
-    Result.ArchiveDays := Q.FindField('archive_days').AsInteger;
-  Result.IsNew := Q.FieldByName('is_new').AsInteger <> 0;
-  Result.SeenAtUtc := IsoUtcToDateTime(Q.FieldByName('seen_at_utc').AsString);
-  Result.FirstSeenUtc := IsoUtcToDateTime(Q.FieldByName('first_seen_utc').AsString);
-  Result.LastSeenUtc := IsoUtcToDateTime(Q.FieldByName('last_seen_utc').AsString);
+  if AQuery.FindField('archive_days') <> nil then
+    Result.ArchiveDays := AQuery.FindField('archive_days').AsInteger;
+  Result.IsNew := AQuery.FieldByName('is_new').AsInteger <> 0;
+  Result.SeenAtUtc := IsoUtcToDateTime(AQuery.FieldByName('seen_at_utc').AsString);
+  Result.FirstSeenUtc := IsoUtcToDateTime(AQuery.FieldByName('first_seen_utc').AsString);
+  Result.LastSeenUtc := IsoUtcToDateTime(AQuery.FieldByName('last_seen_utc').AsString);
 end;
 
 // Build a SQL fragment that hides names not matching the source's filters.
@@ -1141,9 +1199,9 @@ end;
 // LIKE wildcards just in case.
 function NameFilterSql(const ACol: string; const AInclude, AExclude: TArray<string>): string;
 
-  function EscapeLike(const S: string): string;
+  function EscapeLike(const AText: string): string;
   begin
-    Result := S.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_');
+    Result := AText.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_');
   end;
 
   // SQL that yields ACol with all separators turned into spaces and trimmed, so
@@ -1157,19 +1215,19 @@ function NameFilterSql(const ACol: string; const AInclude, AExclude: TArray<stri
       'char(9474)', 'char(9475)', 'char(9478)', 'char(9479)',
       'char(9482)', 'char(9483)', 'char(65340)');
   var
-    I: Integer;
+    i: Integer;
   begin
     Result := ACol;
-    for I := Low(Seps) to High(Seps) do
-      Result := 'REPLACE(' + Result + ', ' + Seps[I] + ', '' '')';
+    for i := Low(Seps) to High(Seps) do
+      Result := 'REPLACE(' + Result + ', ' + Seps[i] + ', '' '')';
     Result := 'TRIM(' + Result + ')';
   end;
 
   // normalise a configured token the same way (seps -> space, trim) so it lines
   // up with NormCol (e.g. "NL|", "|NL|", "┃NL┃" all become "NL").
-  function NormToken(const S: string): string;
+  function NormToken(const AText: string): string;
   begin
-    Result := S
+    Result := AText
       .Replace('|', ' ').Replace('-', ' ').Replace(':', ' ').Replace(#9, ' ')
       .Replace(#$00A6, ' ').Replace(#$2502, ' ').Replace(#$2503, ' ')
       .Replace(#$2506, ' ').Replace(#$2507, ' ').Replace(#$250A, ' ')
@@ -1188,52 +1246,52 @@ function NameFilterSql(const ACol: string; const AInclude, AExclude: TArray<stri
   // filter tokens; balancing keeps depth at O(log N).
   function BalancedOr(const ALeaves: TArray<string>; ALo, AHi: Integer): string;
   var
-    Mid: Integer;
+    lMid: Integer;
   begin
     if ALo = AHi then
       Result := ALeaves[ALo]
     else
     begin
-      Mid := (ALo + AHi) div 2;
-      Result := '(' + BalancedOr(ALeaves, ALo, Mid) + ' OR ' + BalancedOr(ALeaves, Mid + 1, AHi) + ')';
+      lMid := (ALo + AHi) div 2;
+      Result := '(' + BalancedOr(ALeaves, ALo, lMid) + ' OR ' + BalancedOr(ALeaves, lMid + 1, AHi) + ')';
     end;
   end;
 
   function AnyMatch(const ATokens: TArray<string>): string;
   var
-    T, Esc: string;
-    Leaves: TList<string>;
+    lToken, lEsc: string;
+    lLeaves: TList<string>;
   begin
-    Leaves := TList<string>.Create;
+    lLeaves := TList<string>.Create;
     try
-      for T in ATokens do
-        if NormToken(T) <> '' then
+      for lToken in ATokens do
+        if NormToken(lToken) <> '' then
         begin
-          Esc := EscapeLike(NormToken(T));
+          lEsc := EscapeLike(NormToken(lToken));
           // whole name, or token as the first word, or token as the last word
-          Leaves.Add('(' + Like(Esc) + ' OR ' + Like(Esc + ' %') + ' OR ' + Like('% ' + Esc) + ')');
+          lLeaves.Add('(' + Like(lEsc) + ' OR ' + Like(lEsc + ' %') + ' OR ' + Like('% ' + lEsc) + ')');
         end;
-      if Leaves.Count = 0 then
+      if lLeaves.Count = 0 then
         Result := ''
       else
-        Result := BalancedOr(Leaves.ToArray, 0, Leaves.Count - 1);
+        Result := BalancedOr(lLeaves.ToArray, 0, lLeaves.Count - 1);
     finally
-      Leaves.Free;
+      FreeAndNil(lLeaves);
     end;
   end;
 
 var
-  Inc_, Exc_: string;
+  lIncSql, lExcSql: string;
 begin
   Result := '';
   // drop pasted-list / oversized tokens first (SQLite rejects LIKE patterns over
   // 50 000 chars and such a token can't match a real name anyway)
-  Inc_ := AnyMatch(CleanFilterTokens(AInclude));
-  if Inc_ <> '' then
-    Result := Result + ' AND ' + Inc_;
-  Exc_ := AnyMatch(CleanFilterTokens(AExclude));
-  if Exc_ <> '' then
-    Result := Result + ' AND NOT ' + Exc_;
+  lIncSql := AnyMatch(CleanFilterTokens(AInclude));
+  if lIncSql <> '' then
+    Result := Result + ' AND ' + lIncSql;
+  lExcSql := AnyMatch(CleanFilterTokens(AExclude));
+  if lExcSql <> '' then
+    Result := Result + ' AND NOT ' + lExcSql;
 end;
 
 // Full name-filter fragment for a catalog query: the global filter (no source
@@ -1241,16 +1299,16 @@ end;
 // its source_id (so the "all sources" view filters every source by its own rules).
 function CatalogFilterSql(const AFilter: TCatalogFilter; const ACol: string): string;
 var
-  SF: TSourceFilter;
-  Sub: string;
+  lSourceFilter: TSourceFilter;
+  lSub: string;
 begin
   Result := NameFilterSql(ACol, AFilter.IncludeFilters, AFilter.ExcludeFilters);
-  for SF in AFilter.SourceFilters do
+  for lSourceFilter in AFilter.SourceFilters do
   begin
-    Sub := NameFilterSql(ACol, SF.IncludeFilters, SF.ExcludeFilters);
-    if Sub <> '' then
+    lSub := NameFilterSql(ACol, lSourceFilter.IncludeFilters, lSourceFilter.ExcludeFilters);
+    if lSub <> '' then
       // a row passes if it's from another source, or it satisfies this source's filter
-      Result := Result + Format(' AND (source_id <> %d OR (1=1%s))', [SF.SourceId, Sub]);
+      Result := Result + Format(' AND (source_id <> %d OR (1=1%s))', [lSourceFilter.SourceId, lSub]);
   end;
 end;
 
@@ -1258,19 +1316,19 @@ end;
 // case-insensitive substring (so "NL UHD" keeps only names containing BOTH).
 function SearchSql(const ACol, ASearch: string): string;
 
-  function Esc(const S: string): string;
+  function Esc(const AText: string): string;
   begin
-    Result := S.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_');
+    Result := AText.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_');
   end;
 
 var
-  Terms: TArray<string>;
-  T: string;
+  lTerms: TArray<string>;
+  lTerm: string;
 begin
   Result := '';
-  Terms := ASearch.Split([',', ' ', #9], TStringSplitOptions.ExcludeEmpty);
-  for T in Terms do
-    Result := Result + ' AND ' + ACol + ' LIKE ' + QuotedStr('%' + Esc(T) + '%') +
+  lTerms := ASearch.Split([',', ' ', #9], TStringSplitOptions.ExcludeEmpty);
+  for lTerm in lTerms do
+    Result := Result + ' AND ' + ACol + ' LIKE ' + QuotedStr('%' + Esc(lTerm) + '%') +
       ' ESCAPE ' + QuotedStr('\');
 end;
 
@@ -1286,79 +1344,79 @@ type
 
 function PrepareCatalogFilter(const AFilter: TCatalogFilter): TPreparedCatalogFilter;
 var
-  I: Integer;
+  i: Integer;
 begin
   Result.Global := PrepareNameFilter(AFilter.IncludeFilters, AFilter.ExcludeFilters);
   SetLength(Result.SourceIds, Length(AFilter.SourceFilters));
   SetLength(Result.PerSource, Length(AFilter.SourceFilters));
-  for I := 0 to High(AFilter.SourceFilters) do
+  for i := 0 to High(AFilter.SourceFilters) do
   begin
-    Result.SourceIds[I] := AFilter.SourceFilters[I].SourceId;
-    Result.PerSource[I] := PrepareNameFilter(AFilter.SourceFilters[I].IncludeFilters,
-      AFilter.SourceFilters[I].ExcludeFilters);
+    Result.SourceIds[i] := AFilter.SourceFilters[i].SourceId;
+    Result.PerSource[i] := PrepareNameFilter(AFilter.SourceFilters[i].IncludeFilters,
+      AFilter.SourceFilters[i].ExcludeFilters);
   end;
 end;
 
 function CategoryPassesFilter(const ACat: TCategory; const AFilter: TPreparedCatalogFilter): Boolean;
 var
-  I: Integer;
+  i: Integer;
 begin
   if not PreparedNamePasses(AFilter.Global, ACat.Name) then
     Exit(False);
-  for I := 0 to High(AFilter.SourceIds) do
-    if (AFilter.SourceIds[I] = ACat.SourceId) and
-       not PreparedNamePasses(AFilter.PerSource[I], ACat.Name) then
+  for i := 0 to High(AFilter.SourceIds) do
+    if (AFilter.SourceIds[i] = ACat.SourceId) and
+       not PreparedNamePasses(AFilter.PerSource[i], ACat.Name) then
       Exit(False);
   Result := True;
 end;
 
 function TSQLiteStore.LoadCategories(const AFilter: TCatalogFilter): TCategoryList;
 var
-  Q: TFDQuery;
-  Where: string;
-  Cat: TCategory;
-  Prepared: TPreparedCatalogFilter;
+  lQuery: TFDQuery;
+  lWhere: string;
+  lCat: TCategory;
+  lPrepared: TPreparedCatalogFilter;
 begin
   Result := TCategoryList.Create(True);
-  Prepared := PrepareCatalogFilter(AFilter);
-  Q := NewQuery;
+  lPrepared := PrepareCatalogFilter(AFilter);
+  lQuery := NewQuery;
   try
-    Where := ' WHERE 1=1';
+    lWhere := ' WHERE 1=1';
     if AFilter.SourceId > 0 then
-      Where := Where + ' AND source_id=' + AFilter.SourceId.ToString;
+      lWhere := lWhere + ' AND source_id=' + AFilter.SourceId.ToString;
     if AFilter.HasContentType then
-      Where := Where + ' AND content_type=' + QuotedStr(ContentTypeNames[AFilter.ContentType]);
+      lWhere := lWhere + ' AND content_type=' + QuotedStr(ContentTypeNames[AFilter.ContentType]);
     if AFilter.OnlyNew then
-      Where := Where + ' AND is_new=1';
+      lWhere := lWhere + ' AND is_new=1';
     if AFilter.UseHiddenFlag then
-      Where := Where + ' AND hidden=0';
-    Where := Where + SearchSql('name', AFilter.Search); // multi-word AND search
-    Q.SQL.Text := 'SELECT * FROM categories' + Where + ' ORDER BY name COLLATE NOCASE';
-    Q.Open;
+      lWhere := lWhere + ' AND hidden=0';
+    lWhere := lWhere + SearchSql('name', AFilter.Search); // multi-word AND search
+    lQuery.SQL.Text := 'SELECT * FROM categories' + lWhere + ' ORDER BY name COLLATE NOCASE';
+    lQuery.Open;
     // hide groups whose name matches the source's filters (live view filter) —
     // done here in memory, not as SQL: with hundreds of filter tokens the nested
     // REPLACE/LIKE tree made this the slowest query in the app (~20 s on the NAS)
     // while holding the single DB connection. Groups are few; matching is cheap.
-    while not Q.Eof do
+    while not lQuery.Eof do
     begin
-      Cat := ReadCategory(Q);
-      if CategoryPassesFilter(Cat, Prepared) then
-        Result.Add(Cat)
+      lCat := ReadCategory(lQuery);
+      if CategoryPassesFilter(lCat, lPrepared) then
+        Result.Add(lCat)
       else
-        Cat.Free;
-      Q.Next;
+        FreeAndNil(lCat);
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 // escape LIKE wildcards in a literal so a '%' or '_' in the value is matched
 // literally (paired with an ESCAPE '\' clause) — a discovered prefix can legitimately
 // contain '%'/'_' (e.g. a "100% HD" group), which would otherwise match anything.
-function EscapeLikeLiteral(const S: string): string;
+function EscapeLikeLiteral(const AText: string): string;
 begin
-  Result := S.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_');
+  Result := AText.Replace('\', '\\').Replace('%', '\%').Replace('_', '\_');
 end;
 
 // shared WHERE builder + param binder for stream queries
@@ -1381,57 +1439,57 @@ begin
   Result := Result + CatalogFilterSql(AFilter, 'name');
 end;
 
-procedure BindStreamFilter(Q: TFDQuery; const AFilter: TCatalogFilter);
+procedure BindStreamFilter(AQuery: TFDQuery; const AFilter: TCatalogFilter);
 begin
   if AFilter.Prefix <> '' then
     // escape wildcards in the literal prefix; the trailing '%' stays a wildcard
-    Q.ParamByName('prefix').AsWideString := EscapeLikeLiteral(AFilter.Prefix) + '%';
+    AQuery.ParamByName('prefix').AsWideString := EscapeLikeLiteral(AFilter.Prefix) + '%';
   if AFilter.HasCategory then
-    Q.ParamByName('cat').AsWideString := AFilter.CategoryUpstreamId;
+    AQuery.ParamByName('cat').AsWideString := AFilter.CategoryUpstreamId;
 end;
 
 function TSQLiteStore.LoadStreams(const AFilter: TCatalogFilter): TStreamItemList;
 var
-  Q: TFDQuery;
-  Sql: string;
+  lQuery: TFDQuery;
+  lSql: string;
 begin
   Result := TStreamItemList.Create(True);
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     // id as tiebreak: equal names in an undefined order made paging repeat or skip rows
-    Sql := 'SELECT * FROM streams' + StreamWhere(AFilter) + ' ORDER BY name COLLATE NOCASE, id';
+    lSql := 'SELECT * FROM streams' + StreamWhere(AFilter) + ' ORDER BY name COLLATE NOCASE, id';
     if AFilter.Limit > 0 then
-      Sql := Sql + ' LIMIT :limit OFFSET :offset';
-    Q.SQL.Text := Sql;
-    BindStreamFilter(Q, AFilter);
+      lSql := lSql + ' LIMIT :limit OFFSET :offset';
+    lQuery.SQL.Text := lSql;
+    BindStreamFilter(lQuery, AFilter);
     if AFilter.Limit > 0 then
     begin
-      Q.ParamByName('limit').AsInteger := AFilter.Limit;
-      Q.ParamByName('offset').AsInteger := AFilter.Offset;
+      lQuery.ParamByName('limit').AsInteger := AFilter.Limit;
+      lQuery.ParamByName('offset').AsInteger := AFilter.Offset;
     end;
-    Q.Open;
-    while not Q.Eof do
+    lQuery.Open;
+    while not lQuery.Eof do
     begin
-      Result.Add(ReadStream(Q));
-      Q.Next;
+      Result.Add(ReadStream(lQuery));
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 function TSQLiteStore.CountStreams(const AFilter: TCatalogFilter): Integer;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.SQL.Text := 'SELECT COUNT(*) AS c FROM streams' + StreamWhere(AFilter);
-    BindStreamFilter(Q, AFilter);
-    Q.Open;
-    Result := Q.FieldByName('c').AsInteger;
+    lQuery.SQL.Text := 'SELECT COUNT(*) AS c FROM streams' + StreamWhere(AFilter);
+    BindStreamFilter(lQuery, AFilter);
+    lQuery.Open;
+    Result := lQuery.FieldByName('c').AsInteger;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
@@ -1453,41 +1511,41 @@ end;
 
 function TSQLiteStore.LoadStreamById(AId: Integer): TStreamItem;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   Result := nil;
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT * FROM streams WHERE id=:id', [AId]);
-    if not Q.IsEmpty then
-      Result := ReadStream(Q);
+    lQuery.Open('SELECT * FROM streams WHERE id=:id', [AId]);
+    if not lQuery.IsEmpty then
+      Result := ReadStream(lQuery);
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 function TSQLiteStore.LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
 var
-  Q: TFDQuery;
-  Ct, Tvg, Nm: string;
-  L: TList<string>;
+  lQuery: TFDQuery;
+  lCt, lTvg, lName: string;
+  lUrls: TList<string>;
 begin
   Result := nil;
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT content_type, tvg_id, name FROM streams WHERE id = :id', [AStreamItemId]);
-    if Q.IsEmpty then
+    lQuery.Open('SELECT content_type, tvg_id, name FROM streams WHERE id = :id', [AStreamItemId]);
+    if lQuery.IsEmpty then
       Exit;
-    Ct := Q.FieldByName('content_type').AsString;
-    Tvg := Q.FieldByName('tvg_id').AsString;
-    Nm := Q.FieldByName('name').AsString;
-    Q.Close;
-    L := TList<string>.Create;
+    lCt := lQuery.FieldByName('content_type').AsString;
+    lTvg := lQuery.FieldByName('tvg_id').AsString;
+    lName := lQuery.FieldByName('name').AsString;
+    lQuery.Close;
+    lUrls := TList<string>.Create;
     try
       // same channel from a DIFFERENT row: by tvg-id when present (reliable), else by
       // exact case-insensitive name (conservative — avoids failing over to a wrong
       // channel). Same content type; skip self and empty URLs.
-      Q.SQL.Text :=
+      lQuery.SQL.Text :=
         '''
         SELECT s.upstream_url FROM streams s
         LEFT JOIN sources src ON src.id = s.source_id
@@ -1495,38 +1553,38 @@ begin
           AND ((:tvg <> '' AND s.tvg_id = :tvg) OR (:tvg = '' AND s.name = :nm COLLATE NOCASE))
           AND
         ''' + cSqlSourceActive + ' ORDER BY s.source_id';
-      Q.ParamByName('id').AsInteger := AStreamItemId;
-      Q.ParamByName('ct').AsWideString := Ct;
-      Q.ParamByName('tvg').AsWideString := Tvg;
-      Q.ParamByName('nm').AsWideString := Nm;
-      Q.Open;
-      while not Q.Eof do
+      lQuery.ParamByName('id').AsInteger := AStreamItemId;
+      lQuery.ParamByName('ct').AsWideString := lCt;
+      lQuery.ParamByName('tvg').AsWideString := lTvg;
+      lQuery.ParamByName('nm').AsWideString := lName;
+      lQuery.Open;
+      while not lQuery.Eof do
       begin
-        L.Add(Q.Fields[0].AsString);
-        Q.Next;
+        lUrls.Add(lQuery.Fields[0].AsString);
+        lQuery.Next;
       end;
-      Result := L.ToArray;
+      Result := lUrls.ToArray;
     finally
-      L.Free;
+      FreeAndNil(lUrls);
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 function TSQLiteStore.LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   // only return the stream when it is actually an item on this list, so the
   // credential-scoped output can't serve a stream off another list / not curated.
   Result := nil;
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     if AStreamItemId >= cEpisodeIdBase then
     begin
       // a series episode: allowed when its series is on this list
-      Q.Open(
+      lQuery.Open(
         '''
         SELECT e.upstream_episode_id AS eid, e.ext AS ext, s.id AS sid, s.source_id AS srcid,
                s.name AS nm, src.url AS surl, src.username AS su, src.password AS sp
@@ -1537,33 +1595,34 @@ begin
         WHERE e.id = :e AND i.list_id = :l AND src.id IS NOT NULL AND
         ''' + cSqlSourceActive + ' LIMIT 1',
         [AStreamItemId - cEpisodeIdBase, AListId]);
-      if not Q.IsEmpty then
+      if not lQuery.IsEmpty then
       begin
         Result := TStreamItem.Create;
         Result.Id := AStreamItemId;
-        Result.SourceId := Q.FieldByName('srcid').AsInteger;
+        Result.SourceId := lQuery.FieldByName('srcid').AsInteger;
         Result.ContentType := ctSeries;
-        Result.UpstreamId := Q.FieldByName('eid').AsString;
-        Result.Name := Q.FieldByName('nm').AsString;
+        Result.UpstreamId := lQuery.FieldByName('eid').AsString;
+        Result.Name := lQuery.FieldByName('nm').AsString;
         // built from the source's CURRENT url/credentials (a credential swap keeps working)
         Result.UpstreamUrl := Format('%s/series/%s/%s/%s.%s',
-          [Q.FieldByName('surl').AsString.Trim.TrimRight(['/']), Q.FieldByName('su').AsString.Trim,
-           Q.FieldByName('sp').AsString.Trim, Result.UpstreamId,
-           System.StrUtils.IfThen(Q.FieldByName('ext').AsString = '', cDefaultEpisodeExt, Q.FieldByName('ext').AsString)]);
+          [lQuery.FieldByName('surl').AsString.Trim.TrimRight(['/']), lQuery.FieldByName('su').AsString.Trim,
+           lQuery.FieldByName('sp').AsString.Trim, Result.UpstreamId,
+           System.StrUtils.IfThen(lQuery.FieldByName('ext').AsString = '', cDefaultEpisodeExt,
+             lQuery.FieldByName('ext').AsString)]);
       end;
       Exit;
     end;
-    Q.Open(
+    lQuery.Open(
       '''
       SELECT s.* FROM streams s
       JOIN list_items i ON i.stream_item_id = s.id
       LEFT JOIN sources src ON src.id = s.source_id
       WHERE i.list_id = :l AND s.id = :id AND
       ''' + cSqlSourceActive + ' LIMIT 1', [AListId, AStreamItemId]);
-    if not Q.IsEmpty then
-      Result := ReadStream(Q);
+    if not lQuery.IsEmpty then
+      Result := ReadStream(lQuery);
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
@@ -1610,37 +1669,37 @@ end;
 function TSQLiteStore.EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
   AExts: TArray<string>): TArray<Integer>;
 var
-  Ins, Sel: TFDQuery;
-  I: Integer;
-  Ext: string;
+  lInsert, lSelect: TFDQuery;
+  i: Integer;
+  lExt: string;
 begin
   SetLength(Result, Length(AUpstreamIds));
   if Length(AUpstreamIds) = 0 then
     Exit;
-  Ins := NewQuery;
-  Sel := NewQuery;
+  lInsert := NewQuery;
+  lSelect := NewQuery;
   try
-    Ins.SQL.Text := '''
+    lInsert.SQL.Text := '''
       INSERT INTO series_episodes(stream_id, upstream_episode_id, ext) VALUES(:s, :u, :x)
       ON CONFLICT(stream_id, upstream_episode_id) DO UPDATE SET ext = excluded.ext
       ''';
-    Sel.SQL.Text := 'SELECT id FROM series_episodes WHERE stream_id = :s AND upstream_episode_id = :u';
+    lSelect.SQL.Text := 'SELECT id FROM series_episodes WHERE stream_id = :s AND upstream_episode_id = :u';
     FConn.StartTransaction;
     try
-      for I := 0 to High(AUpstreamIds) do
+      for i := 0 to High(AUpstreamIds) do
       begin
-        Ext := '';
-        if I <= High(AExts) then
-          Ext := AExts[I];
-        Ins.ParamByName('s').AsInteger := ASeriesStreamId;
-        Ins.ParamByName('u').AsWideString := AUpstreamIds[I];
-        Ins.ParamByName('x').AsWideString := Ext;
-        Ins.ExecSQL;
-        Sel.ParamByName('s').AsInteger := ASeriesStreamId;
-        Sel.ParamByName('u').AsWideString := AUpstreamIds[I];
-        Sel.Open;
-        Result[I] := cEpisodeIdBase + Sel.Fields[0].AsInteger;
-        Sel.Close;
+        lExt := '';
+        if i <= High(AExts) then
+          lExt := AExts[i];
+        lInsert.ParamByName('s').AsInteger := ASeriesStreamId;
+        lInsert.ParamByName('u').AsWideString := AUpstreamIds[i];
+        lInsert.ParamByName('x').AsWideString := lExt;
+        lInsert.ExecSQL;
+        lSelect.ParamByName('s').AsInteger := ASeriesStreamId;
+        lSelect.ParamByName('u').AsWideString := AUpstreamIds[i];
+        lSelect.Open;
+        Result[i] := cEpisodeIdBase + lSelect.Fields[0].AsInteger;
+        lSelect.Close;
       end;
       FConn.Commit;
     except
@@ -1648,203 +1707,209 @@ begin
       raise;
     end;
   finally
-    Ins.Free;
-    Sel.Free;
+    FreeAndNil(lInsert);
+    FreeAndNil(lSelect);
   end;
 end;
 
 function TSQLiteStore.DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
 var
-  Q: TFDQuery;
-  Counts: TDictionary<string, Integer>;
-  Prefix: string;
-  N: Integer;
-  Pair: TPair<string, Integer>;
-  I: Integer;
+  lQuery: TFDQuery;
+  lCounts: TDictionary<string, Integer>;
+  lPrefix: string;
+  lCount: Integer;
+  lPair: TPair<string, Integer>;
+  i: Integer;
+  lTable: string;
 begin
-  Counts := TDictionary<string, Integer>.Create;
-  Q := NewQuery;
+  lCounts := TDictionary<string, Integer>.Create;
+  lQuery := NewQuery;
   try
     // Scan BOTH channel names and category/group names: the operator filters by
     // either, and groups often use a different prefix scheme than their channels
     // (e.g. group "AL| ALBANIA" while channels are "ALB| ..."). Surfacing both
     // lets a single exclude token hide the matching groups AND channels.
-    for var Tbl in [cTableStreams, cTableCategories] do
+    for lTable in [cTableStreams, cTableCategories] do
     begin
       if ASourceId > 0 then
-        Q.Open(Format('SELECT name FROM %s WHERE source_id=:s', [Tbl]), [ASourceId])
+        lQuery.Open(Format('SELECT name FROM %s WHERE source_id=:s', [lTable]), [ASourceId])
       else
-        Q.Open(Format('SELECT name FROM %s', [Tbl]));
-      while not Q.Eof do
+        lQuery.Open(Format('SELECT name FROM %s', [lTable]));
+      while not lQuery.Eof do
       begin
-        Prefix := ExtractNamePrefix(Q.Fields[0].AsString);
-        if Prefix <> '' then
+        lPrefix := ExtractNamePrefix(lQuery.Fields[0].AsString);
+        if lPrefix <> '' then
         begin
-          Counts.TryGetValue(Prefix, N);
-          Counts.AddOrSetValue(Prefix, N + 1);
+          lCounts.TryGetValue(lPrefix, lCount);
+          lCounts.AddOrSetValue(lPrefix, lCount + 1);
         end;
-        Q.Next;
+        lQuery.Next;
       end;
-      Q.Close;
+      lQuery.Close;
     end;
 
-    SetLength(Result, Counts.Count);
-    I := 0;
-    for Pair in Counts do
+    SetLength(Result, lCounts.Count);
+    i := 0;
+    for lPair in lCounts do
     begin
-      Result[I].Prefix := Pair.Key;
-      Result[I].Count := Pair.Value;
-      Inc(I);
+      Result[i].Prefix := lPair.Key;
+      Result[i].Count := lPair.Value;
+      Inc(i);
     end;
     // most common first, then alphabetical (case-insensitive) as a tiebreaker
     TArray.Sort<TPrefixCount>(Result, TComparer<TPrefixCount>.Construct(
-      function(const A, B: TPrefixCount): Integer
+      function(const ALeft, ARight: TPrefixCount): Integer
       begin
-        Result := B.Count - A.Count;
+        Result := ARight.Count - ALeft.Count;
         if Result = 0 then
-          Result := CompareText(A.Prefix, B.Prefix);
+          Result := CompareText(ALeft.Prefix, ARight.Prefix);
       end));
   finally
-    Q.Free;
-    Counts.Free;
+    FreeAndNil(lQuery);
+    FreeAndNil(lCounts);
   end;
 end;
 
 function TSQLiteStore.LoadKnownTvgIds: TArray<TTvgIdInfo>;
 var
-  Q: TFDQuery;
-  L: TList<TTvgIdInfo>;
-  Info: TTvgIdInfo;
+  lQuery: TFDQuery;
+  lList: TList<TTvgIdInfo>;
+  lInfo: TTvgIdInfo;
 begin
-  L := TList<TTvgIdInfo>.Create;
-  Q := NewQuery;
+  lList := TList<TTvgIdInfo>.Create;
+  lQuery := NewQuery;
   try
     // distinct tvg-ids in the catalog with one representative channel name
-    Q.Open('''
+    lQuery.Open('''
       SELECT tvg_id, MIN(name) AS nm FROM streams WHERE tvg_id <> ''
       GROUP BY tvg_id ORDER BY nm COLLATE NOCASE
       ''');
-    while not Q.Eof do
+    while not lQuery.Eof do
     begin
-      Info.TvgId := Q.FieldByName('tvg_id').AsString;
-      Info.Name := Q.FieldByName('nm').AsString;
-      L.Add(Info);
-      Q.Next;
+      lInfo.TvgId := lQuery.FieldByName('tvg_id').AsString;
+      lInfo.Name := lQuery.FieldByName('nm').AsString;
+      lList.Add(lInfo);
+      lQuery.Next;
     end;
-    Result := L.ToArray;
+    Result := lList.ToArray;
   finally
-    Q.Free;
-    L.Free;
+    FreeAndNil(lQuery);
+    FreeAndNil(lList);
   end;
 end;
 
 function TSQLiteStore.FindQualityVariants(AListId, ASourceGroupId: Integer;
   const ATargetQuality: string): TArray<TVariantMatch>;
 type
-  TCand = record Id, SourceId: Integer; Name: string; end;
-  TRules = record Prefixes, Suffixes: TArray<string>; end;
+  TCand = record
+    Id, SourceId: Integer;
+    Name: string;
+  end;
+  TRules = record
+    Prefixes, Suffixes: TArray<string>;
+  end;
 var
-  Q: TFDQuery;
-  Items: TList<TVariantMatch>;
-  ItemSrc: TList<Integer>;  // parallel to Items: source_id (same-source preference)
-  Bases: TList<string>;     // parallel to Items: quality-stripped base key
-  Heads: TList<string>;     // parallel to Items: tokens before the quality word
-  NeededBase, NeededHead: TDictionary<string, Boolean>;
-  DictBase, DictHead: TDictionary<string, TList<TCand>>;
-  InList: TDictionary<Integer, Boolean>;
-  Rules: TDictionary<Integer, TRules>;
-  Cts: TStringList;
-  Target, Base, Head, Qual, InClause: string;
-  M: TVariantMatch;
-  Cand: TCand;
-  Cands: TList<TCand>;
-  R: TRules;
-  I, Picked: Integer;
+  lQuery: TFDQuery;
+  lItems: TList<TVariantMatch>;
+  lItemSrc: TList<Integer>;  // parallel to Items: source_id (same-source preference)
+  lBases: TList<string>;     // parallel to Items: quality-stripped base key
+  lHeads: TList<string>;     // parallel to Items: tokens before the quality word
+  lNeededBase, lNeededHead: TDictionary<string, Boolean>;
+  lDictBase, lDictHead: TDictionary<string, TList<TCand>>;
+  lInList: TDictionary<Integer, Boolean>;
+  lRules: TDictionary<Integer, TRules>;
+  lCts: TStringList;
+  lTarget, lBase, lHead, lQual, lInClause: string;
+  lMatch: TVariantMatch;
+  lCand: TCand;
+  lCands: TList<TCand>;
+  lRule: TRules;
+  i, lPicked: Integer;
 
   // the match key is computed on the CLEANED name (the source's strip prefixes
   // and suffixes removed, e.g. "NL |" and "(S)"), so tags that differ between
   // variants don't break the match; decorative letters are folded by the key
   function KeyOf(const AName: string; ASourceId: Integer; out AQual, AHead: string): string;
   var
-    Rr: TRules;
+    lSourceRules: TRules;
   begin
-    if Rules.TryGetValue(ASourceId, Rr) then
-      Result := QualityMatchKey(CleanChannelName(AName, Rr.Prefixes, Rr.Suffixes), AQual, AHead)
+    if lRules.TryGetValue(ASourceId, lSourceRules) then
+      Result := QualityMatchKey(CleanChannelName(AName, lSourceRules.Prefixes, lSourceRules.Suffixes), AQual, AHead)
     else
       Result := QualityMatchKey(AName, AQual, AHead);
   end;
 
-  procedure AddCand(ADict: TDictionary<string, TList<TCand>>; const AKey: string; const C: TCand);
+  procedure AddCand(ADict: TDictionary<string, TList<TCand>>; const AKey: string; const ACand: TCand);
   var
-    L: TList<TCand>;
+    lList: TList<TCand>;
   begin
-    if not ADict.TryGetValue(AKey, L) then
+    if not ADict.TryGetValue(AKey, lList) then
     begin
-      L := TList<TCand>.Create;
-      ADict.Add(AKey, L);
+      lList := TList<TCand>.Create;
+      ADict.Add(AKey, lList);
     end;
-    L.Add(C);
+    lList.Add(ACand);
   end;
 
   // prefer the SAME source, never the item's own stream; among equals the
   // shortest name (the plainest variant, e.g. "NPO 1 4K+" over "NPO 1 4K+ backup")
-  function Pick(L: TList<TCand>; AOwnStream, ASrc: Integer): Integer;
+  function Pick(AList: TList<TCand>; AOwnStream, ASrc: Integer): Integer;
   var
-    K: Integer;
+    k: Integer;
   begin
     Result := -1;
-    for K := 0 to L.Count - 1 do
-      if (L[K].Id <> AOwnStream) and (L[K].SourceId = ASrc) and
-         ((Result < 0) or (Length(L[K].Name) < Length(L[Result].Name))) then
-        Result := K;
+    for k := 0 to AList.Count - 1 do
+      if (AList[k].Id <> AOwnStream) and (AList[k].SourceId = ASrc) and
+         ((Result < 0) or (Length(AList[k].Name) < Length(AList[Result].Name))) then
+        Result := k;
     if Result < 0 then
-      for K := 0 to L.Count - 1 do
-        if (L[K].Id <> AOwnStream) and
-           ((Result < 0) or (Length(L[K].Name) < Length(L[Result].Name))) then
-          Result := K;
+      for k := 0 to AList.Count - 1 do
+        if (AList[k].Id <> AOwnStream) and
+           ((Result < 0) or (Length(AList[k].Name) < Length(AList[Result].Name))) then
+          Result := k;
   end;
 
 begin
-  Target := CanonicalQuality(ATargetQuality);
-  if Target = '' then
+  lTarget := CanonicalQuality(ATargetQuality);
+  if lTarget = '' then
     Exit(nil); // unknown/blank target quality
 
-  Items := TList<TVariantMatch>.Create;
-  ItemSrc := TList<Integer>.Create;
-  Bases := TList<string>.Create;
-  Heads := TList<string>.Create;
-  NeededBase := TDictionary<string, Boolean>.Create;
-  NeededHead := TDictionary<string, Boolean>.Create;
-  DictBase := TDictionary<string, TList<TCand>>.Create;
-  DictHead := TDictionary<string, TList<TCand>>.Create;
-  InList := TDictionary<Integer, Boolean>.Create;
-  Rules := TDictionary<Integer, TRules>.Create;
-  Cts := TStringList.Create;
+  lItems := TList<TVariantMatch>.Create;
+  lItemSrc := TList<Integer>.Create;
+  lBases := TList<string>.Create;
+  lHeads := TList<string>.Create;
+  lNeededBase := TDictionary<string, Boolean>.Create;
+  lNeededHead := TDictionary<string, Boolean>.Create;
+  lDictBase := TDictionary<string, TList<TCand>>.Create;
+  lDictHead := TDictionary<string, TList<TCand>>.Create;
+  lInList := TDictionary<Integer, Boolean>.Create;
+  lRules := TDictionary<Integer, TRules>.Create;
+  lCts := TStringList.Create;
   try
-    Cts.Sorted := True;
-    Cts.Duplicates := dupIgnore;
+    lCts.Sorted := True;
+    lCts.Duplicates := dupIgnore;
 
     // 0. every source's strip rules (few rows)
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
-      Q.Open('SELECT id, strip_prefixes, strip_suffixes FROM sources');
-      while not Q.Eof do
+      lQuery.Open('SELECT id, strip_prefixes, strip_suffixes FROM sources');
+      while not lQuery.Eof do
       begin
-        R.Prefixes := CsvToStrArray(Q.Fields[1].AsString, cStripTokenSep);
-        R.Suffixes := CsvToStrArray(Q.Fields[2].AsString, cStripTokenSep);
-        Rules.AddOrSetValue(Q.Fields[0].AsInteger, R);
-        Q.Next;
+        lRule.Prefixes := CsvToStrArray(lQuery.Fields[1].AsString, cStripTokenSep);
+        lRule.Suffixes := CsvToStrArray(lQuery.Fields[2].AsString, cStripTokenSep);
+        lRules.AddOrSetValue(lQuery.Fields[0].AsInteger, lRule);
+        lQuery.Next;
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
 
     // 1. the source group's items + their current (ORIGINAL upstream) stream name.
     //    Matching uses the stream's own name, never the list's stripped display
     //    name, so a prefix/suffix stripped on the list doesn't matter.
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
-      Q.Open(
+      lQuery.Open(
         '''
         SELECT i.id AS iid, i.stream_item_id AS sid, s.name AS sname,
           s.content_type AS ct, s.source_id AS srcid
@@ -1852,50 +1917,50 @@ begin
         WHERE i.list_id = :l AND i.custom_group_id = :g
         ORDER BY i.channel_number, sname COLLATE NOCASE
         ''', [AListId, ASourceGroupId]);
-      while not Q.Eof do
+      while not lQuery.Eof do
       begin
-        M := Default(TVariantMatch);
-        M.ItemId := Q.FieldByName('iid').AsInteger;
-        M.StreamId := Q.FieldByName('sid').AsInteger;
-        M.Name := Q.FieldByName('sname').AsString;
-        Base := KeyOf(M.Name, Q.FieldByName('srcid').AsInteger, Qual, Head);
-        M.Quality := Qual;
-        Items.Add(M);
-        Bases.Add(Base);
-        Heads.Add(Head);
-        ItemSrc.Add(Q.FieldByName('srcid').AsInteger);
-        if Base <> '' then
-          NeededBase.AddOrSetValue(Base, True);
-        if Head <> '' then
-          NeededHead.AddOrSetValue(Head, True);
-        Cts.Add(Q.FieldByName('ct').AsString);
-        Q.Next;
+        lMatch := Default(TVariantMatch);
+        lMatch.ItemId := lQuery.FieldByName('iid').AsInteger;
+        lMatch.StreamId := lQuery.FieldByName('sid').AsInteger;
+        lMatch.Name := lQuery.FieldByName('sname').AsString;
+        lBase := KeyOf(lMatch.Name, lQuery.FieldByName('srcid').AsInteger, lQual, lHead);
+        lMatch.Quality := lQual;
+        lItems.Add(lMatch);
+        lBases.Add(lBase);
+        lHeads.Add(lHead);
+        lItemSrc.Add(lQuery.FieldByName('srcid').AsInteger);
+        if lBase <> '' then
+          lNeededBase.AddOrSetValue(lBase, True);
+        if lHead <> '' then
+          lNeededHead.AddOrSetValue(lHead, True);
+        lCts.Add(lQuery.FieldByName('ct').AsString);
+        lQuery.Next;
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
-    if Items.Count = 0 then
+    if lItems.Count = 0 then
       Exit(nil);
 
     // 2. stream ids already on this list (a candidate already here can't be re-added)
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
-      Q.Open('SELECT stream_item_id FROM list_items WHERE list_id = :l', [AListId]);
-      while not Q.Eof do
+      lQuery.Open('SELECT stream_item_id FROM list_items WHERE list_id = :l', [AListId]);
+      while not lQuery.Eof do
       begin
-        InList.AddOrSetValue(Q.FieldByName('stream_item_id').AsInteger, True);
-        Q.Next;
+        lInList.AddOrSetValue(lQuery.FieldByName('stream_item_id').AsInteger, True);
+        lQuery.Next;
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
 
     // 3. candidate pool: streams of the same content type(s) that carry the TARGET
     //    quality and whose base key (or, as a fallback, head key) matches
-    InClause := '';
-    for I := 0 to Cts.Count - 1 do
-      InClause := InClause + IfThen(I > 0, ',', '') + QuotedStr(Cts[I]);
-    Q := NewQuery;
+    lInClause := '';
+    for i := 0 to lCts.Count - 1 do
+      lInClause := lInClause + IfThen(i > 0, ',', '') + QuotedStr(lCts[i]);
+    lQuery := NewQuery;
     try
       // only active sources: a swap onto a switched-off provider would silently
       // drop the channel from the box
@@ -1903,304 +1968,309 @@ begin
       // plain letters (LIKE is ASCII case-insensitive), or any non-ASCII name
       // (decorative letters like the small-caps "ꜰʜᴅ" fold to it only in Delphi).
       // Before, every stream of the type ran through KeyOf under the read lock.
-      Q.SQL.Text := '''
+      lQuery.SQL.Text := '''
         SELECT id, source_id, name FROM streams s
         WHERE content_type IN (
-        ''' + InClause + ') AND upstream_url <> '''' AND ' + cSqlSourceActiveExists + '''
+        ''' + lInClause + ') AND upstream_url <> '''' AND ' + cSqlSourceActiveExists + '''
 
         AND (name LIKE :q1 ESCAPE '\' OR name LIKE :q2 ESCAPE '\' OR name GLOB '*[^ -~]*')
         ''';
-      Q.ParamByName('q1').AsWideString := '%' + EscapeLikeLiteral(Target) + '%';
-      if Target = cQualityFhd then
-        Q.ParamByName('q2').AsWideString := cFullHdLikePattern // FULLHD / FULL-HD
+      lQuery.ParamByName('q1').AsWideString := '%' + EscapeLikeLiteral(lTarget) + '%';
+      if lTarget = cQualityFhd then
+        lQuery.ParamByName('q2').AsWideString := cFullHdLikePattern // FULLHD / FULL-HD
       else
-        Q.ParamByName('q2').AsWideString := '%' + EscapeLikeLiteral(Target) + '%';
-      Q.Open;
-      while not Q.Eof do
+        lQuery.ParamByName('q2').AsWideString := '%' + EscapeLikeLiteral(lTarget) + '%';
+      lQuery.Open;
+      while not lQuery.Eof do
       begin
-        Base := KeyOf(Q.FieldByName('name').AsString, Q.FieldByName('source_id').AsInteger, Qual, Head);
-        if Qual = Target then
+        lBase := KeyOf(lQuery.FieldByName('name').AsString, lQuery.FieldByName('source_id').AsInteger, lQual, lHead);
+        if lQual = lTarget then
         begin
-          Cand.Id := Q.FieldByName('id').AsInteger;
-          Cand.SourceId := Q.FieldByName('source_id').AsInteger;
-          Cand.Name := Q.FieldByName('name').AsString;
-          if (Base <> '') and NeededBase.ContainsKey(Base) then
-            AddCand(DictBase, Base, Cand);
-          if (Head <> '') and NeededHead.ContainsKey(Head) then
-            AddCand(DictHead, Head, Cand);
+          lCand.Id := lQuery.FieldByName('id').AsInteger;
+          lCand.SourceId := lQuery.FieldByName('source_id').AsInteger;
+          lCand.Name := lQuery.FieldByName('name').AsString;
+          if (lBase <> '') and lNeededBase.ContainsKey(lBase) then
+            AddCand(lDictBase, lBase, lCand);
+          if (lHead <> '') and lNeededHead.ContainsKey(lHead) then
+            AddCand(lDictHead, lHead, lCand);
         end;
-        Q.Next;
+        lQuery.Next;
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
 
     // 4. pick a candidate per item: exact base key first; else the head key
     //    (ignores tags AFTER the quality word, e.g. "NPO 1 RAW (S)" -> "NPO 1 4K+")
-    for I := 0 to Items.Count - 1 do
+    for i := 0 to lItems.Count - 1 do
     begin
-      M := Items[I];
-      Picked := -1;
-      Cands := nil;
-      if DictBase.TryGetValue(Bases[I], Cands) then
-        Picked := Pick(Cands, M.StreamId, ItemSrc[I]);
-      if (Picked < 0) and (Heads[I] <> '') and DictHead.TryGetValue(Heads[I], Cands) then
-        Picked := Pick(Cands, M.StreamId, ItemSrc[I]);
-      if Picked >= 0 then
+      lMatch := lItems[i];
+      lPicked := -1;
+      lCands := nil;
+      if lDictBase.TryGetValue(lBases[i], lCands) then
+        lPicked := Pick(lCands, lMatch.StreamId, lItemSrc[i]);
+      if (lPicked < 0) and (lHeads[i] <> '') and lDictHead.TryGetValue(lHeads[i], lCands) then
+        lPicked := Pick(lCands, lMatch.StreamId, lItemSrc[i]);
+      if lPicked >= 0 then
       begin
-        M.CandidateStreamId := Cands[Picked].Id;
-        M.CandidateName := Cands[Picked].Name;
-        M.AlreadyInList := InList.ContainsKey(Cands[Picked].Id);
+        lMatch.CandidateStreamId := lCands[lPicked].Id;
+        lMatch.CandidateName := lCands[lPicked].Name;
+        lMatch.AlreadyInList := lInList.ContainsKey(lCands[lPicked].Id);
       end;
-      Items[I] := M;
+      lItems[i] := lMatch;
     end;
 
-    Result := Items.ToArray;
+    Result := lItems.ToArray;
   finally
-    for Cands in DictBase.Values do
-      Cands.Free;
-    for Cands in DictHead.Values do
-      Cands.Free;
-    DictBase.Free;
-    DictHead.Free;
-    NeededBase.Free;
-    NeededHead.Free;
-    InList.Free;
-    Rules.Free;
-    Items.Free;
-    ItemSrc.Free;
-    Bases.Free;
-    Heads.Free;
-    Cts.Free;
+    for lCands in lDictBase.Values do
+      lCands.Free;
+    for lCands in lDictHead.Values do
+      lCands.Free;
+    FreeAndNil(lDictBase);
+    FreeAndNil(lDictHead);
+    FreeAndNil(lNeededBase);
+    FreeAndNil(lNeededHead);
+    FreeAndNil(lInList);
+    FreeAndNil(lRules);
+    FreeAndNil(lItems);
+    FreeAndNil(lItemSrc);
+    FreeAndNil(lBases);
+    FreeAndNil(lHeads);
+    FreeAndNil(lCts);
   end;
 end;
 
 function TSQLiteStore.FindStreamVariants(AStreamId: Integer; AAllSources: Boolean;
   AListId: Integer): TArray<TStreamVariant>;
 type
-  TRules = record Prefixes, Suffixes: TArray<string>; end;
+  TRules = record
+    Prefixes, Suffixes: TArray<string>;
+  end;
 var
-  Q: TFDQuery;
-  Rules: TDictionary<Integer, TRules>;
-  InList: TDictionary<Integer, Boolean>;
-  L: TList<TStreamVariant>;
-  R: TRules;
-  V: TStreamVariant;
-  Ct, Tvg, Name, Base, Head, Qual, CBase, CHead, CQual, Sql: string;
-  SrcId, Pass, K: Integer;
-  ByName, ByTvg: Boolean;
-  Tok, T, Extra: string;
-  TvgArr: TArray<string>;
-  Seen: TDictionary<Integer, Boolean>;
-  Tvgs: TDictionary<string, Boolean>;
+  lQuery: TFDQuery;
+  lRules: TDictionary<Integer, TRules>;
+  lInList: TDictionary<Integer, Boolean>;
+  lList: TList<TStreamVariant>;
+  lRule: TRules;
+  lVariant: TStreamVariant;
+  lCt, lTvg, lName, lBase, lHead, lQual, lCBase, lCHead, lCQual, lSql: string;
+  lSrcId, lPass, k: Integer;
+  lByName, lByTvg: Boolean;
+  lTok, lWord, lExtra: string;
+  lTvgArr: TArray<string>;
+  lSeen: TDictionary<Integer, Boolean>;
+  lTvgs: TDictionary<string, Boolean>;
 
   function KeyOf(const AName: string; ASourceId: Integer; out AQual, AHead: string): string;
   var
-    Rr: TRules;
+    lSourceRules: TRules;
   begin
-    if Rules.TryGetValue(ASourceId, Rr) then
-      Result := QualityMatchKey(CleanChannelName(AName, Rr.Prefixes, Rr.Suffixes), AQual, AHead)
+    if lRules.TryGetValue(ASourceId, lSourceRules) then
+      Result := QualityMatchKey(CleanChannelName(AName, lSourceRules.Prefixes, lSourceRules.Suffixes), AQual, AHead)
     else
       Result := QualityMatchKey(AName, AQual, AHead);
   end;
 
   function IsPlainAscii(const AStr: string): Boolean;
   var
-    Ch: Char;
+    lChar: Char;
   begin
-    for Ch in AStr do
-      if not CharInSet(Ch, ['a'..'z', '0'..'9']) then
+    for lChar in AStr do
+      if not CharInSet(lChar, ['a'..'z', '0'..'9']) then
         Exit(False);
     Result := True;
   end;
 
 begin
   Result := nil;
-  Rules := TDictionary<Integer, TRules>.Create;
-  InList := TDictionary<Integer, Boolean>.Create;
-  L := TList<TStreamVariant>.Create;
-  Seen := TDictionary<Integer, Boolean>.Create;
-  Tvgs := TDictionary<string, Boolean>.Create;
+  lRules := TDictionary<Integer, TRules>.Create;
+  lInList := TDictionary<Integer, Boolean>.Create;
+  lList := TList<TStreamVariant>.Create;
+  lSeen := TDictionary<Integer, Boolean>.Create;
+  lTvgs := TDictionary<string, Boolean>.Create;
   try
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
-      Q.Open('SELECT id, strip_prefixes, strip_suffixes FROM sources');
-      while not Q.Eof do
+      lQuery.Open('SELECT id, strip_prefixes, strip_suffixes FROM sources');
+      while not lQuery.Eof do
       begin
-        R.Prefixes := CsvToStrArray(Q.Fields[1].AsString, cStripTokenSep);
-        R.Suffixes := CsvToStrArray(Q.Fields[2].AsString, cStripTokenSep);
-        Rules.AddOrSetValue(Q.Fields[0].AsInteger, R);
-        Q.Next;
+        lRule.Prefixes := CsvToStrArray(lQuery.Fields[1].AsString, cStripTokenSep);
+        lRule.Suffixes := CsvToStrArray(lQuery.Fields[2].AsString, cStripTokenSep);
+        lRules.AddOrSetValue(lQuery.Fields[0].AsInteger, lRule);
+        lQuery.Next;
       end;
 
-      Q.Close;
-      Q.Open('SELECT content_type, tvg_id, name, source_id FROM streams WHERE id = :id', [AStreamId]);
-      if Q.IsEmpty then
+      lQuery.Close;
+      lQuery.Open('SELECT content_type, tvg_id, name, source_id FROM streams WHERE id = :id', [AStreamId]);
+      if lQuery.IsEmpty then
         Exit;
-      Ct := Q.FieldByName('content_type').AsString;
-      Tvg := Q.FieldByName('tvg_id').AsString.Trim;
-      Name := Q.FieldByName('name').AsString;
-      SrcId := Q.FieldByName('source_id').AsInteger;
-      Base := KeyOf(Name, SrcId, Qual, Head);
+      lCt := lQuery.FieldByName('content_type').AsString;
+      lTvg := lQuery.FieldByName('tvg_id').AsString.Trim;
+      lName := lQuery.FieldByName('name').AsString;
+      lSrcId := lQuery.FieldByName('source_id').AsInteger;
+      lBase := KeyOf(lName, lSrcId, lQual, lHead);
 
       if AListId > 0 then
       begin
-        Q.Close;
-        Q.Open('SELECT stream_item_id FROM list_items WHERE list_id = :l', [AListId]);
-        while not Q.Eof do
+        lQuery.Close;
+        lQuery.Open('SELECT stream_item_id FROM list_items WHERE list_id = :l', [AListId]);
+        while not lQuery.Eof do
         begin
-          InList.AddOrSetValue(Q.Fields[0].AsInteger, True);
-          Q.Next;
+          lInList.AddOrSetValue(lQuery.Fields[0].AsInteger, True);
+          lQuery.Next;
         end;
       end;
 
       // candidate pool: same content type (and source unless all sources), still
       // playable. Keys are computed in Delphi (decorative letters, strip rules).
-      Sql := '''
+      lSql := '''
         SELECT id, source_id, name, tvg_id, group_title FROM streams s
         WHERE content_type = :ct AND upstream_url <> '' AND
         ''' + cSqlSourceActiveExists;
-      if Tvg <> '' then
-        Tvgs.AddOrSetValue(Tvg.ToLower, True);
+      if lTvg <> '' then
+        lTvgs.AddOrSetValue(lTvg.ToLower, True);
       // pass 1: self + name matches (collecting their tvg-ids); pass 2: rows that
       // only share one of those tvg-ids, so a variant without a tvg-id still
       // finds a differently named sibling through the others
       // SQL prefilter (68k+ rows across sources): pass 1 only rows whose name
       // contains the longest plain token of the head key (every name/head match
       // must contain it), pass 2 only rows carrying one of the collected tvg-ids
-      Tok := '';
-      for T in Head.Split([' ']) do
-        if (Length(T) > Length(Tok)) and (Length(T) >= cMinPrefilterTokenLen) and IsPlainAscii(T) then
-          Tok := T;
-      for Pass := cPassByName to cPassByTvg do
+      lTok := '';
+      for lWord in lHead.Split([' ']) do
+        if (Length(lWord) > Length(lTok)) and (Length(lWord) >= cMinPrefilterTokenLen) and IsPlainAscii(lWord) then
+          lTok := lWord;
+      for lPass := cPassByName to cPassByTvg do
       begin
-        if (Pass = cPassByTvg) and (Tvgs.Count = 0) then
+        if (lPass = cPassByTvg) and (lTvgs.Count = 0) then
           Break;
-        Q.Close;
-        Extra := IfThen(AAllSources, '', ' AND source_id = :s');
-        TvgArr := Tvgs.Keys.ToArray;
-        if (Pass = cPassByName) and (Tok <> '') then
+        lQuery.Close;
+        lExtra := IfThen(AAllSources, '', ' AND source_id = :s');
+        lTvgArr := lTvgs.Keys.ToArray;
+        if (lPass = cPassByName) and (lTok <> '') then
           // (a non-ASCII name may carry the token in decorative letters)
-          Extra := Extra + ' AND (id = :self OR name LIKE :tok OR name GLOB ''*[^ -~]*'')'
-        else if Pass = cPassByTvg then
+          lExtra := lExtra + ' AND (id = :self OR name LIKE :tok OR name GLOB ''*[^ -~]*'')'
+        else if lPass = cPassByTvg then
         begin
-          Extra := Extra + ' AND tvg_id <> '''' AND lower(tvg_id) IN (';
-          for K := 0 to High(TvgArr) do
-            Extra := Extra + IfThen(K > 0, ',', '') + ':t' + IntToStr(K);
-          Extra := Extra + ')';
+          lExtra := lExtra + ' AND tvg_id <> '''' AND lower(tvg_id) IN (';
+          for k := 0 to High(lTvgArr) do
+            lExtra := lExtra + IfThen(k > 0, ',', '') + ':t' + IntToStr(k);
+          lExtra := lExtra + ')';
         end;
-        Q.SQL.Text := Sql + Extra;
-        Q.ParamByName('ct').AsString := Ct;
+        lQuery.SQL.Text := lSql + lExtra;
+        lQuery.ParamByName('ct').AsString := lCt;
         if not AAllSources then
-          Q.ParamByName('s').AsInteger := SrcId;
-        if (Pass = cPassByName) and (Tok <> '') then
+          lQuery.ParamByName('s').AsInteger := lSrcId;
+        if (lPass = cPassByName) and (lTok <> '') then
         begin
-          Q.ParamByName('self').AsInteger := AStreamId;
-          Q.ParamByName('tok').AsWideString := '%' + Tok + '%';
+          lQuery.ParamByName('self').AsInteger := AStreamId;
+          lQuery.ParamByName('tok').AsWideString := '%' + lTok + '%';
         end
-        else if Pass = cPassByTvg then
-          for K := 0 to High(TvgArr) do
-            Q.ParamByName('t' + IntToStr(K)).AsWideString := TvgArr[K];
-        Q.Open;
-        while not Q.Eof do
+        else if lPass = cPassByTvg then
+          for k := 0 to High(lTvgArr) do
+            lQuery.ParamByName('t' + IntToStr(k)).AsWideString := lTvgArr[k];
+        lQuery.Open;
+        while not lQuery.Eof do
         begin
-          if Seen.ContainsKey(Q.FieldByName('id').AsInteger) then
+          if lSeen.ContainsKey(lQuery.FieldByName('id').AsInteger) then
           begin
-            Q.Next;
+            lQuery.Next;
             Continue;
           end;
-          V := Default(TStreamVariant);
-          V.StreamId := Q.FieldByName('id').AsInteger;
-          V.SourceId := Q.FieldByName('source_id').AsInteger;
-          V.Name := Q.FieldByName('name').AsString;
-          V.TvgId := Q.FieldByName('tvg_id').AsString.Trim;
-          V.GroupTitle := Q.FieldByName('group_title').AsString;
-          CBase := KeyOf(V.Name, V.SourceId, CQual, CHead);
-          V.Quality := CQual;
-          V.IsSelf := V.StreamId = AStreamId;
+          lVariant := Default(TStreamVariant);
+          lVariant.StreamId := lQuery.FieldByName('id').AsInteger;
+          lVariant.SourceId := lQuery.FieldByName('source_id').AsInteger;
+          lVariant.Name := lQuery.FieldByName('name').AsString;
+          lVariant.TvgId := lQuery.FieldByName('tvg_id').AsString.Trim;
+          lVariant.GroupTitle := lQuery.FieldByName('group_title').AsString;
+          lCBase := KeyOf(lVariant.Name, lVariant.SourceId, lCQual, lCHead);
+          lVariant.Quality := lCQual;
+          lVariant.IsSelf := lVariant.StreamId = AStreamId;
           // same channel when the quality-stripped name matches; the head key (the
           // tokens before the quality word) catches tags after it ("RAW (S)") but
           // only when BOTH carry a quality word, so "NPO 1" never eats "NPO 1 EXTRA"
-          ByName := ((Base <> '') and (CBase = Base)) or
-                    ((Head <> '') and (CHead = Head) and (Qual <> '') and (CQual <> ''));
+          lByName := ((lBase <> '') and (lCBase = lBase)) or
+                    ((lHead <> '') and (lCHead = lHead) and (lQual <> '') and (lCQual <> ''));
           // same tvg-id (EPG id) + a quality word: a variant named differently
-          ByTvg := (Pass = cPassByTvg) and (V.TvgId <> '') and Tvgs.ContainsKey(V.TvgId.ToLower) and
-                   (CQual <> '');
-          if Pass = cPassByTvg then
-            ByName := False;
-          if ((Pass = cPassByName) and (V.IsSelf or ByName)) or ByTvg then
+          lByTvg := (lPass = cPassByTvg) and (lVariant.TvgId <> '') and lTvgs.ContainsKey(lVariant.TvgId.ToLower) and
+                   (lCQual <> '');
+          if lPass = cPassByTvg then
+            lByName := False;
+          if ((lPass = cPassByName) and (lVariant.IsSelf or lByName)) or lByTvg then
           begin
-            Seen.AddOrSetValue(V.StreamId, True);
-            if (Pass = cPassByName) and (V.TvgId <> '') then
-              Tvgs.AddOrSetValue(V.TvgId.ToLower, True);
-            if V.IsSelf then
-              V.MatchedBy := cMatchedBySelf
-            else if ByName then
-              V.MatchedBy := cMatchedByName
+            lSeen.AddOrSetValue(lVariant.StreamId, True);
+            if (lPass = cPassByName) and (lVariant.TvgId <> '') then
+              lTvgs.AddOrSetValue(lVariant.TvgId.ToLower, True);
+            if lVariant.IsSelf then
+              lVariant.MatchedBy := cMatchedBySelf
+            else if lByName then
+              lVariant.MatchedBy := cMatchedByName
             else
-              V.MatchedBy := cMatchedByTvg;
-            V.OnList := InList.ContainsKey(V.StreamId);
-            L.Add(V);
+              lVariant.MatchedBy := cMatchedByTvg;
+            lVariant.OnList := lInList.ContainsKey(lVariant.StreamId);
+            lList.Add(lVariant);
           end;
-          Q.Next;
+          lQuery.Next;
         end;
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
 
     // own source first, then the quality ladder (best tier first), then name
-    L.Sort(TComparer<TStreamVariant>.Construct(
-      function(const A, B: TStreamVariant): Integer
+    lList.Sort(TComparer<TStreamVariant>.Construct(
+      function(const ALeft, ARight: TStreamVariant): Integer
       begin
-        Result := Ord(A.SourceId <> SrcId) - Ord(B.SourceId <> SrcId);
+        Result := Ord(ALeft.SourceId <> lSrcId) - Ord(ARight.SourceId <> lSrcId);
         if Result = 0 then
-          Result := A.SourceId - B.SourceId;
+          Result := ALeft.SourceId - ARight.SourceId;
         if Result = 0 then
-          Result := QualityRank(A.Quality) - QualityRank(B.Quality);
+          Result := QualityRank(ALeft.Quality) - QualityRank(ARight.Quality);
         if Result = 0 then
-          Result := CompareText(A.Name, B.Name);
+          Result := CompareText(ALeft.Name, ARight.Name);
       end));
-    Result := L.ToArray;
+    Result := lList.ToArray;
   finally
-    Tvgs.Free;
-    Seen.Free;
-    L.Free;
-    InList.Free;
-    Rules.Free;
+    FreeAndNil(lTvgs);
+    FreeAndNil(lSeen);
+    FreeAndNil(lList);
+    FreeAndNil(lInList);
+    FreeAndNil(lRules);
   end;
 end;
 
 function TSQLiteStore.FindProviderVariants(AListId, ASourceGroupId,
   ATargetSourceId: Integer): TArray<TVariantMatch>;
 type
-  TRow = record M: TVariantMatch; Ct, Tvg: string; end;
+  TRow = record
+    M: TVariantMatch;
+    Ct, Tvg: string;
+  end;
 var
-  Q: TFDQuery;
-  Rows: TList<TRow>;
-  Row: TRow;
-  InList: TDictionary<Integer, Boolean>;
-  Res: TList<TVariantMatch>;
-  M: TVariantMatch;
-  I: Integer;
+  lQuery: TFDQuery;
+  lRows: TList<TRow>;
+  lRow: TRow;
+  lInList: TDictionary<Integer, Boolean>;
+  lRes: TList<TVariantMatch>;
+  lMatch: TVariantMatch;
+  i: Integer;
 begin
-  Rows := TList<TRow>.Create;
-  InList := TDictionary<Integer, Boolean>.Create;
-  Res := TList<TVariantMatch>.Create;
+  lRows := TList<TRow>.Create;
+  lInList := TDictionary<Integer, Boolean>.Create;
+  lRes := TList<TVariantMatch>.Create;
   try
-    Q := NewQuery;
+    lQuery := NewQuery;
     try
       // stream ids already on this list (a candidate already here can't be re-added)
-      Q.Open('SELECT stream_item_id FROM list_items WHERE list_id = :l', [AListId]);
-      while not Q.Eof do
+      lQuery.Open('SELECT stream_item_id FROM list_items WHERE list_id = :l', [AListId]);
+      while not lQuery.Eof do
       begin
-        InList.AddOrSetValue(Q.FieldByName('stream_item_id').AsInteger, True);
-        Q.Next;
+        lInList.AddOrSetValue(lQuery.FieldByName('stream_item_id').AsInteger, True);
+        lQuery.Next;
       end;
-      Q.Close;
+      lQuery.Close;
 
       // collect the source group's items, then close the cursor before per-item lookups
-      Q.Open(
+      lQuery.Open(
         '''
         SELECT i.id AS iid, i.stream_item_id AS sid, s.name AS sname,
           s.content_type AS ct, s.tvg_id AS tvg
@@ -2208,87 +2278,87 @@ begin
         WHERE i.list_id = :l AND i.custom_group_id = :g
         ORDER BY i.channel_number, sname COLLATE NOCASE
         ''', [AListId, ASourceGroupId]);
-      while not Q.Eof do
+      while not lQuery.Eof do
       begin
-        Row.M := Default(TVariantMatch);
-        Row.M.ItemId := Q.FieldByName('iid').AsInteger;
-        Row.M.StreamId := Q.FieldByName('sid').AsInteger;
-        Row.M.Name := Q.FieldByName('sname').AsString;
-        Row.Ct := Q.FieldByName('ct').AsString;
-        Row.Tvg := Q.FieldByName('tvg').AsString;
-        Rows.Add(Row);
-        Q.Next;
+        lRow.M := Default(TVariantMatch);
+        lRow.M.ItemId := lQuery.FieldByName('iid').AsInteger;
+        lRow.M.StreamId := lQuery.FieldByName('sid').AsInteger;
+        lRow.M.Name := lQuery.FieldByName('sname').AsString;
+        lRow.Ct := lQuery.FieldByName('ct').AsString;
+        lRow.Tvg := lQuery.FieldByName('tvg').AsString;
+        lRows.Add(lRow);
+        lQuery.Next;
       end;
-      Q.Close;
+      lQuery.Close;
 
       // per item: the SAME channel in the chosen target source — by tvg-id when the
       // channel has one (reliable), else by exact case-insensitive name; same content
       // type; skip placeholder rows with no URL.
-      Q.SQL.Text :=
+      lQuery.SQL.Text :=
         '''
         SELECT id, name FROM streams s
         WHERE source_id = :src AND content_type = :ct AND upstream_url <> '' AND (
           (:tvg <> '' AND tvg_id = :tvg) OR
           (:tvg = '' AND name = :nm COLLATE NOCASE)) AND
         ''' + cSqlSourceActiveExists + ' ORDER BY id LIMIT 1';
-      for I := 0 to Rows.Count - 1 do
+      for i := 0 to lRows.Count - 1 do
       begin
-        M := Rows[I].M;
-        Q.Close;
-        Q.ParamByName('src').AsInteger := ATargetSourceId;
-        Q.ParamByName('ct').AsWideString := Rows[I].Ct;
-        Q.ParamByName('tvg').AsWideString := Rows[I].Tvg;
-        Q.ParamByName('nm').AsWideString := M.Name;
-        Q.Open;
-        if not Q.IsEmpty then
+        lMatch := lRows[i].M;
+        lQuery.Close;
+        lQuery.ParamByName('src').AsInteger := ATargetSourceId;
+        lQuery.ParamByName('ct').AsWideString := lRows[i].Ct;
+        lQuery.ParamByName('tvg').AsWideString := lRows[i].Tvg;
+        lQuery.ParamByName('nm').AsWideString := lMatch.Name;
+        lQuery.Open;
+        if not lQuery.IsEmpty then
         begin
-          M.CandidateStreamId := Q.FieldByName('id').AsInteger;
-          M.CandidateName := Q.FieldByName('name').AsString;
-          M.AlreadyInList := InList.ContainsKey(M.CandidateStreamId);
+          lMatch.CandidateStreamId := lQuery.FieldByName('id').AsInteger;
+          lMatch.CandidateName := lQuery.FieldByName('name').AsString;
+          lMatch.AlreadyInList := lInList.ContainsKey(lMatch.CandidateStreamId);
         end;
-        Res.Add(M);
+        lRes.Add(lMatch);
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
-    Result := Res.ToArray;
+    Result := lRes.ToArray;
   finally
-    Rows.Free;
-    InList.Free;
-    Res.Free;
+    FreeAndNil(lRows);
+    FreeAndNil(lInList);
+    FreeAndNil(lRes);
   end;
 end;
 
 function TSQLiteStore.GetState(const AKey: string): string;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   Result := '';
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT value FROM app_state WHERE key = :k', [AKey]);
-    if not Q.IsEmpty then
-      Result := Q.Fields[0].AsString;
+    lQuery.Open('SELECT value FROM app_state WHERE key = :k', [AKey]);
+    if not lQuery.IsEmpty then
+      Result := lQuery.Fields[0].AsString;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 procedure TSQLiteStore.SetState(const AKey, AValue: string);
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.SQL.Text := '''
+    lQuery.SQL.Text := '''
       INSERT INTO app_state(key, value) VALUES(:k, :v)
       ON CONFLICT(key) DO UPDATE SET value = :v
       ''';
-    Q.ParamByName('k').AsWideString := AKey;
-    Q.ParamByName('v').AsWideString := AValue;
-    Q.ExecSQL;
+    lQuery.ParamByName('k').AsWideString := AKey;
+    lQuery.ParamByName('v').AsWideString := AValue;
+    lQuery.ExecSQL;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
@@ -2304,30 +2374,30 @@ end;
 
 procedure TSQLiteStore.ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgProgrammeList);
 var
-  P: TEpgProgramme;
-  Q: TFDQuery;
+  lProgramme: TEpgProgramme;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     FConn.StartTransaction;
     try
       FConn.ExecSQL('DELETE FROM epg WHERE source_id=:s', [ASourceId]);
       // prepared once, reused per row (was re-parsing per programme = very slow)
-      Q.SQL.Text :=
+      lQuery.SQL.Text :=
         '''
         INSERT INTO epg(source_id,channel_tvg_id,start_utc,stop_utc,title,description,category)
         VALUES(:s,:ch,:start,:stop,:title,:desc,:cat)
         ''';
-      for P in AProgrammes do
+      for lProgramme in AProgrammes do
       begin
-        Q.ParamByName('s').AsInteger := ASourceId;
-        Q.ParamByName('ch').AsWideString := P.ChannelTvgId;
-        Q.ParamByName('start').AsWideString := DateTimeToIsoUtc(P.StartUtc);
-        Q.ParamByName('stop').AsWideString := DateTimeToIsoUtc(P.StopUtc);
-        Q.ParamByName('title').AsWideString := P.Title;
-        Q.ParamByName('desc').AsWideString := P.Description;
-        Q.ParamByName('cat').AsWideString := P.Category;
-        Q.ExecSQL;
+        lQuery.ParamByName('s').AsInteger := ASourceId;
+        lQuery.ParamByName('ch').AsWideString := lProgramme.ChannelTvgId;
+        lQuery.ParamByName('start').AsWideString := DateTimeToIsoUtc(lProgramme.StartUtc);
+        lQuery.ParamByName('stop').AsWideString := DateTimeToIsoUtc(lProgramme.StopUtc);
+        lQuery.ParamByName('title').AsWideString := lProgramme.Title;
+        lQuery.ParamByName('desc').AsWideString := lProgramme.Description;
+        lQuery.ParamByName('cat').AsWideString := lProgramme.Category;
+        lQuery.ExecSQL;
       end;
       FConn.Commit;
     except
@@ -2335,17 +2405,17 @@ begin
       raise;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 procedure TSQLiteStore.ReplaceExtraEpg(ASourceId: Integer;
   const AChannels: TArray<TEpgChannelInfo>; const AProgrammes: TEpgProgrammeList);
 var
-  Q: TFDQuery;
-  C: TEpgChannelInfo;
+  lQuery: TFDQuery;
+  lChannel: TEpgChannelInfo;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     // one transaction (ReplaceEpg's own nests as a savepoint): a failure can't
     // leave new programmes with the old channel list (or the other way round)
@@ -2353,13 +2423,13 @@ begin
     try
       ReplaceEpg(ASourceId, AProgrammes);
       FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id=:s', [ASourceId]);
-      Q.SQL.Text := 'INSERT INTO epg_channels(source_id,channel_id,display_name) VALUES(:s,:id,:n)';
-      for C in AChannels do
+      lQuery.SQL.Text := 'INSERT INTO epg_channels(source_id,channel_id,display_name) VALUES(:s,:id,:n)';
+      for lChannel in AChannels do
       begin
-        Q.ParamByName('s').AsInteger := ASourceId;
-        Q.ParamByName('id').AsWideString := C.Id;
-        Q.ParamByName('n').AsWideString := C.Name;
-        Q.ExecSQL;
+        lQuery.ParamByName('s').AsInteger := ASourceId;
+        lQuery.ParamByName('id').AsWideString := lChannel.Id;
+        lQuery.ParamByName('n').AsWideString := lChannel.Name;
+        lQuery.ExecSQL;
       end;
       FConn.Commit;
     except
@@ -2367,7 +2437,7 @@ begin
       raise;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
@@ -2393,52 +2463,52 @@ type
     Slot: Integer;
   end;
 var
-  Q: TFDQuery;
-  NowS, Cand, K, IdA, IdB: string;
-  Keys: TDictionary<string, TKeyHit>;
-  PreferOwn: TDictionary<Integer, Byte>;
-  OwnFuture: TDictionary<string, Byte>;
-  C: TOutputChannel;
-  HasOwn: Boolean;
-  Wanted: TList<string>;
+  lQuery: TFDQuery;
+  lNowS, lCand, lId, lIdA, lIdB: string;
+  lKeys: TDictionary<string, TKeyHit>;
+  lPreferOwn: TDictionary<Integer, Byte>;
+  lOwnFuture: TDictionary<string, Byte>;
+  lChannel: TOutputChannel;
+  lHasOwn: Boolean;
+  lWanted: TList<string>;
   lWantedSet: TDictionary<string, Byte>;
-  Lo, Hi, J: Integer;
+  lLo, lHi, j: Integer;
 
-  function Placeholders(N: Integer): string;
+  function Placeholders(ACount: Integer): string;
   var
-    I: Integer;
+    i: Integer;
   begin
     Result := '';
-    for I := 0 to N - 1 do
-      Result := Result + IfThen(I > 0, ',', '') + ':p' + I.ToString;
+    for i := 0 to ACount - 1 do
+      Result := Result + IfThen(i > 0, ',', '') + ':p' + i.ToString;
   end;
 
   procedure AddKey(const AKey, AId: string; ASlot: Integer);
   var
-    H: TKeyHit;
+    lKeyHit: TKeyHit;
   begin
     if AKey = '' then
       Exit;
-    if Keys.TryGetValue(AKey, H) then
+    if lKeys.TryGetValue(AKey, lKeyHit) then
     begin
-      if (H.Slot = ASlot) and (H.Id <> AId) then
+      if (lKeyHit.Slot = ASlot) and (lKeyHit.Id <> AId) then
       begin
-        H.Id := ''; // two channels of the same guide share the key: don't guess
-        Keys[AKey] := H;
+        lKeyHit.Id := ''; // two channels of the same guide share the key: don't guess
+        lKeys[AKey] := lKeyHit;
       end;
       Exit; // an earlier (better) guide already owns this key
     end;
-    H.Id := AId;
-    H.Slot := ASlot;
-    Keys.Add(AKey, H);
+    lKeyHit.Id := AId;
+    lKeyHit.Slot := ASlot;
+    lKeys.Add(AKey, lKeyHit);
   end;
 
   function Hit(const AKey: string): string;
   var
-    H: TKeyHit;
+    lKeyHit: TKeyHit;
   begin
-    if (AKey <> '') and Keys.TryGetValue(AKey, H) then
-      Result := H.Id
+    if (AKey <> '') and lKeys.TryGetValue(AKey, lKeyHit) then
+      Result := lKeyHit.Id
     else
       Result := '';
   end;
@@ -2446,129 +2516,129 @@ var
 begin
   if AChannels.Count = 0 then
     Exit;
-  NowS := DateTimeToIsoUtc(NowUtc);
-  Keys := TDictionary<string, TKeyHit>.Create;
-  PreferOwn := TDictionary<Integer, Byte>.Create;
-  OwnFuture := TDictionary<string, Byte>.Create;
-  Q := NewQuery;
+  lNowS := DateTimeToIsoUtc(NowUtc);
+  lKeys := TDictionary<string, TKeyHit>.Create;
+  lPreferOwn := TDictionary<Integer, Byte>.Create;
+  lOwnFuture := TDictionary<string, Byte>.Create;
+  lQuery := NewQuery;
   try
-    Q.Open(
+    lQuery.Open(
       '''
       SELECT c.source_id AS sid, c.channel_id AS cid, c.display_name AS dn FROM epg_channels c
       WHERE c.source_id < 0 AND EXISTS (SELECT 1 FROM epg e WHERE e.channel_tvg_id = :pfx || c.channel_id
         AND e.source_id = c.source_id AND e.stop_utc > :now)
       ORDER BY c.source_id DESC, c.channel_id
-      ''', [EXTRA_EPG_PREFIX, NowS]);
-    while not Q.Eof do
+      ''', [EXTRA_EPG_PREFIX, lNowS]);
+    while not lQuery.Eof do
     begin
-      K := EXTRA_EPG_PREFIX + Q.FieldByName('cid').AsWideString;
-      AddKey(EpgIdKey(Q.FieldByName('cid').AsWideString), K, Q.FieldByName('sid').AsInteger);
-      AddKey(EpgNameKey(Q.FieldByName('dn').AsWideString), K, Q.FieldByName('sid').AsInteger);
-      Q.Next;
+      lId := EXTRA_EPG_PREFIX + lQuery.FieldByName('cid').AsWideString;
+      AddKey(EpgIdKey(lQuery.FieldByName('cid').AsWideString), lId, lQuery.FieldByName('sid').AsInteger);
+      AddKey(EpgNameKey(lQuery.FieldByName('dn').AsWideString), lId, lQuery.FieldByName('sid').AsInteger);
+      lQuery.Next;
     end;
-    Q.Close;
-    if Keys.Count = 0 then
+    lQuery.Close;
+    if lKeys.Count = 0 then
       Exit; // no extra guide configured / nothing upcoming in it
 
-    Q.Open('SELECT id FROM sources WHERE prefer_own_epg <> 0');
-    while not Q.Eof do
+    lQuery.Open('SELECT id FROM sources WHERE prefer_own_epg <> 0');
+    while not lQuery.Eof do
     begin
-      PreferOwn.AddOrSetValue(Q.FieldByName('id').AsInteger, 0);
-      Q.Next;
+      lPreferOwn.AddOrSetValue(lQuery.FieldByName('id').AsInteger, 0);
+      lQuery.Next;
     end;
-    Q.Close;
-    if PreferOwn.Count > 0 then
+    lQuery.Close;
+    if lPreferOwn.Count > 0 then
     begin
       // only the ids of THIS list's prefer-own channels (not every guide id of every
       // source: that was a full scan of the epg table per box request)
-      Wanted := TList<string>.Create;
+      lWanted := TList<string>.Create;
       lWantedSet := TDictionary<string, Byte>.Create;
       try
-        for C in AChannels do
-          if (C.ContentType = ctLive) and PreferOwn.ContainsKey(C.SourceId) then
-            for K in C.EpgReadIds do
-              if (K <> '') and not lWantedSet.ContainsKey(K) then
+        for lChannel in AChannels do
+          if (lChannel.ContentType = ctLive) and lPreferOwn.ContainsKey(lChannel.SourceId) then
+            for lId in lChannel.EpgReadIds do
+              if (lId <> '') and not lWantedSet.ContainsKey(lId) then
               begin
-                lWantedSet.Add(K, 0);
-                Wanted.Add(K);
+                lWantedSet.Add(lId, 0);
+                lWanted.Add(lId);
               end;
-        Lo := 0;
-        while Lo < Wanted.Count do
+        lLo := 0;
+        while lLo < lWanted.Count do
         begin
-          Hi := Min(Lo + cOwnEpgParamChunk, Wanted.Count) - 1;
-          Q.SQL.Text := '''
+          lHi := Min(lLo + cOwnEpgParamChunk, lWanted.Count) - 1;
+          lQuery.SQL.Text := '''
             SELECT DISTINCT channel_tvg_id AS t FROM epg WHERE source_id > 0 AND stop_utc > :now
             AND channel_tvg_id IN (
-            ''' + Placeholders(Hi - Lo + 1) + ')';
-          Q.ParamByName('now').AsWideString := NowS;
-          for J := Lo to Hi do
-            Q.ParamByName('p' + (J - Lo).ToString).AsWideString := Wanted[J];
-          Q.Open;
-          while not Q.Eof do
+            ''' + Placeholders(lHi - lLo + 1) + ')';
+          lQuery.ParamByName('now').AsWideString := lNowS;
+          for j := lLo to lHi do
+            lQuery.ParamByName('p' + (j - lLo).ToString).AsWideString := lWanted[j];
+          lQuery.Open;
+          while not lQuery.Eof do
           begin
-            OwnFuture.AddOrSetValue(Q.FieldByName('t').AsWideString, 0);
-            Q.Next;
+            lOwnFuture.AddOrSetValue(lQuery.FieldByName('t').AsWideString, 0);
+            lQuery.Next;
           end;
-          Q.Close;
-          Lo := Hi + 1;
+          lQuery.Close;
+          lLo := lHi + 1;
         end;
       finally
         FreeAndNil(lWantedSet);
-        FreeAndNil(Wanted);
+        FreeAndNil(lWanted);
       end;
     end;
 
-    for C in AChannels do
+    for lChannel in AChannels do
     begin
-      if C.ContentType <> ctLive then
+      if lChannel.ContentType <> ctLive then
         Continue;
       // the name the operator sees decides first ...
-      Cand := Hit(EpgNameKey(C.Name));
+      lCand := Hit(EpgNameKey(lChannel.Name));
       // ... else the tvg-id(s), but only when they agree on one guide channel
-      if Cand = '' then
+      if lCand = '' then
       begin
-        IdA := Hit(EpgIdKey(C.TvgId));
-        IdB := Hit(EpgIdKey(C.UpstreamTvgId));
-        if (IdA <> '') and ((IdB = '') or (IdB = IdA)) then
-          Cand := IdA
-        else if (IdA = '') and (IdB <> '') then
-          Cand := IdB;
+        lIdA := Hit(EpgIdKey(lChannel.TvgId));
+        lIdB := Hit(EpgIdKey(lChannel.UpstreamTvgId));
+        if (lIdA <> '') and ((lIdB = '') or (lIdB = lIdA)) then
+          lCand := lIdA
+        else if (lIdA = '') and (lIdB <> '') then
+          lCand := lIdB;
       end;
-      if Cand = '' then
+      if lCand = '' then
         Continue;
-      if PreferOwn.ContainsKey(C.SourceId) then
+      if lPreferOwn.ContainsKey(lChannel.SourceId) then
       begin
-        HasOwn := False;
-        for K in C.EpgReadIds do
-          if OwnFuture.ContainsKey(K) then
-            HasOwn := True;
-        if HasOwn then
+        lHasOwn := False;
+        for lId in lChannel.EpgReadIds do
+          if lOwnFuture.ContainsKey(lId) then
+            lHasOwn := True;
+        if lHasOwn then
           Continue; // this provider's own guide goes first and it has data
       end;
-      C.ExtraGuideId := Cand;
+      lChannel.ExtraGuideId := lCand;
     end;
   finally
-    Q.Free;
-    OwnFuture.Free;
-    PreferOwn.Free;
-    Keys.Free;
+    FreeAndNil(lQuery);
+    FreeAndNil(lOwnFuture);
+    FreeAndNil(lPreferOwn);
+    FreeAndNil(lKeys);
   end;
 end;
 
 function TSQLiteStore.LoadListTvgIds: TArray<string>;
 var
-  Q: TFDQuery;
-  L: TList<string>;
+  lQuery: TFDQuery;
+  lList: TList<string>;
 begin
-  L := TList<string>.Create;
-  Q := NewQuery;
+  lList := TList<string>.Create;
+  lQuery := NewQuery;
   try
     // Keep EPG for BOTH the upstream id AND the effective (override) id of every
     // chosen channel. The provider's XMLTV may publish under either: a pure
     // "relabel" override has its programmes under the upstream id, while a "match
     // an existing guide" override points at an id that already has its own EPG.
     // Serving (BuildXmltv / list EPG) re-keys whatever is found to the effective id.
-    Q.Open('''
+    lQuery.Open('''
       SELECT DISTINCT tvg FROM (
         SELECT s.tvg_id AS tvg FROM list_items i
           JOIN streams s ON s.id = i.stream_item_id WHERE s.tvg_id <> ''
@@ -2577,73 +2647,73 @@ begin
           JOIN streams s ON s.id = i.stream_item_id
           WHERE COALESCE(NULLIF(i.tvg_id_override,''), s.tvg_id) <> '')
       ''');
-    while not Q.Eof do
+    while not lQuery.Eof do
     begin
-      L.Add(Q.Fields[0].AsString);
-      Q.Next;
+      lList.Add(lQuery.Fields[0].AsString);
+      lQuery.Next;
     end;
-    Result := L.ToArray;
+    Result := lList.ToArray;
   finally
-    Q.Free;
-    L.Free;
+    FreeAndNil(lQuery);
+    FreeAndNil(lList);
   end;
 end;
 
-function TSQLiteStore.ReadProgramme(Q: TFDQuery): TEpgProgramme;
+function TSQLiteStore.ReadProgramme(AQuery: TFDQuery): TEpgProgramme;
 begin
   Result := TEpgProgramme.Create;
-  Result.Id := Q.FieldByName('id').AsInteger;
-  Result.SourceId := Q.FieldByName('source_id').AsInteger;
-  Result.ChannelTvgId := Q.FieldByName('channel_tvg_id').AsString;
-  Result.StartUtc := IsoUtcToDateTime(Q.FieldByName('start_utc').AsString);
-  Result.StopUtc := IsoUtcToDateTime(Q.FieldByName('stop_utc').AsString);
-  Result.Title := Q.FieldByName('title').AsString;
-  Result.Description := Q.FieldByName('description').AsString;
-  Result.Category := Q.FieldByName('category').AsString;
+  Result.Id := AQuery.FieldByName('id').AsInteger;
+  Result.SourceId := AQuery.FieldByName('source_id').AsInteger;
+  Result.ChannelTvgId := AQuery.FieldByName('channel_tvg_id').AsString;
+  Result.StartUtc := IsoUtcToDateTime(AQuery.FieldByName('start_utc').AsString);
+  Result.StopUtc := IsoUtcToDateTime(AQuery.FieldByName('stop_utc').AsString);
+  Result.Title := AQuery.FieldByName('title').AsString;
+  Result.Description := AQuery.FieldByName('description').AsString;
+  Result.Category := AQuery.FieldByName('category').AsString;
 end;
 
 function TSQLiteStore.LoadEpgForTvgIds(const ATvgIds: TArray<string>;
   AMaxDays: Integer): TEpgProgrammeList;
 var
-  Q: TFDQuery;
-  Placeholders, Cutoff: string;
-  Lo, Hi, I: Integer;
+  lQuery: TFDQuery;
+  lPlaceholders, lCutoff: string;
+  lLo, lHi, i: Integer;
 begin
   Result := TEpgProgrammeList.Create(True);
   if Length(ATvgIds) = 0 then
     Exit;
   if AMaxDays > 0 then
-    Cutoff := DateTimeToIsoUtc(IncDay(NowUtc, AMaxDays));
-  Lo := 0;
-  while Lo <= High(ATvgIds) do
+    lCutoff := DateTimeToIsoUtc(IncDay(NowUtc, AMaxDays));
+  lLo := 0;
+  while lLo <= High(ATvgIds) do
   begin
-    Hi := Lo + cEpgTvgIdParamChunk - 1;
-    if Hi > High(ATvgIds) then
-      Hi := High(ATvgIds);
-    Q := NewQuery;
+    lHi := lLo + cEpgTvgIdParamChunk - 1;
+    if lHi > High(ATvgIds) then
+      lHi := High(ATvgIds);
+    lQuery := NewQuery;
     try
-      Placeholders := '';
-      for I := Lo to Hi do
-        Placeholders := Placeholders + IfThen(I > Lo, ',', '') + ':p' + I.ToString;
-      Q.SQL.Text := 'SELECT * FROM epg WHERE channel_tvg_id IN (' + Placeholders + ')';
+      lPlaceholders := '';
+      for i := lLo to lHi do
+        lPlaceholders := lPlaceholders + IfThen(i > lLo, ',', '') + ':p' + i.ToString;
+      lQuery.SQL.Text := 'SELECT * FROM epg WHERE channel_tvg_id IN (' + lPlaceholders + ')';
       // optional cap: drop programmes that start beyond now + AMaxDays (0 = no cap)
       if AMaxDays > 0 then
-        Q.SQL.Text := Q.SQL.Text + ' AND start_utc < :cutoff';
-      Q.SQL.Text := Q.SQL.Text + ' ORDER BY channel_tvg_id, start_utc';
-      for I := Lo to Hi do
-        Q.ParamByName('p' + I.ToString).AsWideString := ATvgIds[I];
+        lQuery.SQL.Text := lQuery.SQL.Text + ' AND start_utc < :cutoff';
+      lQuery.SQL.Text := lQuery.SQL.Text + ' ORDER BY channel_tvg_id, start_utc';
+      for i := lLo to lHi do
+        lQuery.ParamByName('p' + i.ToString).AsWideString := ATvgIds[i];
       if AMaxDays > 0 then
-        Q.ParamByName('cutoff').AsWideString := Cutoff;
-      Q.Open;
-      while not Q.Eof do
+        lQuery.ParamByName('cutoff').AsWideString := lCutoff;
+      lQuery.Open;
+      while not lQuery.Eof do
       begin
-        Result.Add(ReadProgramme(Q));
-        Q.Next;
+        Result.Add(ReadProgramme(lQuery));
+        lQuery.Next;
       end;
     finally
-      Q.Free;
+      FreeAndNil(lQuery);
     end;
-    Lo := Hi + 1;
+    lLo := lHi + 1;
   end;
   // several providers deliver the same channel's guide: serve one, not all
   KeepOneSourcePerChannel(Result, NowUtc);
@@ -2651,62 +2721,63 @@ end;
 
 // ── Lists ──────────────────────────────────────────────────────────────────
 
-function TSQLiteStore.ReadList(Q: TFDQuery): TCustomList;
+function TSQLiteStore.ReadList(AQuery: TFDQuery): TCustomList;
 begin
   Result := TCustomList.Create;
-  Result.Id := Q.FieldByName('id').AsInteger;
-  Result.Name := Q.FieldByName('name').AsString;
-  Result.OutputUsername := Q.FieldByName('output_username').AsString;
-  Result.OutputPassword := Q.FieldByName('output_password').AsString;
-  Result.Enabled := Q.FieldByName('enabled').AsInteger <> 0;
+  Result.Id := AQuery.FieldByName('id').AsInteger;
+  Result.Name := AQuery.FieldByName('name').AsString;
+  Result.OutputUsername := AQuery.FieldByName('output_username').AsString;
+  Result.OutputPassword := AQuery.FieldByName('output_password').AsString;
+  Result.Enabled := AQuery.FieldByName('enabled').AsInteger <> 0;
 end;
 
 function TSQLiteStore.LoadLists: TObjectList<TCustomList>;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   Result := TObjectList<TCustomList>.Create(True);
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('SELECT * FROM lists ORDER BY name COLLATE NOCASE');
-    while not Q.Eof do
+    lQuery.Open('SELECT * FROM lists ORDER BY name COLLATE NOCASE');
+    while not lQuery.Eof do
     begin
-      Result.Add(ReadList(Q));
-      Q.Next;
+      Result.Add(ReadList(lQuery));
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 function TSQLiteStore.SaveList(const AList: TCustomList): Integer;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     if AList.Id = 0 then
-      Q.SQL.Text := '''
+      lQuery.SQL.Text := '''
         INSERT INTO lists(name,output_username,output_password,enabled)
         VALUES(:name,:u,:p,:enabled)
         '''
     else
     begin
-      Q.SQL.Text := 'UPDATE lists SET name=:name,output_username=:u,output_password=:p,enabled=:enabled WHERE id=:id';
-      Q.ParamByName('id').AsInteger := AList.Id;
+      lQuery.SQL.Text :=
+        'UPDATE lists SET name=:name,output_username=:u,output_password=:p,enabled=:enabled WHERE id=:id';
+      lQuery.ParamByName('id').AsInteger := AList.Id;
     end;
-    Q.ParamByName('name').AsWideString := AList.Name;
-    Q.ParamByName('u').AsWideString := AList.OutputUsername;
-    Q.ParamByName('p').AsWideString := AList.OutputPassword;
-    Q.ParamByName('enabled').AsInteger := Ord(AList.Enabled);
-    Q.ExecSQL;
+    lQuery.ParamByName('name').AsWideString := AList.Name;
+    lQuery.ParamByName('u').AsWideString := AList.OutputUsername;
+    lQuery.ParamByName('p').AsWideString := AList.OutputPassword;
+    lQuery.ParamByName('enabled').AsInteger := Ord(AList.Enabled);
+    lQuery.ExecSQL;
     if AList.Id = 0 then
       Result := FConn.GetLastAutoGenValue('')
     else
       Result := AList.Id;
     AList.Id := Result;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
@@ -2727,121 +2798,121 @@ end;
 
 function TSQLiteStore.FindListByCredentials(const AUser, APass: string): TCustomList;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   Result := nil;
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     if AUser = '' then
       // optional credentials: an empty login only reaches a bouquet that itself
       // has NO login - never one that is protected by a username/password
-      Q.Open('''
+      lQuery.Open('''
         SELECT * FROM lists WHERE enabled=1 AND COALESCE(output_username,'')=''
         ORDER BY id LIMIT 1
         ''')
     else
       // typed as wide strings: an untyped open array binds ANSI on Win32, so a
       // password with e.g. Cyrillic letters never matched
-      Q.Open('SELECT * FROM lists WHERE enabled=1 AND output_username=:u AND output_password=:p LIMIT 1',
+      lQuery.Open('SELECT * FROM lists WHERE enabled=1 AND output_username=:u AND output_password=:p LIMIT 1',
         [AUser, APass], [ftWideString, ftWideString]);
-    if not Q.IsEmpty then
-      Result := ReadList(Q);
+    if not lQuery.IsEmpty then
+      Result := ReadList(lQuery);
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 // ── Groups ───────────────────────────────────────────────────────────────
 
-function TSQLiteStore.ReadGroup(Q: TFDQuery): TCustomGroup;
+function TSQLiteStore.ReadGroup(AQuery: TFDQuery): TCustomGroup;
 begin
   Result := TCustomGroup.Create;
-  Result.Id := Q.FieldByName('id').AsInteger;
-  Result.ListId := Q.FieldByName('list_id').AsInteger;
-  Result.Name := Q.FieldByName('name').AsString;
-  Result.ContentType := ContentTypeFromString(Q.FieldByName('content_type').AsString);
-  Result.IsFavorite := Q.FieldByName('is_favorite').AsInteger <> 0;
-  Result.SortOrder := Q.FieldByName('sort_order').AsInteger;
+  Result.Id := AQuery.FieldByName('id').AsInteger;
+  Result.ListId := AQuery.FieldByName('list_id').AsInteger;
+  Result.Name := AQuery.FieldByName('name').AsString;
+  Result.ContentType := ContentTypeFromString(AQuery.FieldByName('content_type').AsString);
+  Result.IsFavorite := AQuery.FieldByName('is_favorite').AsInteger <> 0;
+  Result.SortOrder := AQuery.FieldByName('sort_order').AsInteger;
 end;
 
 function TSQLiteStore.LoadGroups(AListId: Integer): TCustomGroupList;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   Result := TCustomGroupList.Create(True);
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     // favorites first, then the manual drag order (sort_order>0), then A->Z for any
     // groups not manually positioned yet
-    Q.Open('''
+    lQuery.Open('''
       SELECT * FROM list_groups WHERE list_id=:l
       ORDER BY is_favorite DESC, CASE WHEN sort_order>0 THEN 0 ELSE 1 END, sort_order, name COLLATE NOCASE
       ''',
       [AListId]);
-    while not Q.Eof do
+    while not lQuery.Eof do
     begin
-      Result.Add(ReadGroup(Q));
-      Q.Next;
+      Result.Add(ReadGroup(lQuery));
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 function TSQLiteStore.SaveGroup(const AGroup: TCustomGroup): Integer;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     if AGroup.Id = 0 then
     begin
-      Q.SQL.Text := '''
+      lQuery.SQL.Text := '''
         INSERT INTO list_groups(list_id,name,content_type,is_favorite)
         VALUES(:l,:name,:c,:fav)
         ''';
-      Q.ParamByName('l').AsInteger := AGroup.ListId; // only the INSERT has :l
+      lQuery.ParamByName('l').AsInteger := AGroup.ListId; // only the INSERT has :l
     end
     else
     begin
-      Q.SQL.Text := 'UPDATE list_groups SET name=:name,content_type=:c,is_favorite=:fav WHERE id=:id';
-      Q.ParamByName('id').AsInteger := AGroup.Id;
+      lQuery.SQL.Text := 'UPDATE list_groups SET name=:name,content_type=:c,is_favorite=:fav WHERE id=:id';
+      lQuery.ParamByName('id').AsInteger := AGroup.Id;
     end;
-    Q.ParamByName('name').AsWideString := AGroup.Name;
-    Q.ParamByName('c').AsWideString := ContentTypeNames[AGroup.ContentType];
-    Q.ParamByName('fav').AsInteger := Ord(AGroup.IsFavorite);
-    Q.ExecSQL;
+    lQuery.ParamByName('name').AsWideString := AGroup.Name;
+    lQuery.ParamByName('c').AsWideString := ContentTypeNames[AGroup.ContentType];
+    lQuery.ParamByName('fav').AsInteger := Ord(AGroup.IsFavorite);
+    lQuery.ExecSQL;
     if AGroup.Id = 0 then
       Result := FConn.GetLastAutoGenValue('')
     else
       Result := AGroup.Id;
     AGroup.Id := Result;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
   TouchLineup;
 end;
 
 function TSQLiteStore.ReorderGroups(AListId: Integer; const AGroupIds: TArray<Integer>): Integer;
 var
-  Upd: TFDQuery;
-  I: Integer;
+  lUpdate: TFDQuery;
+  i: Integer;
 begin
   // assign sort_order = 1,2,3… following the caller's group-id order (drag result);
   // ids not in this list are skipped. Favorites still sort first (LoadOutputChannels).
   Result := 0;
-  Upd := NewQuery;
+  lUpdate := NewQuery;
   try
-    Upd.SQL.Text := 'UPDATE list_groups SET sort_order=:n WHERE id=:id AND list_id=:l';
+    lUpdate.SQL.Text := 'UPDATE list_groups SET sort_order=:n WHERE id=:id AND list_id=:l';
     FConn.StartTransaction;
     try
-      for I := 0 to High(AGroupIds) do
+      for i := 0 to High(AGroupIds) do
       begin
-        Upd.ParamByName('n').AsInteger := I + 1;
-        Upd.ParamByName('id').AsInteger := AGroupIds[I];
-        Upd.ParamByName('l').AsInteger := AListId;
-        Upd.ExecSQL;
-        Inc(Result, Upd.RowsAffected);
+        lUpdate.ParamByName('n').AsInteger := i + 1;
+        lUpdate.ParamByName('id').AsInteger := AGroupIds[i];
+        lUpdate.ParamByName('l').AsInteger := AListId;
+        lUpdate.ExecSQL;
+        Inc(Result, lUpdate.RowsAffected);
       end;
       FConn.Commit;
     except
@@ -2849,7 +2920,7 @@ begin
       raise;
     end;
   finally
-    Upd.Free;
+    FreeAndNil(lUpdate);
   end;
   TouchLineup;
 end;
@@ -2871,30 +2942,30 @@ end;
 
 // ── Items ────────────────────────────────────────────────────────────────
 
-function TSQLiteStore.ReadItem(Q: TFDQuery): TCustomItem;
+function TSQLiteStore.ReadItem(AQuery: TFDQuery): TCustomItem;
 
   function Opt(const AName: string): string; // joined columns may be absent
   var
-    F: TField;
+    lField: TField;
   begin
-    F := Q.FindField(AName);
-    if F <> nil then
-      Result := F.AsString
+    lField := AQuery.FindField(AName);
+    if lField <> nil then
+      Result := lField.AsString
     else
       Result := '';
   end;
 
 begin
   Result := TCustomItem.Create;
-  Result.Id := Q.FieldByName('id').AsInteger;
-  Result.ListId := Q.FieldByName('list_id').AsInteger;
-  Result.StreamItemId := Q.FieldByName('stream_item_id').AsInteger;
-  Result.CustomGroupId := Q.FieldByName('custom_group_id').AsInteger;
-  Result.ContentType := ContentTypeFromString(Q.FieldByName('content_type').AsString);
-  Result.DisplayName := Q.FieldByName('display_name').AsString;
-  Result.LogoOverride := Q.FieldByName('logo_override').AsString;
+  Result.Id := AQuery.FieldByName('id').AsInteger;
+  Result.ListId := AQuery.FieldByName('list_id').AsInteger;
+  Result.StreamItemId := AQuery.FieldByName('stream_item_id').AsInteger;
+  Result.CustomGroupId := AQuery.FieldByName('custom_group_id').AsInteger;
+  Result.ContentType := ContentTypeFromString(AQuery.FieldByName('content_type').AsString);
+  Result.DisplayName := AQuery.FieldByName('display_name').AsString;
+  Result.LogoOverride := AQuery.FieldByName('logo_override').AsString;
   Result.TvgIdOverride := Opt('tvg_id_override');
-  Result.ChannelNumber := Q.FieldByName('channel_number').AsInteger;
+  Result.ChannelNumber := AQuery.FieldByName('channel_number').AsInteger;
   Result.StreamName := Opt('stream_name');
   Result.StreamLogo := Opt('stream_logo');
   Result.StreamTvgId := Opt('stream_tvg');
@@ -2904,37 +2975,37 @@ end;
 
 function TSQLiteStore.LoadItems(AListId: Integer): TCustomItemList;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
   Result := TCustomItemList.Create(True);
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     // join the upstream stream so the UI can show the real channel name/logo
     // even when no override is set (LEFT JOIN: keep the item if the stream is gone)
-    Q.Open(
+    lQuery.Open(
       '''
       SELECT i.*, s.name AS stream_name, s.logo AS stream_logo, s.tvg_id AS stream_tvg, s.source_id AS stream_source, s.archive_days AS stream_archive
       FROM list_items i LEFT JOIN streams s ON s.id = i.stream_item_id
       WHERE i.list_id=:l ORDER BY i.channel_number, stream_name COLLATE NOCASE
       ''',
       [AListId]);
-    while not Q.Eof do
+    while not lQuery.Eof do
     begin
-      Result.Add(ReadItem(Q));
-      Q.Next;
+      Result.Add(ReadItem(lQuery));
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 function TSQLiteStore.LoadOutputChannels(AListId: Integer): TOutputChannelList;
 var
-  Q: TFDQuery;
-  C: TOutputChannel;
+  lQuery: TFDQuery;
+  lChannel: TOutputChannel;
 begin
   Result := TOutputChannelList.Create(True);
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     // Join item -> stream (upstream data) -> group (override). COALESCE applies
     // the rename/regroup/logo overrides; empty overrides fall back to upstream.
@@ -2942,7 +3013,7 @@ begin
     // Order: favorites first, then the manual group drag-order (sort_order>0), then
     // any un-positioned groups A→Z; WITHIN a group honour the operator's channel
     // numbers (drag/sort-by-Nr) — numbered first in number order, then unnumbered A→Z.
-    Q.SQL.Text :=
+    lQuery.SQL.Text :=
       '''
       SELECT i.stream_item_id AS sid, s.source_id AS srcid, i.channel_number AS num, i.content_type AS ctype,
         COALESCE(NULLIF(i.display_name,''), s.name) AS cname,
@@ -2962,71 +3033,71 @@ begin
       ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
         CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE
       ''';
-    Q.Open(Q.SQL.Text, [AListId]);
-    while not Q.Eof do
+    lQuery.Open(lQuery.SQL.Text, [AListId]);
+    while not lQuery.Eof do
     begin
-      C := TOutputChannel.Create;
-      C.StreamItemId := Q.FieldByName('sid').AsInteger;
-      C.SourceId := Q.FieldByName('srcid').AsInteger;
-      C.Number := Q.FieldByName('num').AsInteger;
-      C.ContentType := ContentTypeFromString(Q.FieldByName('ctype').AsString);
-      C.Name := Q.FieldByName('cname').AsString;
-      C.Logo := Q.FieldByName('clogo').AsString;
-      C.TvgId := Q.FieldByName('tvg').AsString;
-      C.UpstreamTvgId := Q.FieldByName('utvg').AsString;
-      C.UpstreamUrl := Q.FieldByName('url').AsString;
-      C.UpstreamId := Q.FieldByName('uid').AsString;
-      C.ArchiveDays := Q.FieldByName('arch').AsInteger;
-      C.GroupName := Q.FieldByName('gname').AsString;
-      C.IsFavoriteGroup := Q.FieldByName('fav').AsInteger <> 0;
-      Result.Add(C);
-      Q.Next;
+      lChannel := TOutputChannel.Create;
+      lChannel.StreamItemId := lQuery.FieldByName('sid').AsInteger;
+      lChannel.SourceId := lQuery.FieldByName('srcid').AsInteger;
+      lChannel.Number := lQuery.FieldByName('num').AsInteger;
+      lChannel.ContentType := ContentTypeFromString(lQuery.FieldByName('ctype').AsString);
+      lChannel.Name := lQuery.FieldByName('cname').AsString;
+      lChannel.Logo := lQuery.FieldByName('clogo').AsString;
+      lChannel.TvgId := lQuery.FieldByName('tvg').AsString;
+      lChannel.UpstreamTvgId := lQuery.FieldByName('utvg').AsString;
+      lChannel.UpstreamUrl := lQuery.FieldByName('url').AsString;
+      lChannel.UpstreamId := lQuery.FieldByName('uid').AsString;
+      lChannel.ArchiveDays := lQuery.FieldByName('arch').AsInteger;
+      lChannel.GroupName := lQuery.FieldByName('gname').AsString;
+      lChannel.IsFavoriteGroup := lQuery.FieldByName('fav').AsInteger <> 0;
+      Result.Add(lChannel);
+      lQuery.Next;
     end;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
   ApplyExtraGuides(Result);
 end;
 
 function TSQLiteStore.SaveItem(const AItem: TCustomItem): Integer;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
     if AItem.Id = 0 then
     begin
-      Q.SQL.Text :=
+      lQuery.SQL.Text :=
         '''
         INSERT INTO list_items(list_id,stream_item_id,custom_group_id,content_type,display_name,logo_override,channel_number,tvg_id_override)
         VALUES(:l,:sid,:grp,:c,:dn,:logo,:num,:tvg)
         ''';
       // :l and :sid exist only on the INSERT
-      Q.ParamByName('l').AsInteger := AItem.ListId;
-      Q.ParamByName('sid').AsInteger := AItem.StreamItemId;
+      lQuery.ParamByName('l').AsInteger := AItem.ListId;
+      lQuery.ParamByName('sid').AsInteger := AItem.StreamItemId;
     end
     else
     begin
-      Q.SQL.Text :=
+      lQuery.SQL.Text :=
         '''
         UPDATE list_items SET custom_group_id=:grp,content_type=:c,display_name=:dn,logo_override=:logo,channel_number=:num,tvg_id_override=:tvg WHERE id=:id
         ''';
-      Q.ParamByName('id').AsInteger := AItem.Id;
+      lQuery.ParamByName('id').AsInteger := AItem.Id;
     end;
-    Q.ParamByName('grp').AsInteger := AItem.CustomGroupId;
-    Q.ParamByName('c').AsWideString := ContentTypeNames[AItem.ContentType];
-    Q.ParamByName('dn').AsWideString := AItem.DisplayName;
-    Q.ParamByName('logo').AsWideString := AItem.LogoOverride;
-    Q.ParamByName('num').AsInteger := AItem.ChannelNumber;
-    Q.ParamByName('tvg').AsWideString := AItem.TvgIdOverride;
-    Q.ExecSQL;
+    lQuery.ParamByName('grp').AsInteger := AItem.CustomGroupId;
+    lQuery.ParamByName('c').AsWideString := ContentTypeNames[AItem.ContentType];
+    lQuery.ParamByName('dn').AsWideString := AItem.DisplayName;
+    lQuery.ParamByName('logo').AsWideString := AItem.LogoOverride;
+    lQuery.ParamByName('num').AsInteger := AItem.ChannelNumber;
+    lQuery.ParamByName('tvg').AsWideString := AItem.TvgIdOverride;
+    lQuery.ExecSQL;
     if AItem.Id = 0 then
       Result := FConn.GetLastAutoGenValue('')
     else
       Result := AItem.Id;
     AItem.Id := Result;
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
   TouchLineup;
 end;
@@ -3034,9 +3105,9 @@ end;
 function TSQLiteStore.AddItems(AListId, ACustomGroupId: Integer;
   const AStreamItemIds: TArray<Integer>): Integer;
 var
-  Sid: Integer;
-  Sel, Ins: TFDQuery;
-  Name, Stripped, Ct: string;
+  lSid: Integer;
+  lSelect, lInsert: TFDQuery;
+  lName, lStripped, lCt: string;
 begin
   Result := 0;
   if Length(AStreamItemIds) = 0 then
@@ -3046,49 +3117,49 @@ begin
   // cleaned label as display_name. We only set display_name when the strip
   // actually changed the name, so untouched names keep following the upstream
   // name (display_name empty => upstream). Bound via AsWideString to keep UTF-8.
-  Sel := NewQuery;
-  Ins := NewQuery;
+  lSelect := NewQuery;
+  lInsert := NewQuery;
   try
     // LEFT JOIN: a stream is still added when its source row is absent (sp NULL
     // -> no prefixes -> name kept). Stripping kicks in only when the source has
     // strip_prefixes configured.
-    Sel.SQL.Text :=
+    lSelect.SQL.Text :=
       '''
       SELECT s.name AS nm, s.content_type AS ct, src.strip_prefixes AS sp, src.strip_suffixes AS ss
       FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid
       ''';
-    Ins.SQL.Text :=
+    lInsert.SQL.Text :=
       '''
       INSERT OR IGNORE INTO list_items(list_id,stream_item_id,custom_group_id,content_type,display_name)
       VALUES(:l,:sid,:grp,:ct,:dn)
       ''';
     FConn.StartTransaction;
     try
-      for Sid in AStreamItemIds do
+      for lSid in AStreamItemIds do
       begin
-        Sel.Close;
-        Sel.ParamByName('sid').AsInteger := Sid;
-        Sel.Open;
-        if Sel.IsEmpty then
+        lSelect.Close;
+        lSelect.ParamByName('sid').AsInteger := lSid;
+        lSelect.Open;
+        if lSelect.IsEmpty then
           Continue;
-        Name := Sel.FieldByName('nm').AsString;
-        Ct := Sel.FieldByName('ct').AsString;
+        lName := lSelect.FieldByName('nm').AsString;
+        lCt := lSelect.FieldByName('ct').AsString;
         // strip_prefixes is ';'-delimited (a token may contain spaces/commas/pipes,
         // e.g. "┃F1 TV┃") — split with ';', NOT the default ',' (that would treat the
         // whole "a;b;c" string as one token and match nothing for multi-prefix sources).
-        Stripped := CleanChannelName(Name, CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep),
-          CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep));
+        lStripped := CleanChannelName(lName, CsvToStrArray(lSelect.FieldByName('sp').AsString, cStripTokenSep),
+          CsvToStrArray(lSelect.FieldByName('ss').AsString, cStripTokenSep));
 
-        Ins.ParamByName('l').AsInteger := AListId;
-        Ins.ParamByName('sid').AsInteger := Sid;
-        Ins.ParamByName('grp').AsInteger := ACustomGroupId;
-        Ins.ParamByName('ct').AsWideString := Ct;
-        if (Stripped <> '') and (Stripped <> Name) then
-          Ins.ParamByName('dn').AsWideString := Stripped
+        lInsert.ParamByName('l').AsInteger := AListId;
+        lInsert.ParamByName('sid').AsInteger := lSid;
+        lInsert.ParamByName('grp').AsInteger := ACustomGroupId;
+        lInsert.ParamByName('ct').AsWideString := lCt;
+        if (lStripped <> '') and (lStripped <> lName) then
+          lInsert.ParamByName('dn').AsWideString := lStripped
         else
-          Ins.ParamByName('dn').AsWideString := '';
-        Ins.ExecSQL;
-        Inc(Result, Ins.RowsAffected);
+          lInsert.ParamByName('dn').AsWideString := '';
+        lInsert.ExecSQL;
+        Inc(Result, lInsert.RowsAffected);
       end;
       FConn.Commit;
     except
@@ -3096,8 +3167,8 @@ begin
       raise;
     end;
   finally
-    Sel.Free;
-    Ins.Free;
+    FreeAndNil(lSelect);
+    FreeAndNil(lInsert);
   end;
   TouchLineup;
 end;
@@ -3114,61 +3185,61 @@ end;
 function TSQLiteStore.RestripSourceItems(ASourceId: Integer;
   const AOldPrefixes, AOldSuffixes, ANewPrefixes, ANewSuffixes: TArray<string>): Integer;
 var
-  Sel, Upd: TFDQuery;
-  Name, Dn, NewDn: string;
-  Ids: TList<Integer>;
-  NewDns: TList<string>;
-  I: Integer;
+  lSelect, lUpdate: TFDQuery;
+  lName, lDn, lNewDn: string;
+  lIds: TList<Integer>;
+  lNewDns: TList<string>;
+  i: Integer;
 begin
   Result := 0;
-  Ids := TList<Integer>.Create;
-  NewDns := TList<string>.Create;
-  Sel := NewQuery;
+  lIds := TList<Integer>.Create;
+  lNewDns := TList<string>.Create;
+  lSelect := NewQuery;
   try
     // collect the items that are still auto-managed (display_name == the value the
     // OLD prefix rule produced) and whose value changes under the NEW rule
-    Sel.SQL.Text :=
+    lSelect.SQL.Text :=
       '''
       SELECT i.id AS iid, s.name AS nm, i.display_name AS dn
       FROM list_items i JOIN streams s ON s.id = i.stream_item_id
       WHERE s.source_id = :sid
       ''';
-    Sel.ParamByName('sid').AsInteger := ASourceId;
-    Sel.Open;
-    while not Sel.Eof do
+    lSelect.ParamByName('sid').AsInteger := ASourceId;
+    lSelect.Open;
+    while not lSelect.Eof do
     begin
-      Name := Sel.FieldByName('nm').AsString;
-      Dn := Sel.FieldByName('dn').AsString;
-      if Dn = AutoDisplayName(Name, AOldPrefixes, AOldSuffixes) then // not a manual rename
+      lName := lSelect.FieldByName('nm').AsString;
+      lDn := lSelect.FieldByName('dn').AsString;
+      if lDn = AutoDisplayName(lName, AOldPrefixes, AOldSuffixes) then // not a manual rename
       begin
-        NewDn := AutoDisplayName(Name, ANewPrefixes, ANewSuffixes);
-        if NewDn <> Dn then
+        lNewDn := AutoDisplayName(lName, ANewPrefixes, ANewSuffixes);
+        if lNewDn <> lDn then
         begin
-          Ids.Add(Sel.FieldByName('iid').AsInteger);
-          NewDns.Add(NewDn);
+          lIds.Add(lSelect.FieldByName('iid').AsInteger);
+          lNewDns.Add(lNewDn);
         end;
       end;
-      Sel.Next;
+      lSelect.Next;
     end;
   finally
-    Sel.Free;
+    FreeAndNil(lSelect);
   end;
 
   try
-    if Ids.Count = 0 then
+    if lIds.Count = 0 then
       Exit;
 
-    Upd := NewQuery;
+    lUpdate := NewQuery;
     try
-      Upd.SQL.Text := 'UPDATE list_items SET display_name = :dn WHERE id = :id';
+      lUpdate.SQL.Text := 'UPDATE list_items SET display_name = :dn WHERE id = :id';
       FConn.StartTransaction;
       try
-        for I := 0 to Ids.Count - 1 do
+        for i := 0 to lIds.Count - 1 do
         begin
-          Upd.ParamByName('dn').AsWideString := NewDns[I];
-          Upd.ParamByName('id').AsInteger := Ids[I];
-          Upd.ExecSQL;
-          Inc(Result, Upd.RowsAffected);
+          lUpdate.ParamByName('dn').AsWideString := lNewDns[i];
+          lUpdate.ParamByName('id').AsInteger := lIds[i];
+          lUpdate.ExecSQL;
+          Inc(Result, lUpdate.RowsAffected);
         end;
         FConn.Commit;
       except
@@ -3176,81 +3247,81 @@ begin
         raise;
       end;
     finally
-      Upd.Free;
+      FreeAndNil(lUpdate);
     end;
   finally
-    Ids.Free;
-    NewDns.Free;
+    FreeAndNil(lIds);
+    FreeAndNil(lNewDns);
   end;
   TouchLineup;
 end;
 
 function TSQLiteStore.RestripAllItems: Integer;
 var
-  Sel, Upd: TFDQuery;
-  Name, Dn, Stripped: string;
-  Prefixes, Suffixes: TArray<string>;
-  Ids: TList<Integer>;
-  NewDns: TList<string>;
-  I: Integer;
+  lSelect, lUpdate: TFDQuery;
+  lName, lDn, lStripped: string;
+  lPrefixes, lSuffixes: TArray<string>;
+  lIds: TList<Integer>;
+  lNewDns: TList<string>;
+  i: Integer;
 begin
   // Apply each source's CURRENT strip-prefixes to ALL of its channels on every
   // list: where the name has a strippable prefix and the operator hasn't manually
   // renamed the channel (display_name empty or still the upstream name), set
   // display_name to the stripped form. Manual renames are left untouched.
   Result := 0;
-  Ids := TList<Integer>.Create;
-  NewDns := TList<string>.Create;
-  Sel := NewQuery;
+  lIds := TList<Integer>.Create;
+  lNewDns := TList<string>.Create;
+  lSelect := NewQuery;
   try
-    Sel.SQL.Text :=
+    lSelect.SQL.Text :=
       '''
       SELECT i.id AS iid, s.name AS nm, i.display_name AS dn, src.strip_prefixes AS sp,
         src.strip_suffixes AS ss
       FROM list_items i JOIN streams s ON s.id = i.stream_item_id
       JOIN sources src ON src.id = s.source_id
       ''';
-    Sel.Open;
-    while not Sel.Eof do
+    lSelect.Open;
+    while not lSelect.Eof do
     begin
-      Name := Sel.FieldByName('nm').AsString;
-      Dn := Sel.FieldByName('dn').AsString;
+      lName := lSelect.FieldByName('nm').AsString;
+      lDn := lSelect.FieldByName('dn').AsString;
       // ';'-delimited (see AddItems): a token may itself contain ',' or pipes.
-      Prefixes := CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep);
-      Suffixes := CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep);
-      if (Length(Prefixes) > 0) or (Length(Suffixes) > 0) then
+      lPrefixes := CsvToStrArray(lSelect.FieldByName('sp').AsString, cStripTokenSep);
+      lSuffixes := CsvToStrArray(lSelect.FieldByName('ss').AsString, cStripTokenSep);
+      if (Length(lPrefixes) > 0) or (Length(lSuffixes) > 0) then
       begin
-        Stripped := CleanChannelName(Name, Prefixes, Suffixes);
+        lStripped := CleanChannelName(lName, lPrefixes, lSuffixes);
         // only when stripping actually changes the name AND it isn't a manual rename
         // (a name still at its prefix-only auto value counts as auto, so adding
         // suffix tokens later also re-cleans channels added before)
-        if (Stripped <> Name) and (Stripped <> Dn) and
-           ((Dn = '') or (Dn = Name) or (Dn = StripNamePrefixes(Name, Prefixes))) then
+        if (lStripped <> lName) and (lStripped <> lDn) and
+           ((lDn = '') or (lDn = lName) or (lDn = StripNamePrefixes(lName, lPrefixes))) then
         begin
-          Ids.Add(Sel.FieldByName('iid').AsInteger);
-          NewDns.Add(Stripped);
+          lIds.Add(lSelect.FieldByName('iid').AsInteger);
+          lNewDns.Add(lStripped);
         end;
       end;
-      Sel.Next;
+      lSelect.Next;
     end;
   finally
-    Sel.Free;
+    FreeAndNil(lSelect);
   end;
 
   try
-    if Ids.Count = 0 then
+    if lIds.Count = 0 then
       Exit;
-    Upd := NewQuery;
+    lUpdate := NewQuery;
     try
-      Upd.SQL.Text := 'UPDATE list_items SET display_name = :dn WHERE id = :id';
+      lUpdate.SQL.Text := 'UPDATE list_items SET display_name = :dn WHERE id = :id';
       FConn.StartTransaction;
       try
-        for I := 0 to Ids.Count - 1 do
+        for i := 0 to lIds.Count - 1 do
         begin
-          Upd.ParamByName('dn').AsWideString := NewDns[I];
-          Upd.ParamByName('id').AsInteger := Ids[I];
-          Upd.ExecSQL;
-          Inc(Result, Upd.RowsAffected);
+          lUpdate.ParamByName('dn').AsWideString := lNewDns[i];
+          lUpdate.ParamByName('id').AsInteger := lIds[i];
+          lUpdate.ExecSQL;
+          Inc(Result, lUpdate.RowsAffected);
         end;
         FConn.Commit;
       except
@@ -3258,11 +3329,11 @@ begin
         raise;
       end;
     finally
-      Upd.Free;
+      FreeAndNil(lUpdate);
     end;
   finally
-    Ids.Free;
-    NewDns.Free;
+    FreeAndNil(lIds);
+    FreeAndNil(lNewDns);
   end;
   TouchLineup;
 end;
@@ -3270,10 +3341,10 @@ end;
 function TSQLiteStore.ReplaceItemStreams(AListId: Integer;
   const AReplacements: TArray<TItemStreamReplace>): Integer;
 var
-  Sel, Upd: TFDQuery;
-  R: TItemStreamReplace;
-  OldName, OldCt, Dn, NewName, NewCt, NewDn: string;
-  OldSp, OldSs, NewSp, NewSs: TArray<string>;
+  lSelect, lUpdate: TFDQuery;
+  lR: TItemStreamReplace;
+  lOldName, lOldCt, lDn, lNewName, lNewCt, lNewDn: string;
+  lOldSp, lOldSs, lNewSp, lNewSs: TArray<string>;
 begin
   // Swap the stream behind existing list items IN PLACE (same row, group, channel
   // number, logo / tvg-id overrides). An auto-managed display_name (still what the
@@ -3283,22 +3354,22 @@ begin
   Result := 0;
   if Length(AReplacements) = 0 then
     Exit;
-  Sel := NewQuery;
-  Upd := NewQuery;
+  lSelect := NewQuery;
+  lUpdate := NewQuery;
   try
-    Upd.SQL.Text :=
+    lUpdate.SQL.Text :=
       '''
       UPDATE list_items SET stream_item_id = :sid, display_name = :dn
       WHERE id = :id AND list_id = :l
       ''';
     FConn.StartTransaction;
     try
-      for R in AReplacements do
+      for lR in AReplacements do
       begin
-        if (R.ItemId <= 0) or (R.StreamId <= 0) then
+        if (lR.ItemId <= 0) or (lR.StreamId <= 0) then
           Continue;
-        Sel.Close;
-        Sel.SQL.Text :=
+        lSelect.Close;
+        lSelect.SQL.Text :=
           '''
           SELECT i.display_name AS dn, i.content_type AS ct, s.name AS nm,
             src.strip_prefixes AS sp, src.strip_suffixes AS ss
@@ -3306,51 +3377,51 @@ begin
           LEFT JOIN sources src ON src.id = s.source_id
           WHERE i.id = :id AND i.list_id = :l
           ''';
-        Sel.ParamByName('id').AsInteger := R.ItemId;
-        Sel.ParamByName('l').AsInteger := AListId;
-        Sel.Open;
-        if Sel.IsEmpty then
+        lSelect.ParamByName('id').AsInteger := lR.ItemId;
+        lSelect.ParamByName('l').AsInteger := AListId;
+        lSelect.Open;
+        if lSelect.IsEmpty then
           Continue;
-        Dn := Sel.FieldByName('dn').AsString;
-        OldCt := Sel.FieldByName('ct').AsString;
-        OldName := Sel.FieldByName('nm').AsString;
-        OldSp := CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep);
-        OldSs := CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep);
+        lDn := lSelect.FieldByName('dn').AsString;
+        lOldCt := lSelect.FieldByName('ct').AsString;
+        lOldName := lSelect.FieldByName('nm').AsString;
+        lOldSp := CsvToStrArray(lSelect.FieldByName('sp').AsString, cStripTokenSep);
+        lOldSs := CsvToStrArray(lSelect.FieldByName('ss').AsString, cStripTokenSep);
 
-        Sel.Close;
-        Sel.SQL.Text :=
+        lSelect.Close;
+        lSelect.SQL.Text :=
           '''
           SELECT s.name AS nm, s.content_type AS ct, src.strip_prefixes AS sp,
             src.strip_suffixes AS ss,
             (SELECT COUNT(*) FROM list_items x WHERE x.list_id = :l AND x.stream_item_id = s.id) AS used
           FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid AND
           ''' + cSqlSourceActive; // never onto a switched-off source / type
-        Sel.ParamByName('sid').AsInteger := R.StreamId;
-        Sel.ParamByName('l').AsInteger := AListId;
-        Sel.Open;
-        if Sel.IsEmpty or (Sel.FieldByName('used').AsInteger > 0) then
+        lSelect.ParamByName('sid').AsInteger := lR.StreamId;
+        lSelect.ParamByName('l').AsInteger := AListId;
+        lSelect.Open;
+        if lSelect.IsEmpty or (lSelect.FieldByName('used').AsInteger > 0) then
           Continue;
-        NewCt := Sel.FieldByName('ct').AsString;
-        if not SameText(NewCt, OldCt) then
+        lNewCt := lSelect.FieldByName('ct').AsString;
+        if not SameText(lNewCt, lOldCt) then
           Continue;
-        NewName := Sel.FieldByName('nm').AsString;
-        NewSp := CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep);
-        NewSs := CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep);
+        lNewName := lSelect.FieldByName('nm').AsString;
+        lNewSp := CsvToStrArray(lSelect.FieldByName('sp').AsString, cStripTokenSep);
+        lNewSs := CsvToStrArray(lSelect.FieldByName('ss').AsString, cStripTokenSep);
 
         // auto-managed name (empty, upstream name, or the stripped form of it) ->
         // follow the new channel; otherwise keep the operator's own name
-        if (Dn = '') or (Dn = OldName) or (Dn = AutoDisplayName(OldName, OldSp, OldSs)) or
-           (Dn = StripNamePrefixes(OldName, OldSp)) then
-          NewDn := AutoDisplayName(NewName, NewSp, NewSs)
+        if (lDn = '') or (lDn = lOldName) or (lDn = AutoDisplayName(lOldName, lOldSp, lOldSs)) or
+           (lDn = StripNamePrefixes(lOldName, lOldSp)) then
+          lNewDn := AutoDisplayName(lNewName, lNewSp, lNewSs)
         else
-          NewDn := Dn;
+          lNewDn := lDn;
 
-        Upd.ParamByName('sid').AsInteger := R.StreamId;
-        Upd.ParamByName('dn').AsWideString := NewDn;
-        Upd.ParamByName('id').AsInteger := R.ItemId;
-        Upd.ParamByName('l').AsInteger := AListId;
-        Upd.ExecSQL;
-        Inc(Result, Upd.RowsAffected);
+        lUpdate.ParamByName('sid').AsInteger := lR.StreamId;
+        lUpdate.ParamByName('dn').AsWideString := lNewDn;
+        lUpdate.ParamByName('id').AsInteger := lR.ItemId;
+        lUpdate.ParamByName('l').AsInteger := AListId;
+        lUpdate.ExecSQL;
+        Inc(Result, lUpdate.RowsAffected);
       end;
       FConn.Commit;
     except
@@ -3358,8 +3429,8 @@ begin
       raise;
     end;
   finally
-    Sel.Free;
-    Upd.Free;
+    FreeAndNil(lSelect);
+    FreeAndNil(lUpdate);
   end;
   if Result > 0 then
     TouchLineup;
@@ -3368,19 +3439,19 @@ end;
 function TSQLiteStore.RestripGroupItems(AListId, AGroupId: Integer;
   const AExtraPrefixes, AExtraSuffixes: TArray<string>; ADryRun: Boolean): TArray<TNameChange>;
 var
-  Sel, Upd: TFDQuery;
-  Changes: TList<TNameChange>;
-  C: TNameChange;
-  Dn, Up, Shown, NewName: string;
+  lSelect, lUpdate: TFDQuery;
+  lChanges: TList<TNameChange>;
+  lChange: TNameChange;
+  lDn, lUp, lShown, lNewName: string;
 begin
   // Clean the name each channel currently SHOWS (display name, else upstream name)
   // with its source's strip rules + the one-off extra tokens. Stripping is
   // idempotent, so an auto name gives the same result as cleaning the upstream
   // name, and a manual rename only changes when it really carries such a token.
-  Changes := TList<TNameChange>.Create;
-  Sel := NewQuery;
+  lChanges := TList<TNameChange>.Create;
+  lSelect := NewQuery;
   try
-    Sel.Open(
+    lSelect.Open(
       '''
       SELECT i.id AS iid, i.display_name AS dn, s.name AS nm,
         src.strip_prefixes AS sp, src.strip_suffixes AS ss
@@ -3389,50 +3460,50 @@ begin
       WHERE i.list_id = :l AND i.custom_group_id = :g
       ORDER BY i.channel_number, s.name COLLATE NOCASE
       ''', [AListId, AGroupId]);
-    while not Sel.Eof do
+    while not lSelect.Eof do
     begin
-      Dn := Sel.FieldByName('dn').AsString;
-      Up := Sel.FieldByName('nm').AsString;
-      if Dn.Trim <> '' then
-        Shown := Dn
+      lDn := lSelect.FieldByName('dn').AsString;
+      lUp := lSelect.FieldByName('nm').AsString;
+      if lDn.Trim <> '' then
+        lShown := lDn
       else
-        Shown := Up;
-      NewName := CleanChannelName(Shown,
-        CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep) + AExtraPrefixes,
-        CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep) + AExtraSuffixes);
-      if NewName <> Shown.Trim then
+        lShown := lUp;
+      lNewName := CleanChannelName(lShown,
+        CsvToStrArray(lSelect.FieldByName('sp').AsString, cStripTokenSep) + AExtraPrefixes,
+        CsvToStrArray(lSelect.FieldByName('ss').AsString, cStripTokenSep) + AExtraSuffixes);
+      if lNewName <> lShown.Trim then
       begin
-        C.ItemId := Sel.FieldByName('iid').AsInteger;
-        C.OldName := Shown;
-        C.NewName := NewName;
-        C.Original := Up;
-        Changes.Add(C);
+        lChange.ItemId := lSelect.FieldByName('iid').AsInteger;
+        lChange.OldName := lShown;
+        lChange.NewName := lNewName;
+        lChange.Original := lUp;
+        lChanges.Add(lChange);
       end;
-      Sel.Next;
+      lSelect.Next;
     end;
   finally
-    Sel.Free;
+    FreeAndNil(lSelect);
   end;
 
   try
-    Result := Changes.ToArray;
-    if ADryRun or (Changes.Count = 0) then
+    Result := lChanges.ToArray;
+    if ADryRun or (lChanges.Count = 0) then
       Exit;
-    Upd := NewQuery;
+    lUpdate := NewQuery;
     try
-      Upd.SQL.Text := 'UPDATE list_items SET display_name = :dn WHERE id = :id AND list_id = :l';
+      lUpdate.SQL.Text := 'UPDATE list_items SET display_name = :dn WHERE id = :id AND list_id = :l';
       FConn.StartTransaction;
       try
-        for C in Changes do
+        for lChange in lChanges do
         begin
           // equal to the upstream name -> '' (keep following upstream renames)
-          if C.NewName = C.Original then
-            Upd.ParamByName('dn').AsWideString := ''
+          if lChange.NewName = lChange.Original then
+            lUpdate.ParamByName('dn').AsWideString := ''
           else
-            Upd.ParamByName('dn').AsWideString := C.NewName;
-          Upd.ParamByName('id').AsInteger := C.ItemId;
-          Upd.ParamByName('l').AsInteger := AListId;
-          Upd.ExecSQL;
+            lUpdate.ParamByName('dn').AsWideString := lChange.NewName;
+          lUpdate.ParamByName('id').AsInteger := lChange.ItemId;
+          lUpdate.ParamByName('l').AsInteger := AListId;
+          lUpdate.ExecSQL;
         end;
         FConn.Commit;
       except
@@ -3440,11 +3511,11 @@ begin
         raise;
       end;
     finally
-      Upd.Free;
+      FreeAndNil(lUpdate);
     end;
     TouchLineup;
   finally
-    Changes.Free;
+    FreeAndNil(lChanges);
   end;
 end;
 
@@ -3463,19 +3534,19 @@ end;
 
 function TSQLiteStore.DedupeListItems(AListId: Integer): Integer;
 var
-  Q: TFDQuery;
-  Seen: TDictionary<string, Boolean>;
-  ToDelete: TList<Integer>;
-  Key: string;
+  lQuery: TFDQuery;
+  lSeen: TDictionary<string, Boolean>;
+  lToDelete: TList<Integer>;
+  lKey: string;
 begin
-  Seen := TDictionary<string, Boolean>.Create;
-  ToDelete := TList<Integer>.Create;
-  Q := NewQuery;
+  lSeen := TDictionary<string, Boolean>.Create;
+  lToDelete := TList<Integer>.Create;
+  lQuery := NewQuery;
   try
     // walk items in the OUTPUT order (as LoadOutputChannels: favorites, group
     // drag-order, groups A-Z, channel numbers, names A-Z); the FIRST occurrence of
     // each upstream URL is kept, later ones are dropped as duplicates.
-    Q.Open(
+    lQuery.Open(
       '''
       SELECT i.id AS iid, s.upstream_url AS url, i.channel_number AS num,
         COALESCE(NULLIF(g.name,''), s.group_title) AS gname,
@@ -3488,68 +3559,68 @@ begin
         CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE
       ''',
       [AListId]);
-    while not Q.Eof do
+    while not lQuery.Eof do
     begin
-      Key := Q.FieldByName('url').AsString;
-      if (Key <> '') and Seen.ContainsKey(Key) then
-        ToDelete.Add(Q.FieldByName('iid').AsInteger)
+      lKey := lQuery.FieldByName('url').AsString;
+      if (lKey <> '') and lSeen.ContainsKey(lKey) then
+        lToDelete.Add(lQuery.FieldByName('iid').AsInteger)
       else
-        Seen.AddOrSetValue(Key, True);
-      Q.Next;
+        lSeen.AddOrSetValue(lKey, True);
+      lQuery.Next;
     end;
-    if ToDelete.Count > 0 then
-      FConn.ExecSQL('DELETE FROM list_items WHERE id IN (' + IdsToCsv(ToDelete.ToArray) + ')');
-    Result := ToDelete.Count;
+    if lToDelete.Count > 0 then
+      FConn.ExecSQL('DELETE FROM list_items WHERE id IN (' + IdsToCsv(lToDelete.ToArray) + ')');
+    Result := lToDelete.Count;
   finally
-    Q.Free;
-    ToDelete.Free;
-    Seen.Free;
+    FreeAndNil(lQuery);
+    FreeAndNil(lToDelete);
+    FreeAndNil(lSeen);
   end;
   TouchLineup;
 end;
 
 function TSQLiteStore.SortGroupAlphabetically(AListId, ACustomGroupId: Integer): Integer;
 var
-  Q, Upd: TFDQuery;
-  Ids: TList<Integer>;
-  I, Base: Integer;
+  lQuery, lUpdate: TFDQuery;
+  lIds: TList<Integer>;
+  i, lBase: Integer;
 begin
-  Ids := TList<Integer>.Create;
-  Q := NewQuery;
-  Upd := NewQuery;
+  lIds := TList<Integer>.Create;
+  lQuery := NewQuery;
+  lUpdate := NewQuery;
   try
-    Q.Open(
+    lQuery.Open(
       '''
       SELECT i.id AS iid FROM list_items i JOIN streams s ON s.id = i.stream_item_id
       WHERE i.list_id = :l AND i.custom_group_id = :g
       ORDER BY COALESCE(NULLIF(i.display_name,''), s.name) COLLATE NOCASE
       ''',
       [AListId, ACustomGroupId]);
-    while not Q.Eof do
+    while not lQuery.Eof do
     begin
-      Ids.Add(Q.FieldByName('iid').AsInteger);
-      Q.Next;
+      lIds.Add(lQuery.FieldByName('iid').AsInteger);
+      lQuery.Next;
     end;
-    Base := GroupNumberBase(AListId, ACustomGroupId);
-    Upd.SQL.Text := 'UPDATE list_items SET channel_number=:n WHERE id=:id';
+    lBase := GroupNumberBase(AListId, ACustomGroupId);
+    lUpdate.SQL.Text := 'UPDATE list_items SET channel_number=:n WHERE id=:id';
     FConn.StartTransaction;
     try
-      for I := 0 to Ids.Count - 1 do
+      for i := 0 to lIds.Count - 1 do
       begin
-        Upd.ParamByName('n').AsInteger := Base + I;
-        Upd.ParamByName('id').AsInteger := Ids[I];
-        Upd.ExecSQL;
+        lUpdate.ParamByName('n').AsInteger := lBase + i;
+        lUpdate.ParamByName('id').AsInteger := lIds[i];
+        lUpdate.ExecSQL;
       end;
       FConn.Commit;
     except
       FConn.Rollback;
       raise;
     end;
-    Result := Ids.Count;
+    Result := lIds.Count;
   finally
-    Q.Free;
-    Upd.Free;
-    Ids.Free;
+    FreeAndNil(lQuery);
+    FreeAndNil(lUpdate);
+    FreeAndNil(lIds);
   end;
   TouchLineup;
 end;
@@ -3557,32 +3628,32 @@ end;
 function TSQLiteStore.ReorderGroupItems(AListId, ACustomGroupId: Integer;
   const AItemIds: TArray<Integer>): Integer;
 var
-  Upd: TFDQuery;
-  I, Base: Integer;
+  lUpdate: TFDQuery;
+  i, lBase: Integer;
 begin
   // Assign channel_number = base, base+1, … following the caller-supplied item
   // order (drag-and-drop result); base = the group's current lowest number, so a
   // bouquet-wide numbering survives. Only items that really belong to this
   // list+group are touched, so a stale or foreign id is ignored.
   Result := 0;
-  Base := GroupNumberBase(AListId, ACustomGroupId);
-  Upd := NewQuery;
+  lBase := GroupNumberBase(AListId, ACustomGroupId);
+  lUpdate := NewQuery;
   try
-    Upd.SQL.Text :=
+    lUpdate.SQL.Text :=
       '''
       UPDATE list_items SET channel_number=:n
       WHERE id=:id AND list_id=:l AND custom_group_id=:g
       ''';
     FConn.StartTransaction;
     try
-      for I := 0 to High(AItemIds) do
+      for i := 0 to High(AItemIds) do
       begin
-        Upd.ParamByName('n').AsInteger := Base + I;
-        Upd.ParamByName('id').AsInteger := AItemIds[I];
-        Upd.ParamByName('l').AsInteger := AListId;
-        Upd.ParamByName('g').AsInteger := ACustomGroupId;
-        Upd.ExecSQL;
-        Inc(Result, Upd.RowsAffected);
+        lUpdate.ParamByName('n').AsInteger := lBase + i;
+        lUpdate.ParamByName('id').AsInteger := AItemIds[i];
+        lUpdate.ParamByName('l').AsInteger := AListId;
+        lUpdate.ParamByName('g').AsInteger := ACustomGroupId;
+        lUpdate.ExecSQL;
+        Inc(Result, lUpdate.RowsAffected);
       end;
       FConn.Commit;
     except
@@ -3590,7 +3661,7 @@ begin
       raise;
     end;
   finally
-    Upd.Free;
+    FreeAndNil(lUpdate);
   end;
   TouchLineup;
 end;
@@ -3598,19 +3669,19 @@ end;
 
 function TSQLiteStore.GroupNumberBase(AListId, ACustomGroupId: Integer): Integer;
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
 begin
-  Q := NewQuery;
+  lQuery := NewQuery;
   try
-    Q.Open('''
+    lQuery.Open('''
       SELECT MIN(channel_number) FROM list_items
       WHERE list_id = :l AND custom_group_id = :g AND channel_number > 0
       ''',
       [AListId, ACustomGroupId]);
     // MIN() over no rows is NULL and its column has no declared type: read as text
-    Result := StrToIntDef(Q.Fields[0].AsString, 0);
+    Result := StrToIntDef(lQuery.Fields[0].AsString, 0);
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
   if Result <= 0 then
     Result := cDefaultGroupNumberBase;
@@ -3618,22 +3689,22 @@ end;
 
 function TSQLiteStore.SetItemNumbers(AListId: Integer; const ANumbers: TArray<TItemNumber>): Integer;
 var
-  Upd: TFDQuery;
-  N: TItemNumber;
+  lUpdate: TFDQuery;
+  lNumber: TItemNumber;
 begin
   Result := 0;
-  Upd := NewQuery;
+  lUpdate := NewQuery;
   try
-    Upd.SQL.Text := 'UPDATE list_items SET channel_number=:n WHERE id=:id AND list_id=:l';
+    lUpdate.SQL.Text := 'UPDATE list_items SET channel_number=:n WHERE id=:id AND list_id=:l';
     FConn.StartTransaction;
     try
-      for N in ANumbers do
+      for lNumber in ANumbers do
       begin
-        Upd.ParamByName('n').AsInteger := Max(0, N.ChannelNumber);
-        Upd.ParamByName('id').AsInteger := N.ItemId;
-        Upd.ParamByName('l').AsInteger := AListId;
-        Upd.ExecSQL;
-        Inc(Result, Upd.RowsAffected);
+        lUpdate.ParamByName('n').AsInteger := Max(0, lNumber.ChannelNumber);
+        lUpdate.ParamByName('id').AsInteger := lNumber.ItemId;
+        lUpdate.ParamByName('l').AsInteger := AListId;
+        lUpdate.ExecSQL;
+        Inc(Result, lUpdate.RowsAffected);
       end;
       FConn.Commit;
     except
@@ -3641,7 +3712,7 @@ begin
       raise;
     end;
   finally
-    Upd.Free;
+    FreeAndNil(lUpdate);
   end;
   TouchLineup;
 end;

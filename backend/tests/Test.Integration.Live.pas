@@ -13,18 +13,25 @@ unit Test.Integration.Live;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Opt-in live tests against a real provider (skipped without credentials).</summary>
   [TestFixture]
   TLiveTests = class
   private
     FCreds: TObject; // TJSONObject or nil
+    /// <summary>Returns the named credentials section, or nil.</summary>
     function Section(const AName: string): TObject; // TJSONObject or nil
+    /// <summary>Returns the url of the named credentials section ('' = skip).</summary>
     function SectionUrl(const AName: string): string;
   public
+    /// <summary>Loads the credentials file, if any.</summary>
     [Setup] procedure Setup;
+    /// <summary>Frees the loaded credentials.</summary>
     [TearDown] procedure TearDown;
+    /// <summary>An Xtream portal returns live streams with usable upstream URLs.</summary>
     [Test] procedure XtreamReadsLiveStreams;
     // EPG / standalone-M3U live tests come later (user request: Xtream first).
   end;
@@ -32,42 +39,49 @@ type
 implementation
 
 uses
+  // RTL
   Winapi.Windows, // silences H2443 (TDirectory inline expansion)
-  System.SysUtils, System.IOUtils, System.JSON,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog,
-  IPTV.Source.Intf, IPTV.Source.Xtream;
+  System.SysUtils,
+  System.IOUtils,
+  System.JSON,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Source.Intf,
+  IPTV.Source.Xtream;
 
 function FindCredsPath: string;
 var
-  Candidates: TArray<string>;
-  C: string;
+  lCandidates: TArray<string>;
+  lCandidate: string;
 begin
   Result := GetEnvironmentVariable('IPTV_TEST_CREDENTIALS');
   if (Result <> '') and TFile.Exists(Result) then
     Exit;
-  Candidates := [
+  lCandidates := [
     TPath.Combine(TDirectory.GetCurrentDirectory, 'test.credentials.json'),
     TPath.Combine(ExtractFilePath(ParamStr(0)), 'test.credentials.json')
   ];
-  for C in Candidates do
-    if TFile.Exists(C) then
-      Exit(C);
+  for lCandidate in lCandidates do
+    if TFile.Exists(lCandidate) then
+      Exit(lCandidate);
   Result := '';
 end;
 
 procedure TLiveTests.Setup;
 var
-  Path: string;
+  lPath: string;
 begin
   FCreds := nil;
-  Path := FindCredsPath;
-  if Path <> '' then
-    FCreds := TJSONObject.ParseJSONValue(TFile.ReadAllText(Path));
+  lPath := FindCredsPath;
+  if lPath <> '' then
+    FCreds := TJSONObject.ParseJSONValue(TFile.ReadAllText(lPath));
 end;
 
 procedure TLiveTests.TearDown;
 begin
-  FCreds.Free;
+  FreeAndNil(FCreds);
 end;
 
 function TLiveTests.Section(const AName: string): TObject;
@@ -79,47 +93,47 @@ end;
 
 function TLiveTests.SectionUrl(const AName: string): string;
 var
-  Sec: TObject;
+  lSection: TObject;
 begin
-  Sec := Section(AName);
-  if Sec = nil then
+  lSection := Section(AName);
+  if lSection = nil then
     Exit('');
-  Result := TJSONObject(Sec).GetValue<string>('url', '');
+  Result := TJSONObject(lSection).GetValue<string>('url', '');
 end;
 
 procedure TLiveTests.XtreamReadsLiveStreams;
 var
-  Sec: TJSONObject;
-  Src: TSourceConfig;
-  Reader: ISourceReader;
-  Snap: TSourceSnapshot;
+  lSection: TJSONObject;
+  lSource: TSourceConfig;
+  lReader: ISourceReader;
+  lSnapshot: TSourceSnapshot;
 begin
   if SectionUrl('xtream') = '' then
     Assert.Pass('no xtream credentials in test.credentials.json');
-  Sec := TJSONObject(Section('xtream'));
+  lSection := TJSONObject(Section('xtream'));
 
-  Src := TSourceConfig.Create;
+  lSource := TSourceConfig.Create;
   try
-    Src.Kind := skXtream;
-    Src.Url := Sec.GetValue<string>('url', '');
-    Src.Username := Sec.GetValue<string>('username', '');
-    Src.Password := Sec.GetValue<string>('password', '');
+    lSource.Kind := skXtream;
+    lSource.Url := lSection.GetValue<string>('url', '');
+    lSource.Username := lSection.GetValue<string>('username', '');
+    lSource.Password := lSection.GetValue<string>('password', '');
     // optional: mimic a specific box (e.g. the Formuler's UA) to get past panels
     // that drop unknown clients — set these in test.credentials.json to experiment.
-    Src.UserAgent := Sec.GetValue<string>('userAgent', '');
-    Src.Referer := Sec.GetValue<string>('referer', '');
-    Src.ContentTypes := [ctLive];
+    lSource.UserAgent := lSection.GetValue<string>('userAgent', '');
+    lSource.Referer := lSection.GetValue<string>('referer', '');
+    lSource.ContentTypes := [ctLive];
 
-    Reader := TXtreamReader.Create;
-    Snap := Reader.Read(Src);
+    lReader := TXtreamReader.Create;
+    lSnapshot := lReader.Read(lSource);
     try
-      Assert.IsTrue(Snap.Streams.Count > 0, 'portal returned at least one live stream');
-      Assert.IsTrue(Snap.Streams[0].UpstreamUrl.StartsWith('http'), 'a usable upstream URL was built');
+      Assert.IsTrue(lSnapshot.Streams.Count > 0, 'portal returned at least one live stream');
+      Assert.IsTrue(lSnapshot.Streams[0].UpstreamUrl.StartsWith('http'), 'a usable upstream URL was built');
     finally
-      Snap.Free;
+      FreeAndNil(lSnapshot);
     end;
   finally
-    Src.Free;
+    FreeAndNil(lSource);
   end;
 end;
 

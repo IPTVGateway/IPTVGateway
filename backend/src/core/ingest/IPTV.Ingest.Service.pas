@@ -14,10 +14,16 @@ unit IPTV.Ingest.Service;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, System.Generics.Collections,
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.SyncObjs,
+  System.Generics.Collections,
+  // Own units
   IPTV.Storage.Intf;
 
 type
+  /// Log sink every core component writes its lines to.
   TLogProc = reference to procedure(const AMsg: string);
 
   /// Live progress of a per-source ingest, so the UI can show busy/done/error.
@@ -32,6 +38,7 @@ type
     Error: string;
   end;
 
+  /// Refreshes sources (catalog + EPG) into the store; used by the admin API and the scheduler.
   TIngestService = class
   private
     FStore: IStore;
@@ -46,6 +53,7 @@ type
     FStatus: TDictionary<Integer, TIngestStatus>;
     FStatusLock: TCriticalSection;
     FExtraEpgUrls: TArray<string>; // extra (third-party) XMLTV guides, guarded by FStatusLock
+    /// Writes a line to the log sink (when one is set).
     procedure Log(const AMsg: string);
     /// Run a DB write serialised against other refreshes (the slow network reads
     /// stay outside this so sources can refresh concurrently).
@@ -54,13 +62,18 @@ type
     /// refreshing — so a manual single-source refresh and the daily RefreshAll can't
     /// both refresh the same source at once (wasted work + double the parse memory).
     function StatusBegin(ASourceId: Integer): Boolean;
+    /// Records the merged stream/category counts of a running source.
     procedure StatusSetCounts(ASourceId, AStreams, ACategories: Integer);
+    /// Records the stored programme count of a running source.
     procedure StatusSetProgrammes(ASourceId, ACount: Integer);
+    /// Marks a source as finished ('' = success, else the error).
     procedure StatusDone(ASourceId: Integer; const AError: string);
   private
     FCancelled: Integer; // <> 0 once Cancel was called (shutdown)
+    /// True once Cancel was called.
     function IsCancelled: Boolean;
   public
+    /// Creates the service on AStore; ALog receives progress lines.
     constructor Create(const AStore: IStore; const ALog: TLogProc = nil);
     destructor Destroy; override;
     /// Shutdown: refresh loops stop before their next source / guide (the one in
@@ -84,9 +97,18 @@ type
 implementation
 
 uses
+  // RTL
   System.DateUtils,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
-  IPTV.Source.Intf, IPTV.Source.Factory, IPTV.Source.Epg, IPTV.Core.Utils;
+  // Own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
+  IPTV.Model.CustomList,
+  IPTV.Source.Intf,
+  IPTV.Source.Factory,
+  IPTV.Source.Epg,
+  IPTV.Core.Utils;
 
 const
   // RSS log line after a refresh is in MiB
@@ -105,10 +127,10 @@ end;
 
 destructor TIngestService.Destroy;
 begin
-  FStatus.Free;
-  FStatusLock.Free;
-  FEpgLock.Free;
-  FLock.Free;
+  FreeAndNil(FStatus);
+  FreeAndNil(FStatusLock);
+  FreeAndNil(FEpgLock);
+  FreeAndNil(FLock);
   inherited;
 end;
 
@@ -132,18 +154,18 @@ end;
 
 function TIngestService.StatusBegin(ASourceId: Integer): Boolean;
 var
-  S, Existing: TIngestStatus;
+  lStatus, lExisting: TIngestStatus;
 begin
   FStatusLock.Acquire;
   try
     // already refreshing this source (another thread) -> caller should skip
-    if FStatus.TryGetValue(ASourceId, Existing) and Existing.Running then
+    if FStatus.TryGetValue(ASourceId, lExisting) and lExisting.Running then
       Exit(False);
-    S := Default(TIngestStatus);
-    S.SourceId := ASourceId;
-    S.Running := True;
-    S.StartedUtc := NowUtc;
-    FStatus.AddOrSetValue(ASourceId, S);
+    lStatus := Default(TIngestStatus);
+    lStatus.SourceId := ASourceId;
+    lStatus.Running := True;
+    lStatus.StartedUtc := NowUtc;
+    FStatus.AddOrSetValue(ASourceId, lStatus);
     Result := True;
   finally
     FStatusLock.Release;
@@ -152,65 +174,75 @@ end;
 
 procedure TIngestService.StatusSetCounts(ASourceId, AStreams, ACategories: Integer);
 var
-  S: TIngestStatus;
+  lStatus: TIngestStatus;
 begin
   FStatusLock.Acquire;
   try
-    if FStatus.TryGetValue(ASourceId, S) then
+    if FStatus.TryGetValue(ASourceId, lStatus) then
     begin
-      S.Streams := AStreams;
-      S.Categories := ACategories;
-      FStatus.AddOrSetValue(ASourceId, S);
+      lStatus.Streams := AStreams;
+      lStatus.Categories := ACategories;
+      FStatus.AddOrSetValue(ASourceId, lStatus);
     end;
-  finally FStatusLock.Release; end;
+  finally
+    FStatusLock.Release;
+  end;
 end;
 
 procedure TIngestService.StatusSetProgrammes(ASourceId, ACount: Integer);
 var
-  S: TIngestStatus;
+  lStatus: TIngestStatus;
 begin
   FStatusLock.Acquire;
   try
-    if FStatus.TryGetValue(ASourceId, S) then
+    if FStatus.TryGetValue(ASourceId, lStatus) then
     begin
-      S.Programmes := ACount;
-      FStatus.AddOrSetValue(ASourceId, S);
+      lStatus.Programmes := ACount;
+      FStatus.AddOrSetValue(ASourceId, lStatus);
     end;
-  finally FStatusLock.Release; end;
+  finally
+    FStatusLock.Release;
+  end;
 end;
 
 procedure TIngestService.StatusDone(ASourceId: Integer; const AError: string);
 var
-  S: TIngestStatus;
+  lStatus: TIngestStatus;
 begin
   FStatusLock.Acquire;
   try
-    if FStatus.TryGetValue(ASourceId, S) then
+    if FStatus.TryGetValue(ASourceId, lStatus) then
     begin
-      S.Running := False;
-      S.FinishedUtc := NowUtc;
-      S.Error := AError;
-      FStatus.AddOrSetValue(ASourceId, S);
+      lStatus.Running := False;
+      lStatus.FinishedUtc := NowUtc;
+      lStatus.Error := AError;
+      FStatus.AddOrSetValue(ASourceId, lStatus);
     end;
-  finally FStatusLock.Release; end;
+  finally
+    FStatusLock.Release;
+  end;
 end;
 
 function TIngestService.GetStatus: TArray<TIngestStatus>;
 begin
   FStatusLock.Acquire;
-  try Result := FStatus.Values.ToArray; finally FStatusLock.Release; end;
+  try
+    Result := FStatus.Values.ToArray;
+  finally
+    FStatusLock.Release;
+  end;
 end;
 
 procedure TIngestService.RefreshSource(ASourceId: Integer);
 var
-  Sources: TObjectList<TSourceConfig>;
-  Src, Found: TSourceConfig;
-  Reader: ISourceReader;
-  EpgReader: IEpgReader;
-  Snapshot: TSourceSnapshot;
-  Epg: TEpgProgrammeList;
-  I: Integer;
-  KeepTvgIds: TArray<string>;
+  lSources: TObjectList<TSourceConfig>;
+  lSrc, lFound: TSourceConfig;
+  lReader: ISourceReader;
+  lEpgReader: IEpgReader;
+  lSnapshot: TSourceSnapshot;
+  lEpg: TEpgProgrammeList;
+  i: Integer;
+  lKeepTvgIds: TArray<string>;
   lAdoptedEpgUrl: string; // url-tvg found in the M3U header, saved with the bookkeeping
 begin
   if not StatusBegin(ASourceId) then
@@ -223,63 +255,67 @@ begin
     // box/admin requests and several sources can refresh in parallel; only the
     // brief DB writes are serialised (via WriteLocked). Store reads go through
     // the thread-safe TLockingStore anyway.
-    Found := nil;
-    Sources := FStore.LoadSources;
+    lFound := nil;
+    lSources := FStore.LoadSources;
     try
-      for Src in Sources do
-        if Src.Id = ASourceId then
-          Found := Src;
-      if Found = nil then
+      for lSrc in lSources do
+        if lSrc.Id = ASourceId then
+          lFound := lSrc;
+      if lFound = nil then
       begin
         StatusDone(ASourceId, 'source not found');
         Exit;
       end;
 
-      Log(Format('Refreshing source "%s"...', [Found.Name]));
-      Reader := CreateSourceReader(Found.Kind);
-      Snapshot := Reader.Read(Found); // SLOW network read — outside the lock
+      Log(Format('Refreshing source "%s"...', [lFound.Name]));
+      lReader := CreateSourceReader(lFound.Kind);
+      lSnapshot := lReader.Read(lFound); // SLOW network read — outside the lock
       try
         // Only the content-type toggle gates ingest (also covers M3U, where the
         // reader can't pre-skip). The name include/exclude filters are NOT applied
         // here on purpose: filtered items stay ingested so they reappear the moment
         // you drop a filter — the filtering happens live in the catalog view instead.
-        for I := Snapshot.Streams.Count - 1 downto 0 do
-          if not (Snapshot.Streams[I].ContentType in Found.ContentTypes) then
-            Snapshot.Streams.Delete(I);
+        for i := lSnapshot.Streams.Count - 1 downto 0 do
+          if not (lSnapshot.Streams[i].ContentType in lFound.ContentTypes) then
+            lSnapshot.Streams.Delete(i);
         // categories too (Xtream reads the live categories for radio as well)
-        for I := Snapshot.Categories.Count - 1 downto 0 do
-          if not (Snapshot.Categories[I].ContentType in Found.ContentTypes) then
-            Snapshot.Categories.Delete(I);
+        for i := lSnapshot.Categories.Count - 1 downto 0 do
+          if not (lSnapshot.Categories[i].ContentType in lFound.ContentTypes) then
+            lSnapshot.Categories.Delete(i);
 
-        WriteLocked(procedure begin FStore.MergeSnapshot(Snapshot); end);
+        WriteLocked(
+          procedure
+          begin
+            FStore.MergeSnapshot(lSnapshot);
+          end);
         // provider account info (expiry etc.) is persisted with LastRefreshUtc below
-        if Snapshot.HasAccountInfo then
+        if lSnapshot.HasAccountInfo then
         begin
-          Found.AccountStatus := Snapshot.AccountStatus;
-          Found.ExpiresUtc := Snapshot.ExpiresUtc;
-          Found.MaxConnections := Snapshot.MaxConnections;
+          lFound.AccountStatus := lSnapshot.AccountStatus;
+          lFound.ExpiresUtc := lSnapshot.ExpiresUtc;
+          lFound.MaxConnections := lSnapshot.MaxConnections;
         end;
-        if Snapshot.HasTzOffset then
-          Found.TzOffsetMin := Snapshot.TzOffsetMin;
-        StatusSetCounts(ASourceId, Snapshot.Streams.Count, Snapshot.Categories.Count);
+        if lSnapshot.HasTzOffset then
+          lFound.TzOffsetMin := lSnapshot.TzOffsetMin;
+        StatusSetCounts(ASourceId, lSnapshot.Streams.Count, lSnapshot.Categories.Count);
         Log(Format('  %d streams, %d categories merged',
-          [Snapshot.Streams.Count, Snapshot.Categories.Count]));
+          [lSnapshot.Streams.Count, lSnapshot.Categories.Count]));
         // adopt an XMLTV url discovered in an M3U header so the EPG fetch below
         // (and future refreshes) can use it
-        // (saved with the bookkeeping below, onto the CURRENT row - saving Found
+        // (saved with the bookkeeping below, onto the CURRENT row - saving lFound
         // here would undo edits made to the source during the download)
-        if (Found.EpgUrl = '') and (Snapshot.EpgUrl <> '') then
+        if (lFound.EpgUrl = '') and (lSnapshot.EpgUrl <> '') then
         begin
-          Found.EpgUrl := Snapshot.EpgUrl;
-          lAdoptedEpgUrl := Snapshot.EpgUrl;
+          lFound.EpgUrl := lSnapshot.EpgUrl;
+          lAdoptedEpgUrl := lSnapshot.EpgUrl;
         end;
       finally
-        Snapshot.Free;
+        FreeAndNil(lSnapshot);
       end;
 
       // only fetch EPG for channels actually on a list (provider guides are huge)
-      KeepTvgIds := FStore.LoadListTvgIds;
-      if Length(KeepTvgIds) > 0 then
+      lKeepTvgIds := FStore.LoadListTvgIds;
+      if Length(lKeepTvgIds) > 0 then
       begin
         // ONE source parses its (multi-hundred-MB) XMLTV at a time — see FEpgLock.
         // Held across read+write+free so the big string is gone before the next
@@ -289,21 +325,25 @@ begin
           // the catalog merge already succeeded: an EPG problem must not skip the
           // source bookkeeping below (last refresh, account info, clock offset)
           try
-            EpgReader := CreateEpgReader;
-            Epg := EpgReader.Read(Found, KeepTvgIds); // SLOW network read — outside FLock
+            lEpgReader := CreateEpgReader;
+            lEpg := lEpgReader.Read(lFound, lKeepTvgIds); // SLOW network read — outside FLock
             try
-              if Epg.Count = 0 then
+              if lEpg.Count = 0 then
                 // an overloaded panel often answers 200 with an empty/garbage body:
                 // keep the stored guide instead of wiping it
                 Log('  EPG empty - kept the previous guide')
               else
               begin
-                WriteLocked(procedure begin FStore.ReplaceEpg(Found.Id, Epg); end);
-                StatusSetProgrammes(ASourceId, Epg.Count);
-                Log(Format('  %d EPG programmes (for %d listed channels)', [Epg.Count, Length(KeepTvgIds)]));
+                WriteLocked(
+                  procedure
+                  begin
+                    FStore.ReplaceEpg(lFound.Id, lEpg);
+                  end);
+                StatusSetProgrammes(ASourceId, lEpg.Count);
+                Log(Format('  %d EPG programmes (for %d listed channels)', [lEpg.Count, Length(lKeepTvgIds)]));
               end;
             finally
-              Epg.Free;
+              FreeAndNil(lEpg);
             end;
           except
             on E: Exception do
@@ -316,36 +356,37 @@ begin
       else
         Log('  no channels on a list yet - EPG skipped');
 
-      Found.LastRefreshUtc := NowUtc;
+      lFound.LastRefreshUtc := NowUtc;
       // Patch only the refresh fields onto the CURRENT row: a refresh takes
       // minutes, and saving the copy loaded at the start would undo any edit the
       // user made to this source meanwhile (filters, credentials, …).
-      WriteLocked(procedure
+      WriteLocked(
+        procedure
         var
-          L: TObjectList<TSourceConfig>;
-          X: TSourceConfig;
+          lList: TObjectList<TSourceConfig>;
+          lItem: TSourceConfig;
         begin
-          L := FStore.LoadSources;
+          lList := FStore.LoadSources;
           try
-            for X in L do
-              if X.Id = Found.Id then
+            for lItem in lList do
+              if lItem.Id = lFound.Id then
               begin
-                X.LastRefreshUtc := Found.LastRefreshUtc;
-                X.AccountStatus := Found.AccountStatus;
-                X.ExpiresUtc := Found.ExpiresUtc;
-                X.MaxConnections := Found.MaxConnections;
-                X.TzOffsetMin := Found.TzOffsetMin;
-                if (X.EpgUrl = '') and (lAdoptedEpgUrl <> '') then
-                  X.EpgUrl := lAdoptedEpgUrl;
-                FStore.SaveSource(X);
+                lItem.LastRefreshUtc := lFound.LastRefreshUtc;
+                lItem.AccountStatus := lFound.AccountStatus;
+                lItem.ExpiresUtc := lFound.ExpiresUtc;
+                lItem.MaxConnections := lFound.MaxConnections;
+                lItem.TzOffsetMin := lFound.TzOffsetMin;
+                if (lItem.EpgUrl = '') and (lAdoptedEpgUrl <> '') then
+                  lItem.EpgUrl := lAdoptedEpgUrl;
+                FStore.SaveSource(lItem);
                 Break;
               end;
           finally
-            L.Free;
+            FreeAndNil(lList);
           end;
         end);
     finally
-      Sources.Free;
+      FreeAndNil(lSources);
     end;
     StatusDone(ASourceId, ''); // success
   except
@@ -369,45 +410,45 @@ end;
 
 procedure TIngestService.RefreshAll;
 var
-  Sources: TObjectList<TSourceConfig>;
-  Src: TSourceConfig;
-  Ids: TArray<Integer>;
-  Names: TArray<string>;
-  I: Integer;
+  lSources: TObjectList<TSourceConfig>;
+  lSrc: TSourceConfig;
+  lIds: TArray<Integer>;
+  lNames: TArray<string>;
+  i: Integer;
 begin
   // Refresh enabled sources SEQUENTIALLY (one at a time). Concurrency multiplied
   // the memory peak — each source holds its whole decoded XMLTV guide (~2x its
   // byte size) in memory, so N at once meant N x that peak (the container sat at
   // 450+ MiB). One-at-a-time caps it to a single guide. A per-source failure is
   // logged and does not stop the others. (Re-parallelise later if needed.)
-  Ids := [];
-  Names := [];
-  Sources := FStore.LoadSources;
+  lIds := [];
+  lNames := [];
+  lSources := FStore.LoadSources;
   try
-    for Src in Sources do
-      if Src.Enabled then
+    for lSrc in lSources do
+      if lSrc.Enabled then
       begin
-        Ids := Ids + [Src.Id];
-        Names := Names + [Src.Name];
+        lIds := lIds + [lSrc.Id];
+        lNames := lNames + [lSrc.Name];
       end;
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
-  if Length(Ids) = 0 then
+  if Length(lIds) = 0 then
     Exit;
 
-  for I := 0 to High(Ids) do
+  for i := 0 to High(lIds) do
   try
     if IsCancelled then
     begin
       Log('Refresh cancelled (shutdown)');
       Exit;
     end;
-    RefreshSource(Ids[I]);
+    RefreshSource(lIds[i]);
     TrimProcessMemory; // hand each source's freed parse memory back before the next
   except
     on E: Exception do
-      Log(Format('Source "%s" failed: %s', [Names[I], E.Message]));
+      Log(Format('Source "%s" failed: %s', [lNames[i], E.Message]));
   end;
   // Report the actual resident memory (the figure the operator watches) so its
   // trend is visible in the log after each refresh.
@@ -431,165 +472,175 @@ end;
 // stored; the matching itself happens per request in the store.
 procedure TIngestService.RefreshExtraEpg;
 var
-  Urls: TArray<string>;
-  Lists: TObjectList<TCustomList>;
-  L: TCustomList;
-  Chans: TOutputChannelList;
-  C: TOutputChannel;
-  ListKeys, KeepIds: TDictionary<string, Byte>;
-  Guide: TArray<TEpgChannelInfo>;
-  Kept: TArray<TEpgChannelInfo>;
-  Info: TEpgChannelInfo;
-  Progs: TEpgProgrammeList;
-  I, J, Slot: Integer;
+  lUrls: TArray<string>;
+  lLists: TObjectList<TCustomList>;
+  lList: TCustomList;
+  lChans: TOutputChannelList;
+  lChan: TOutputChannel;
+  lListKeys, lKeepIds: TDictionary<string, Byte>;
+  lGuide: TArray<TEpgChannelInfo>;
+  lKept: TArray<TEpgChannelInfo>;
+  lInfo: TEpgChannelInfo;
+  lProgs: TEpgProgrammeList;
+  i, j, lSlot: Integer;
 
   procedure AddKey(const AKey: string);
   begin
     if AKey <> '' then
-      ListKeys.AddOrSetValue(AKey, 0);
+      lListKeys.AddOrSetValue(AKey, 0);
   end;
 
 begin
   FStatusLock.Acquire;
   try
-    Urls := Copy(FExtraEpgUrls);
+    lUrls := Copy(FExtraEpgUrls);
   finally
     FStatusLock.Release;
   end;
   // slots of removed URLs go away (also when the list is now empty)
-  WriteLocked(procedure begin FStore.ClearExtraEpgBelow(-Length(Urls)); end);
-  if Length(Urls) = 0 then
+  WriteLocked(
+    procedure
+    begin
+      FStore.ClearExtraEpgBelow(-Length(lUrls));
+    end);
+  if Length(lUrls) = 0 then
     Exit;
 
-  ListKeys := TDictionary<string, Byte>.Create;
-  KeepIds := TDictionary<string, Byte>.Create;
+  lListKeys := nil;
+  lKeepIds := nil;
   try
-    Lists := FStore.LoadLists;
+    lListKeys := TDictionary<string, Byte>.Create;
+    lKeepIds := TDictionary<string, Byte>.Create;
+    lLists := FStore.LoadLists;
     try
-      for L in Lists do
+      for lList in lLists do
       begin
-        Chans := FStore.LoadOutputChannels(L.Id);
+        lChans := FStore.LoadOutputChannels(lList.Id);
         try
-          for C in Chans do
-            if C.ContentType = ctLive then
+          for lChan in lChans do
+            if lChan.ContentType = ctLive then
             begin
-              AddKey(EpgNameKey(C.Name));
-              AddKey(EpgIdKey(C.TvgId));
-              AddKey(EpgIdKey(C.UpstreamTvgId));
+              AddKey(EpgNameKey(lChan.Name));
+              AddKey(EpgIdKey(lChan.TvgId));
+              AddKey(EpgIdKey(lChan.UpstreamTvgId));
             end;
         finally
-          Chans.Free;
+          FreeAndNil(lChans);
         end;
       end;
     finally
-      Lists.Free;
+      FreeAndNil(lLists);
     end;
 
-    for I := 0 to High(Urls) do
+    for i := 0 to High(lUrls) do
     begin
       if IsCancelled then
         Break;
-      Slot := -(I + 1);
+      lSlot := -(i + 1);
       FEpgLock.Acquire; // one guide parse at a time (memory)
       try
         try
-          Log(Format('Extra EPG %d: %s', [I + 1, MaskUrlSecrets(Urls[I])]));
+          Log(Format('Extra EPG %d: %s', [i + 1, MaskUrlSecrets(lUrls[i])]));
           // keep only channels some list channel matches, already while parsing
-          Progs := ReadExtraXmltv(Urls[I], Slot, Guide,
+          lProgs := ReadExtraXmltv(lUrls[i], lSlot, lGuide,
             function(AInfo: TEpgChannelInfo): Boolean
             begin
-              Result := ListKeys.ContainsKey(EpgIdKey(AInfo.Id)) or
-                ListKeys.ContainsKey(EpgNameKey(AInfo.Name));
+              Result := lListKeys.ContainsKey(EpgIdKey(AInfo.Id)) or
+                lListKeys.ContainsKey(EpgNameKey(AInfo.Name));
             end);
           try
-            KeepIds.Clear;
-            Kept := nil;
-            for Info in Guide do
-              if ListKeys.ContainsKey(EpgIdKey(Info.Id)) or ListKeys.ContainsKey(EpgNameKey(Info.Name)) then
+            lKeepIds.Clear;
+            lKept := nil;
+            for lInfo in lGuide do
+              if lListKeys.ContainsKey(EpgIdKey(lInfo.Id)) or lListKeys.ContainsKey(EpgNameKey(lInfo.Name)) then
               begin
-                Kept := Kept + [Info];
-                KeepIds.AddOrSetValue(EXTRA_EPG_PREFIX + Info.Id, 0);
+                lKept := lKept + [lInfo];
+                lKeepIds.AddOrSetValue(EXTRA_EPG_PREFIX + lInfo.Id, 0);
               end;
-            for J := Progs.Count - 1 downto 0 do
-              if not KeepIds.ContainsKey(Progs[J].ChannelTvgId) then
-                Progs.Delete(J);
-            if Progs.Count = 0 then
+            for j := lProgs.Count - 1 downto 0 do
+              if not lKeepIds.ContainsKey(lProgs[j].ChannelTvgId) then
+                lProgs.Delete(j);
+            if lProgs.Count = 0 then
             begin
               // empty/garbage download: keep what we have
-              Log(Format('  extra EPG %d: nothing usable - kept the previous guide', [I + 1]));
+              Log(Format('  extra EPG %d: nothing usable - kept the previous guide', [i + 1]));
               Continue;
             end;
-            WriteLocked(procedure begin FStore.ReplaceExtraEpg(Slot, Kept, Progs); end);
+            WriteLocked(
+              procedure
+              begin
+                FStore.ReplaceExtraEpg(lSlot, lKept, lProgs);
+              end);
             Log(Format('  %d guide channels, %d match a list channel, %d programmes stored',
-              [Length(Guide), Length(Kept), Progs.Count]));
+              [Length(lGuide), Length(lKept), lProgs.Count]));
           finally
-            Progs.Free;
+            FreeAndNil(lProgs);
           end;
         except
           on E: Exception do
-            Log(Format('Extra EPG %d failed: %s', [I + 1, E.Message]));
+            Log(Format('Extra EPG %d failed: %s', [i + 1, E.Message]));
         end;
       finally
         FEpgLock.Release;
       end;
     end;
   finally
-    KeepIds.Free;
-    ListKeys.Free;
+    FreeAndNil(lKeepIds);
+    FreeAndNil(lListKeys);
   end;
   TrimProcessMemory;
 end;
 
 procedure TIngestService.RefreshEpgAll;
 var
-  Sources: TObjectList<TSourceConfig>;
-  Src: TSourceConfig;
-  EpgReader: IEpgReader;
-  Epg: TEpgProgrammeList;
-  KeepTvgIds: TArray<string>;
+  lSources: TObjectList<TSourceConfig>;
+  lSrc: TSourceConfig;
+  lEpgReader: IEpgReader;
+  lEpg: TEpgProgrammeList;
+  lKeepTvgIds: TArray<string>;
 begin
-  KeepTvgIds := FStore.LoadListTvgIds;
-  if Length(KeepTvgIds) = 0 then
+  lKeepTvgIds := FStore.LoadListTvgIds;
+  if Length(lKeepTvgIds) = 0 then
   begin
     Log('EPG update: no channels on a list yet - nothing to do');
     Exit;
   end;
-  Sources := FStore.LoadSources;
+  lSources := FStore.LoadSources;
   try
-    for Src in Sources do
-      if Src.Enabled and not IsCancelled then
+    for lSrc in lSources do
+      if lSrc.Enabled and not IsCancelled then
       try
-        Log(Format('Updating EPG for "%s"...', [Src.Name]));
-        EpgReader := CreateEpgReader;
+        Log(Format('Updating EPG for "%s"...', [lSrc.Name]));
+        lEpgReader := CreateEpgReader;
         // one guide parse at a time (memory), also against a running daily refresh
         FEpgLock.Acquire;
         try
-          Epg := EpgReader.Read(Src, KeepTvgIds); // slow network read OUTSIDE the lock
+          lEpg := lEpgReader.Read(lSrc, lKeepTvgIds); // slow network read OUTSIDE the lock
           try
-            if Epg.Count = 0 then
+            if lEpg.Count = 0 then
               Log('  EPG empty - kept the previous guide')
             else
             begin
               FLock.Acquire; // serialise only the DB write
               try
-                FStore.ReplaceEpg(Src.Id, Epg);
+                FStore.ReplaceEpg(lSrc.Id, lEpg);
               finally
                 FLock.Release;
               end;
-              Log(Format('  %d EPG programmes (for %d listed channels)', [Epg.Count, Length(KeepTvgIds)]));
+              Log(Format('  %d EPG programmes (for %d listed channels)', [lEpg.Count, Length(lKeepTvgIds)]));
             end;
           finally
-            Epg.Free;
+            FreeAndNil(lEpg);
           end;
         finally
           FEpgLock.Release;
         end;
       except
         on E: Exception do
-          Log(Format('EPG "%s" failed: %s', [Src.Name, E.Message]));
+          Log(Format('EPG "%s" failed: %s', [lSrc.Name, E.Message]));
       end;
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
   RefreshExtraEpg;
   TrimProcessMemory; // release the EPG parse memory back to the OS

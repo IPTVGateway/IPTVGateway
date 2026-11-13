@@ -6,8 +6,13 @@ unit IPTV.Storage.Intf;
 interface
 
 uses
+  // RTL
   System.Generics.Collections,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
   IPTV.Model.CustomList;
 
 const
@@ -117,24 +122,33 @@ type
     Offset: Integer;           // page offset
   end;
 
+  /// The persistence contract of the whole core (sources, catalog, EPG, lists).
   IStore = interface
     ['{9F2C7A41-5D6B-4E3A-8C1F-2B3D4E5F6A70}']
+    /// Create the schema if absent and run migrations.
     procedure Init; // create schema if absent, run migrations
 
     // ── Sources ──────────────────────────────────────────────────────
+    /// All configured sources (caller owns the list).
     function LoadSources: TObjectList<TSourceConfig>;
+    /// Insert or update a source; returns its id.
     function SaveSource(const ASource: TSourceConfig): Integer; // returns id
+    /// Delete a source by id.
     procedure DeleteSource(AId: Integer);
 
     // ── Catalog (ingested) ───────────────────────────────────────────
     /// Upsert a freshly-read snapshot; stamps LastSeen, flags genuinely new
     /// items (IsNew) by diffing against what is already stored for the source.
     procedure MergeSnapshot(const ASnapshot: TSourceSnapshot);
+    /// Ingested categories matching the filter (caller owns the list).
     function LoadCategories(const AFilter: TCatalogFilter): TCategoryList;
+    /// Ingested streams matching the filter, paged by Limit/Offset (caller owns the list).
     function LoadStreams(const AFilter: TCatalogFilter): TStreamItemList;
+    /// Number of streams matching the filter, ignoring Limit/Offset.
     function CountStreams(const AFilter: TCatalogFilter): Integer; // total ignoring Limit/Offset
     /// Mark categories/streams as seen (clears the "new" badge).
     procedure MarkCategoriesSeen(const AIds: TArray<Integer>);
+    /// Mark streams as seen (clears the "new" badge).
     procedure MarkStreamsSeen(const AIds: TArray<Integer>);
     /// Single ingested stream by id (for the output redirect). nil if absent.
     function LoadStreamById(AId: Integer): TStreamItem;
@@ -187,9 +201,11 @@ type
 
     /// Small persistent key/value state (e.g. lineup-changed / plex-rescan stamps).
     function GetState(const AKey: string): string;
+    /// Store a key/value state entry.
     procedure SetState(const AKey, AValue: string);
 
     // ── EPG ──────────────────────────────────────────────────────────
+    /// Replace the stored EPG of one source with the given programmes.
     procedure ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgProgrammeList);
     /// Store an extra (third-party) guide under a NEGATIVE source id (-1 = first
     /// URL): its programmes (ids with EXTRA_EPG_PREFIX) and its channel list.
@@ -205,7 +221,9 @@ type
     function LoadListTvgIds: TArray<string>;
 
     // ── Custom lists (output) ────────────────────────────────────────
+    /// All output lists (caller owns the list).
     function LoadLists: TObjectList<TCustomList>;
+    /// Insert or update a list; returns its id.
     function SaveList(const AList: TCustomList): Integer;
     /// Delete a list and everything under it (its groups + items).
     procedure DeleteList(AId: Integer);
@@ -214,17 +232,22 @@ type
     /// otherwise match on output_username/output_password. nil if no match.
     function FindListByCredentials(const AUser, APass: string): TCustomList;
 
+    /// The custom groups of a list (caller owns the list).
     function LoadGroups(AListId: Integer): TCustomGroupList;
+    /// Insert or update a custom group; returns its id.
     function SaveGroup(const AGroup: TCustomGroup): Integer;
     /// Set the manual drag order of a list's groups (sort_order = 1..N following the
     /// given id order). Favorites still sort first. Returns how many were updated.
     function ReorderGroups(AListId: Integer; const AGroupIds: TArray<Integer>): Integer;
+    /// Delete a custom group by id.
     procedure DeleteGroup(AId: Integer);
 
+    /// The items of a list (caller owns the list).
     function LoadItems(AListId: Integer): TCustomItemList;
     /// Resolved output rows (item⋈stream⋈group, overrides applied) in canonical
     /// order: favorite groups first, groups A→Z, channels A→Z (case-insensitive).
     function LoadOutputChannels(AListId: Integer): TOutputChannelList;
+    /// Insert or update a list item; returns its id.
     function SaveItem(const AItem: TCustomItem): Integer;
     /// Bulk-add chosen stream items to a list (and optional group, 0 => none)
     /// in one transaction; items already on the list are skipped. Returns the
@@ -251,6 +274,7 @@ type
     /// A result equal to the upstream name is stored as '' (follow upstream).
     function RestripGroupItems(AListId, AGroupId: Integer;
       const AExtraPrefixes, AExtraSuffixes: TArray<string>; ADryRun: Boolean): TArray<TNameChange>;
+    /// Delete a list item by id.
     procedure DeleteItem(AId: Integer);
     /// Remove every item of a list that sits in one group (custom_group_id;
     /// 0 = the upstream group). Returns how many were removed. One-click "empty".

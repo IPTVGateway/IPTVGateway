@@ -15,10 +15,17 @@ unit IPTV.App.Runner;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs,
-  IPTV.App.Config, IPTV.App.Context, IPTV.Ingest.Service;
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.SyncObjs,
+  // Own units
+  IPTV.App.Config,
+  IPTV.App.Context,
+  IPTV.Ingest.Service;
 
 type
+  /// Dedicated worker thread that owns and runs the TAppContext.
   TAppRunner = class(TThread)
   private
     FConfig: TAppConfig;
@@ -37,9 +44,13 @@ type
     constructor Create(const AConfig: TAppConfig; const ALog: TLogProc = nil;
       const AConfigPath: string = '');
     destructor Destroy; override;
-    procedure SignalStop;   // ask the worker to wind down (non-blocking)
-    procedure StopAndWait;  // SignalStop + block until fully stopped
-    property Context: TAppContext read FContext; // valid once created; check Started before use
+    /// Ask the worker to wind down (non-blocking).
+    procedure SignalStop;
+    /// SignalStop + block until fully stopped.
+    procedure StopAndWait;
+    /// Valid once created; check Started before use.
+    property Context: TAppContext read FContext;
+    /// True while the context is started and running.
     property Started: Boolean read FStarted;
     /// The start failure ('' = none / not finished). Hosts report it: the Windows
     /// Service stops itself, the daemon exits non-zero (so systemd restarts it).

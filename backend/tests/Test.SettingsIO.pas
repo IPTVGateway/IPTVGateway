@@ -9,27 +9,45 @@ unit Test.SettingsIO;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Export/import round-trip tests for the portable settings bundle.</summary>
   [TestFixture]
   TSettingsIOTests = class
   private
     FDb1, FDb2: string;
   public
+    /// <summary>Picks two fresh temp database paths.</summary>
     [Setup] procedure Setup;
+    /// <summary>Deletes both temp databases (incl. -wal/-shm).</summary>
     [TearDown] procedure TearDown;
+    /// <summary>Export then import into a fresh store clones the setup 1:1.</summary>
     [Test] procedure ExportImportClonesEverything;
+    /// <summary>The manual group order survives export/import.</summary>
     [Test] procedure ImportPreservesManualGroupOrder;
+    /// <summary>A config.json with bad types/ranges loads with defaults/clamps.</summary>
     [Test] procedure ConfigLoadToleratesBadTypesAndRanges;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, System.JSON,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.CustomList,
-  IPTV.Storage.Intf, IPTV.Storage.SQLite, IPTV.Api.SettingsIO, IPTV.App.Config;
+  // RTL
+  System.Generics.Collections,
+  System.SysUtils,
+  System.IOUtils,
+  System.JSON,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.CustomList,
+  IPTV.Storage.Intf,
+  IPTV.Storage.SQLite,
+  IPTV.Api.SettingsIO,
+  IPTV.App.Config;
 
 function NewStore(const APath: string): IStore;
 begin
@@ -57,11 +75,14 @@ end;
 
 procedure TSettingsIOTests.TearDown;
 
-  procedure Del(const P: string);
+  procedure Del(const APath: string);
   begin
-    if TFile.Exists(P) then TFile.Delete(P);
-    if TFile.Exists(P + '-wal') then TFile.Delete(P + '-wal');
-    if TFile.Exists(P + '-shm') then TFile.Delete(P + '-shm');
+    if TFile.Exists(APath) then
+      TFile.Delete(APath);
+    if TFile.Exists(APath + '-wal') then
+      TFile.Delete(APath + '-wal');
+    if TFile.Exists(APath + '-shm') then
+      TFile.Delete(APath + '-shm');
   end;
 
 begin
@@ -71,128 +92,153 @@ end;
 
 procedure TSettingsIOTests.ExportImportClonesEverything;
 var
-  Src: IStore;
-  Dst: IStore;
-  Cfg: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  Item: TCustomItem;
-  Bundle: TJSONObject;
-  SrcId, ListId, GrpId, S1, S2: Integer;
-  F: TCatalogFilter;
+  lSrc: IStore;
+  lDst: IStore;
+  lCfg: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lList: TCustomList;
+  lGroup: TCustomGroup;
+  lItem: TCustomItem;
+  lBundle: TJSONObject;
+  lSrcId, lListId, lGroupId, lS1, lS2: Integer;
+  lFilter: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lCounts: TImportCounts;
+  lNewListId: Integer;
+  lChannels: TOutputChannelList;
+  lFoundNpo: Boolean;
+  i: Integer;
+  lSources: TObjectList<TSourceConfig>;
+  lLists: TObjectList<TCustomList>;
 begin
   // ── build the original setup ───────────────────────────────────────────
-  Src := NewStore(FDb1);
-  Cfg := TSourceConfig.Create;
+  lSrc := NewStore(FDb1);
+  lCfg := TSourceConfig.Create;
   try
-    Cfg.Name := 'Prov'; Cfg.Kind := skXtream; Cfg.Url := 'http://h';
-    Cfg.StripPrefixes := ['NL'];
-    SrcId := Src.SaveSource(Cfg);
+    lCfg.Name := 'Prov';
+    lCfg.Kind := skXtream;
+    lCfg.Url := 'http://h';
+    lCfg.StripPrefixes := ['NL'];
+    lSrcId := lSrc.SaveSource(lCfg);
   finally
-    Cfg.Free;
+    FreeAndNil(lCfg);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, 'u1', 'NPO 1 HD', 'NL', 'tv1', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, 'u2', 'BBC One', 'UK', 'tv2', 'http://p/2.ts'));
-  Src.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, 'u1', 'NPO 1 HD', 'NL', 'tv1', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, 'u2', 'BBC One', 'UK', 'tv2', 'http://p/2.ts'));
+  lSrc.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
+  lList := TCustomList.Create;
   try
-    Lst.Name := 'Box'; Lst.OutputUsername := 'u'; Lst.OutputPassword := 'p';
-    ListId := Src.SaveList(Lst);
+    lList.Name := 'Box';
+    lList.OutputUsername := 'u';
+    lList.OutputPassword := 'p';
+    lListId := lSrc.SaveList(lList);
   finally
-    Lst.Free;
+    FreeAndNil(lList);
   end;
 
-  Grp := TCustomGroup.Create;
+  lGroup := TCustomGroup.Create;
   try
-    Grp.ListId := ListId; Grp.Name := 'Sport'; Grp.ContentType := ctLive; Grp.IsFavorite := True;
-    GrpId := Src.SaveGroup(Grp);
+    lGroup.ListId := lListId;
+    lGroup.Name := 'Sport';
+    lGroup.ContentType := ctLive;
+    lGroup.IsFavorite := True;
+    lGroupId := lSrc.SaveGroup(lGroup);
   finally
-    Grp.Free;
+    FreeAndNil(lGroup);
   end;
 
-  S1 := -1; S2 := -1;
-  F := Default(TCatalogFilter);
-  var Streams := Src.LoadStreams(F);
+  lS1 := -1;
+  lS2 := -1;
+  lFilter := Default(TCatalogFilter);
+  lStreams := lSrc.LoadStreams(lFilter);
   try
-    for var I := 0 to Streams.Count - 1 do
-      if Streams[I].Name.Contains('NPO') then S1 := Streams[I].Id else S2 := Streams[I].Id;
+    for i := 0 to lStreams.Count - 1 do
+      if lStreams[i].Name.Contains('NPO') then
+        lS1 := lStreams[i].Id
+      else
+        lS2 := lStreams[i].Id;
   finally
-    Streams.Free;
+    FreeAndNil(lStreams);
   end;
 
   // item 1: renamed + numbered + in the favorite group; item 2: plain
-  Item := TCustomItem.Create;
+  lItem := TCustomItem.Create;
   try
-    Item.ListId := ListId; Item.StreamItemId := S1; Item.CustomGroupId := GrpId;
-    Item.ContentType := ctLive; Item.DisplayName := 'NPO Een'; Item.ChannelNumber := 5;
-    Src.SaveItem(Item);
+    lItem.ListId := lListId;
+    lItem.StreamItemId := lS1;
+    lItem.CustomGroupId := lGroupId;
+    lItem.ContentType := ctLive;
+    lItem.DisplayName := 'NPO Een';
+    lItem.ChannelNumber := 5;
+    lSrc.SaveItem(lItem);
   finally
-    Item.Free;
+    FreeAndNil(lItem);
   end;
-  Item := TCustomItem.Create;
+  lItem := TCustomItem.Create;
   try
-    Item.ListId := ListId; Item.StreamItemId := S2; Item.ContentType := ctLive;
-    Src.SaveItem(Item);
+    lItem.ListId := lListId;
+    lItem.StreamItemId := lS2;
+    lItem.ContentType := ctLive;
+    lSrc.SaveItem(lItem);
   finally
-    Item.Free;
+    FreeAndNil(lItem);
   end;
 
   // ── export, then import into a fresh store ──────────────────────────────
-  Dst := NewStore(FDb2);
-  Bundle := ExportStoreSettings(Src);
+  lDst := NewStore(FDb2);
+  lBundle := ExportStoreSettings(lSrc);
   try
-    var Counts := ImportStoreSettings(Dst, Bundle);
-    Assert.AreEqual<Integer>(1, Counts.Sources, 'source recreated');
-    Assert.AreEqual<Integer>(1, Counts.Lists, 'list recreated');
-    Assert.AreEqual<Integer>(1, Counts.Groups, 'group recreated');
-    Assert.AreEqual<Integer>(2, Counts.Items, 'both channels recreated');
+    lCounts := ImportStoreSettings(lDst, lBundle);
+    Assert.AreEqual<Integer>(1, lCounts.Sources, 'source recreated');
+    Assert.AreEqual<Integer>(1, lCounts.Lists, 'list recreated');
+    Assert.AreEqual<Integer>(1, lCounts.Groups, 'group recreated');
+    Assert.AreEqual<Integer>(2, lCounts.Items, 'both channels recreated');
   finally
-    Bundle.Free;
+    FreeAndNil(lBundle);
   end;
 
   // ── assert the clone is faithful ────────────────────────────────────────
-  var Srcs := Dst.LoadSources;
+  lSources := lDst.LoadSources;
   try
-    Assert.AreEqual<Integer>(1, Srcs.Count);
-    Assert.AreEqual('Prov', Srcs[0].Name);
-    Assert.AreEqual<Integer>(1, Length(Srcs[0].StripPrefixes), 'source config (strip prefixes) cloned');
+    Assert.AreEqual<Integer>(1, lSources.Count);
+    Assert.AreEqual('Prov', lSources[0].Name);
+    Assert.AreEqual<Integer>(1, Length(lSources[0].StripPrefixes), 'source config (strip prefixes) cloned');
   finally
-    Srcs.Free;
+    FreeAndNil(lSources);
   end;
 
-  var NewListId := -1;
-  var Lists := Dst.LoadLists;
+  lNewListId := -1;
+  lLists := lDst.LoadLists;
   try
-    Assert.AreEqual<Integer>(1, Lists.Count);
-    Assert.AreEqual('Box', Lists[0].Name);
-    NewListId := Lists[0].Id;
+    Assert.AreEqual<Integer>(1, lLists.Count);
+    Assert.AreEqual('Box', lLists[0].Name);
+    lNewListId := lLists[0].Id;
   finally
-    Lists.Free;
+    FreeAndNil(lLists);
   end;
 
   // the resolved output proves: streams recreated, items linked by URL, rename,
   // channel number and favorite-group placement all survived the round-trip
-  var Channels := Dst.LoadOutputChannels(NewListId);
+  lChannels := lDst.LoadOutputChannels(lNewListId);
   try
-    Assert.AreEqual<Integer>(2, Channels.Count, 'both channels resolve in the clone');
-    var FoundNpo := False;
-    for var I := 0 to Channels.Count - 1 do
-      if Channels[I].UpstreamUrl = 'http://p/1.ts' then
+    Assert.AreEqual<Integer>(2, lChannels.Count, 'both channels resolve in the clone');
+    lFoundNpo := False;
+    for i := 0 to lChannels.Count - 1 do
+      if lChannels[i].UpstreamUrl = 'http://p/1.ts' then
       begin
-        FoundNpo := True;
-        Assert.AreEqual('NPO Een', Channels[I].Name, 'rename cloned');
-        Assert.AreEqual<Integer>(5, Channels[I].Number, 'channel number cloned');
-        Assert.AreEqual('Sport', Channels[I].GroupName, 'group placement cloned');
-        Assert.IsTrue(Channels[I].IsFavoriteGroup, 'favorite-group flag cloned');
+        lFoundNpo := True;
+        Assert.AreEqual('NPO Een', lChannels[i].Name, 'rename cloned');
+        Assert.AreEqual<Integer>(5, lChannels[i].Number, 'channel number cloned');
+        Assert.AreEqual('Sport', lChannels[i].GroupName, 'group placement cloned');
+        Assert.IsTrue(lChannels[i].IsFavoriteGroup, 'favorite-group flag cloned');
       end;
-    Assert.IsTrue(FoundNpo, 'the renamed channel is present by its upstream URL');
+    Assert.IsTrue(lFoundNpo, 'the renamed channel is present by its upstream URL');
   finally
-    Channels.Free;
+    FreeAndNil(lChannels);
   end;
 end;
 
@@ -201,45 +247,78 @@ end;
 // round-trip the clone must list them in that SAME order, not back to A->Z.
 procedure TSettingsIOTests.ImportPreservesManualGroupOrder;
 var
-  Src, Dst: IStore;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId, GAlpha, GBeta, GGamma: Integer;
-  Bundle: TJSONObject;
+  lSrc, lDst: IStore;
+  lList: TCustomList;
+  lGroup: TCustomGroup;
+  lListId, lAlpha, lBeta, lGamma: Integer;
+  lBundle: TJSONObject;
+  lNewListId: Integer;
+  lGroups: TCustomGroupList;
+  lLists: TObjectList<TCustomList>;
 begin
-  Src := NewStore(FDb1);
-  Lst := TCustomList.Create;
-  try Lst.Name := 'Box'; ListId := Src.SaveList(Lst); finally Lst.Free; end;
-
-  // create in alphabetical order, then reorder to Gamma, Alpha, Beta
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'Alpha'; Grp.ContentType := ctLive; GAlpha := Src.SaveGroup(Grp); finally Grp.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'Beta'; Grp.ContentType := ctLive; GBeta := Src.SaveGroup(Grp); finally Grp.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'Gamma'; Grp.ContentType := ctLive; GGamma := Src.SaveGroup(Grp); finally Grp.Free; end;
-  Src.ReorderGroups(ListId, [GGamma, GAlpha, GBeta]);
-
-  Dst := NewStore(FDb2);
-  Bundle := ExportStoreSettings(Src);
+  lSrc := NewStore(FDb1);
+  lList := TCustomList.Create;
   try
-    ImportStoreSettings(Dst, Bundle);
+    lList.Name := 'Box';
+    lListId := lSrc.SaveList(lList);
   finally
-    Bundle.Free;
+    FreeAndNil(lList);
   end;
 
-  var NewListId := -1;
-  var Lists := Dst.LoadLists;
-  try NewListId := Lists[0].Id; finally Lists.Free; end;
-
-  var Groups := Dst.LoadGroups(NewListId);
+  // create in alphabetical order, then reorder to Gamma, Alpha, Beta
+  lGroup := TCustomGroup.Create;
   try
-    Assert.AreEqual<Integer>(3, Groups.Count, 'all groups cloned');
-    Assert.AreEqual('Gamma', Groups[0].Name, 'manual order preserved (1st)');
-    Assert.AreEqual('Alpha', Groups[1].Name, 'manual order preserved (2nd)');
-    Assert.AreEqual('Beta',  Groups[2].Name, 'manual order preserved (3rd)');
+    lGroup.ListId := lListId;
+    lGroup.Name := 'Alpha';
+    lGroup.ContentType := ctLive;
+    lAlpha := lSrc.SaveGroup(lGroup);
   finally
-    Groups.Free;
+    FreeAndNil(lGroup);
+  end;
+  lGroup := TCustomGroup.Create;
+  try
+    lGroup.ListId := lListId;
+    lGroup.Name := 'Beta';
+    lGroup.ContentType := ctLive;
+    lBeta := lSrc.SaveGroup(lGroup);
+  finally
+    FreeAndNil(lGroup);
+  end;
+  lGroup := TCustomGroup.Create;
+  try
+    lGroup.ListId := lListId;
+    lGroup.Name := 'Gamma';
+    lGroup.ContentType := ctLive;
+    lGamma := lSrc.SaveGroup(lGroup);
+  finally
+    FreeAndNil(lGroup);
+  end;
+  lSrc.ReorderGroups(lListId, [lGamma, lAlpha, lBeta]);
+
+  lDst := NewStore(FDb2);
+  lBundle := ExportStoreSettings(lSrc);
+  try
+    ImportStoreSettings(lDst, lBundle);
+  finally
+    FreeAndNil(lBundle);
+  end;
+
+  lNewListId := -1;
+  lLists := lDst.LoadLists;
+  try
+    lNewListId := lLists[0].Id;
+  finally
+    FreeAndNil(lLists);
+  end;
+
+  lGroups := lDst.LoadGroups(lNewListId);
+  try
+    Assert.AreEqual<Integer>(3, lGroups.Count, 'all groups cloned');
+    Assert.AreEqual('Gamma', lGroups[0].Name, 'manual order preserved (1st)');
+    Assert.AreEqual('Alpha', lGroups[1].Name, 'manual order preserved (2nd)');
+    Assert.AreEqual('Beta', lGroups[2].Name, 'manual order preserved (3rd)');
+  finally
+    FreeAndNil(lGroups);
   end;
 end;
 
@@ -247,24 +326,24 @@ end;
 // startup — it should fall back to defaults / clamp, per the file's documented contract.
 procedure TSettingsIOTests.ConfigLoadToleratesBadTypesAndRanges;
 var
-  Path: string;
-  Cfg: TAppConfig;
+  lPath: string;
+  lCfg: TAppConfig;
 begin
-  Path := TPath.Combine(TPath.GetTempPath, 'iptvcfg_' + TGUID.NewGuid.ToString + '.json');
-  TFile.WriteAllText(Path,
+  lPath := TPath.Combine(TPath.GetTempPath, 'iptvcfg_' + TGUID.NewGuid.ToString + '.json');
+  TFile.WriteAllText(lPath,
     '{"httpPort":"not-a-number","refreshHour":70000,"refreshMinute":-5,' +
     '"proxyPort":0,"useHttps":"yes","plexTunerCount":-3,"epgMaxDays":-1}');
   try
-    Cfg := TAppConfig.Load(Path); // must not raise
-    Assert.AreEqual<Integer>(7777, Cfg.HttpPort, 'string httpPort -> default (no crash)');
-    Assert.AreEqual<Integer>(23, Cfg.RefreshHour, 'hour 70000 clamped to 23');
-    Assert.AreEqual<Integer>(0, Cfg.RefreshMinute, 'minute -5 clamped to 0');
-    Assert.AreEqual<Integer>(1, Cfg.ProxyPort, 'port 0 clamped to 1');
-    Assert.IsFalse(Cfg.UseHttps, 'non-bool useHttps -> default false');
-    Assert.AreEqual<Integer>(1, Cfg.PlexTunerCount, 'tuner count -3 clamped to 1');
-    Assert.AreEqual<Integer>(0, Cfg.EpgMaxDays, 'epgMaxDays -1 clamped to 0');
+    lCfg := TAppConfig.Load(lPath); // must not raise
+    Assert.AreEqual<Integer>(7777, lCfg.HttpPort, 'string httpPort -> default (no crash)');
+    Assert.AreEqual<Integer>(23, lCfg.RefreshHour, 'hour 70000 clamped to 23');
+    Assert.AreEqual<Integer>(0, lCfg.RefreshMinute, 'minute -5 clamped to 0');
+    Assert.AreEqual<Integer>(1, lCfg.ProxyPort, 'port 0 clamped to 1');
+    Assert.IsFalse(lCfg.UseHttps, 'non-bool useHttps -> default false');
+    Assert.AreEqual<Integer>(1, lCfg.PlexTunerCount, 'tuner count -3 clamped to 1');
+    Assert.AreEqual<Integer>(0, lCfg.EpgMaxDays, 'epgMaxDays -1 clamped to 0');
   finally
-    TFile.Delete(Path);
+    TFile.Delete(lPath);
   end;
 end;
 

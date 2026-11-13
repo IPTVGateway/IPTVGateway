@@ -16,53 +16,66 @@ unit IPTV.Api.Mars.Plex;
 interface
 
 uses
+  // RTL
   System.JSON,
-  MARS.Core.Attributes, MARS.Core.MediaType,
+  // third-party
+  MARS.Core.Attributes,
+  MARS.Core.MediaType,
   MARS.Core.RequestAndResponse.Interfaces;
 
 type
+  /// <summary>Plex M3U tuner surface: playlist.m3u + epg.xml.</summary>
   [Path('plex')]
   TPlexPlaylistResource = class
   protected
     [Context] Response: IMARSResponse;
     [Context] Request: IMARSRequest;
   public
+    /// <summary>M3U of the Plex bouquet (sequential channel numbers).</summary>
     [GET, Path('playlist.m3u'), Produces('audio/x-mpegurl')]
     function Playlist: string;
+    /// <summary>XMLTV guide of the Plex bouquet (either surface enabled).</summary>
     [GET, Path('epg.xml'), Produces(TMediaType.APPLICATION_XML)]
     function Epg: string;
   end;
 
+  /// <summary>HDHomeRun emulation: device description.</summary>
   [Path('discover.json')]
   THdhrDiscoverResource = class
   protected
     [Context] Response: IMARSResponse;
     [Context] Request: IMARSRequest;
   public
+    /// <summary>The emulated device's discover.json.</summary>
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Discover: TJSONObject;
   end;
 
+  /// <summary>HDHomeRun emulation: scan status.</summary>
   [Path('lineup_status.json')]
   THdhrLineupStatusResource = class
   protected
     [Context] Response: IMARSResponse;
     [Context] Request: IMARSRequest;
   public
+    /// <summary>Fixed "no scan running" status.</summary>
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Status: TJSONObject;
   end;
 
+  /// <summary>HDHomeRun emulation: channel lineup.</summary>
   [Path('lineup.json')]
   THdhrLineupResource = class
   protected
     [Context] Response: IMARSResponse;
     [Context] Request: IMARSRequest;
   public
+    /// <summary>Linear channels of the Plex bouquet with number, name and stream URL.</summary>
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Lineup: TJSONArray;
   end;
 
+  /// <summary>HDHomeRun emulation: (re)scan trigger.</summary>
   [Path('lineup.post')]
   THdhrLineupPostResource = class
   protected
@@ -73,6 +86,7 @@ type
     // Real tuners take POST (lineup.post?scan=start); some clients use GET.
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Scan: TJSONObject;
+    /// <summary>POST variant of Scan.</summary>
     [POST, Produces(TMediaType.APPLICATION_JSON)]
     function ScanPost: TJSONObject;
   end;
@@ -80,11 +94,19 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Net.URLClient,
+  // RTL
+  System.SysUtils,
+  System.Net.URLClient,
+  // third-party
   MARS.Core.Registry,
-  IPTV.Model.CustomList, IPTV.Storage.Intf, IPTV.App.Context, IPTV.Output.Builder,
+  // own units
+  IPTV.Model.CustomList,
+  IPTV.Storage.Intf,
+  IPTV.App.Context,
+  IPTV.Output.Builder,
   IPTV.Core.Utils,
-  IPTV.Model.Types, IPTV.Api.Serializers;
+  IPTV.Model.Types,
+  IPTV.Api.Serializers;
 
 const
   // the emulated HDHomeRun device (discover.json / lineup_status.json)
@@ -145,9 +167,9 @@ end;
 // discover.json/lineup.json over http:// against a TLS-only listener and fails.
 function BaseUrl: string;
 const
-  Schemes: array[Boolean] of string = ('http', 'https');
+  cSchemes: array[Boolean] of string = ('http', 'https');
 begin
-  Result := Format('%s://%s:%d', [Schemes[App.Config.UseHttps], PlexHost, App.Config.HttpPort]);
+  Result := Format('%s://%s:%d', [cSchemes[App.Config.UseHttps], PlexHost, App.Config.HttpPort]);
 end;
 
 // prefix for M3U stream URLs when the M3U surface relays through the proxy
@@ -165,7 +187,8 @@ function HdhrStreamUrl(const AList: TCustomList; AStreamItemId: Integer): string
 begin
   if App.Config.PlexHdhrProxy then
     Result := Format('http://%s:%d/live/%s/%s/%d.ts',
-      [PlexHost, App.Config.ProxyPort, PathCred(AList.OutputUsername), PathCred(AList.OutputPassword), AStreamItemId])
+      [PlexHost, App.Config.ProxyPort, PathCred(AList.OutputUsername), PathCred(AList.OutputPassword),
+       AStreamItemId])
   else
     Result := Format('%s/live/%s/%s/%d',
       [BaseUrl, PathCred(AList.OutputUsername), PathCred(AList.OutputPassword), AStreamItemId]);
@@ -175,7 +198,7 @@ end;
 
 function TPlexPlaylistResource.Playlist: string;
 var
-  L: TCustomList;
+  lList: TCustomList;
 begin
   if not ClientAllowed(Request) then
   begin
@@ -187,8 +210,8 @@ begin
     Response.StatusCode := cHttpNotFound;
     Exit('');
   end;
-  L := ServedList;
-  if L = nil then
+  lList := ServedList;
+  if lList = nil then
   begin
     Response.StatusCode := cHttpNotFound;
     Exit('');
@@ -196,15 +219,16 @@ begin
   try
     // sequential, globally-unique tvg-chno — Plex's M3U tuner rejects duplicate
     // channel numbers (per-group numbering collides across groups)
-    Result := BuildM3U(App.Store, L.Id, M3uProxyPrefix(L), cSequentialChno, App.Config.VisibleGroups, NameOpts);
+    Result := BuildM3U(App.Store, lList.Id, M3uProxyPrefix(lList), cSequentialChno, App.Config.VisibleGroups,
+      NameOpts);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 function TPlexPlaylistResource.Epg: string;
 var
-  L: TCustomList;
+  lList: TCustomList;
 begin
   if not ClientAllowed(Request) then
   begin
@@ -219,19 +243,19 @@ begin
     Response.StatusCode := cHttpNotFound;
     Exit('');
   end;
-  L := ServedList;
-  if L = nil then
+  lList := ServedList;
+  if lList = nil then
   begin
     Response.StatusCode := cHttpNotFound;
     Exit('');
   end;
   try
-    Result := BuildXmltv(App.Store, L.Id, App.Config.EpgMaxDays,
+    Result := BuildXmltv(App.Store, lList.Id, App.Config.EpgMaxDays,
       TDummyEpgOptions.Make(App.Config.DummyEpgEnabled, App.Config.DummyEpgBlockMinutes,
         App.Config.DummyEpgHoursBack, App.Config.DummyEpgHoursAhead),
       App.Config.VisibleGroups, NameOpts);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
@@ -287,13 +311,13 @@ end;
 
 function THdhrLineupResource.Lineup: TJSONArray;
 var
-  L: TCustomList;
-  Channels: TOutputChannelList;
-  Names: TArray<string>;
-  C: TOutputChannel;
-  N: Integer;
-  Nums: TArray<Integer>;
-  GuideName: string;
+  lList: TCustomList;
+  lChannels: TOutputChannelList;
+  lNames: TArray<string>;
+  lChannel: TOutputChannel;
+  lPos: Integer;
+  lNums: TArray<Integer>;
+  lGuideName: string;
 begin
   if not ClientAllowed(Request) then
   begin
@@ -306,39 +330,39 @@ begin
     Response.StatusCode := cHttpNotFound;
     Exit;
   end;
-  L := ServedList;
-  if L = nil then
+  lList := ServedList;
+  if lList = nil then
     Exit;
   try
     // same global group filter as the M3U/XMLTV, so all three agree
-    Channels := SelectOutputChannels(App.Store, L.Id, App.Config.VisibleGroups);
+    lChannels := SelectOutputChannels(App.Store, lList.Id, App.Config.VisibleGroups);
     try
-      KeepContentTypes(Channels, cLinearContentTypes); // a tuner lineup: linear channels only
+      KeepContentTypes(lChannels, cLinearContentTypes); // a tuner lineup: linear channels only
       // one decorated-name computation, shared shape with the M3U/XMLTV. (The id-sort
       // prefix lives in the channel-id, not the HDHomeRun GuideName, so key on AnyName.)
-      Names := nil;
+      lNames := nil;
       if NameOpts.AnyName then
-        Names := ComputeDisplayNames(App.Store, Channels, NameOpts);
+        lNames := ComputeDisplayNames(App.Store, lChannels, NameOpts);
       // bouquet numbers when unique, else the running position (Plex needs unique)
-      Nums := OutputNumbers(Channels);
-      N := 0;
-      for C in Channels do
+      lNums := OutputNumbers(lChannels);
+      lPos := 0;
+      for lChannel in lChannels do
       begin
-        Inc(N);
-        if (Length(Names) > 0) and (N - 1 <= High(Names)) then
-          GuideName := Names[N - 1]
+        Inc(lPos);
+        if (Length(lNames) > 0) and (lPos - 1 <= High(lNames)) then
+          lGuideName := lNames[lPos - 1]
         else
-          GuideName := C.Name;
+          lGuideName := lChannel.Name;
         Result.Add(TJSONObject.Create
-          .AddPair('GuideNumber', Nums[N - 1].ToString)
-          .AddPair('GuideName', GuideName)
-          .AddPair('URL', HdhrStreamUrl(L, C.StreamItemId)));
+          .AddPair('GuideNumber', lNums[lPos - 1].ToString)
+          .AddPair('GuideName', lGuideName)
+          .AddPair('URL', HdhrStreamUrl(lList, lChannel.StreamItemId)));
       end;
     finally
-      Channels.Free;
+      FreeAndNil(lChannels);
     end;
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 

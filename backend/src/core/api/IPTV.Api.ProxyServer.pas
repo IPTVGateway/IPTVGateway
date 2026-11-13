@@ -16,33 +16,61 @@ unit IPTV.Api.ProxyServer;
 interface
 
 uses
-  IdHTTPServer, IdCustomHTTPServer, IdContext,
+  // Indy
+  IdHTTPServer,
+  IdCustomHTTPServer,
+  IdContext,
+  // own
   IPTV.Ingest.Service;
 
 type
+  /// Stream-relay server (proxy mode): its own TIdHTTPServer that resolves a list
+  /// stream and pumps the upstream bytes to the box.
   TStreamProxyServer = class
   private
     FServer: TIdHTTPServer;
     FLog: TLogProc;
+    /// Handles one relay request (GET/HEAD) on an Indy worker thread.
     procedure DoCommandGet(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo;
       AResponseInfo: TIdHTTPResponseInfo);
   public
+    /// Creates the (inactive) relay server for APort with a bounded thread pool.
     constructor Create(APort: Integer; const ALog: TLogProc = nil);
+    /// Stops the server and frees it.
     destructor Destroy; override;
+    /// Opens the listener.
     procedure Start;
+    /// Closes the listener (no-op when not active).
     procedure Stop;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.StrUtils, System.RegularExpressions, System.NetEncoding,
-  IdHTTP, IdGlobal, IdIOHandler, IdSchedulerOfThreadPool, IdHeaderList,
-  IdSSLOpenSSL, IdSSLOpenSSLHeaders,
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.StrUtils,
+  System.RegularExpressions,
+  System.NetEncoding,
   System.Generics.Collections,
+  // Indy
+  IdHTTP,
+  IdGlobal,
+  IdIOHandler,
+  IdSchedulerOfThreadPool,
+  IdHeaderList,
+  IdSSLOpenSSL,
+  IdSSLOpenSSLHeaders,
+  // own
   IPTV.Storage.Intf,
-  IPTV.Model.Catalog, IPTV.Model.CustomList, IPTV.Model.Source, IPTV.App.Context,
-  IPTV.Core.Utils, IPTV.Output.Builder, IPTV.Model.Types;
+  IPTV.Model.Catalog,
+  IPTV.Model.CustomList,
+  IPTV.Model.Source,
+  IPTV.App.Context,
+  IPTV.Core.Utils,
+  IPTV.Output.Builder,
+  IPTV.Model.Types;
 
 const
   // upstream client
@@ -117,19 +145,19 @@ end;
 // (not via global App) so a long-lived relay never touches App after it may be nil.
 function ProviderName(const AStore: IStore; ASourceId: Integer): string;
 var
-  Sources: TObjectList<TSourceConfig>;
-  S: TSourceConfig;
+  lSources: TObjectList<TSourceConfig>;
+  lSource: TSourceConfig;
 begin
   Result := Format('source #%d', [ASourceId]);
   if AStore = nil then
     Exit;
-  Sources := AStore.LoadSources;
+  lSources := AStore.LoadSources;
   try
-    for S in Sources do
-      if S.Id = ASourceId then
-        Exit(S.Name);
+    for lSource in lSources do
+      if lSource.Id = ASourceId then
+        Exit(lSource.Name);
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
 end;
 
@@ -155,13 +183,13 @@ end;
 
 function TForwardStream.Write(const Buffer; Count: Longint): Longint;
 var
-  B: TIdBytes;
+  lBuf: TIdBytes;
 begin
   if Count > 0 then
   begin
-    SetLength(B, Count);
-    Move(Buffer, B[0], Count);
-    FIO.Write(B); // raises when the client disconnects -> stops the relay
+    SetLength(lBuf, Count);
+    Move(Buffer, lBuf[0], Count);
+    FIO.Write(lBuf); // raises when the client disconnects -> stops the relay
     Inc(FBytes, Count);
   end;
   Result := Count;
@@ -194,7 +222,7 @@ type
     /// set instead, so the caller can try the next source.
     property AllowFailover: Boolean read FAllowFailover write FAllowFailover;
     property FailedCode: Integer read FFailedCode;
-    procedure HeadersAvailable(Sender: TObject; AHeaders: TIdHeaderList; var VContinue: Boolean);
+    procedure HeadersAvailable(ASender: TObject; AHeaders: TIdHeaderList; var AContinue: Boolean);
     /// True once we've written ANY response (header/body) to the client — after that
     /// we can no longer fail over to another source mid-response.
     property Wrote: Boolean read FWritten;
@@ -206,76 +234,76 @@ begin
   FIO := AIO;
 end;
 
-procedure TRelaySession.HeadersAvailable(Sender: TObject; AHeaders: TIdHeaderList;
-  var VContinue: Boolean);
+procedure TRelaySession.HeadersAvailable(ASender: TObject; AHeaders: TIdHeaderList;
+  var AContinue: Boolean);
 var
-  Code: Integer;
-  CT, CR, CL, Hdr: string;
+  lCode: Integer;
+  lContentType, lContentRange, lContentLength, lHeader: string;
 begin
-  VContinue := True;
-  Code := TIdHTTP(Sender).ResponseCode;
-  if (Code >= cHttpStatusRedirectMin) and (Code < cHttpStatusErrorMin) then
+  AContinue := True;
+  lCode := TIdHTTP(ASender).ResponseCode;
+  if (lCode >= cHttpStatusRedirectMin) and (lCode < cHttpStatusErrorMin) then
     Exit; // intermediate redirect — wait for the final response
   if FWritten then
     Exit;
-  if (Code >= cHttpStatusErrorMin) and FAllowFailover then
+  if (lCode >= cHttpStatusErrorMin) and FAllowFailover then
   begin
     // nothing written yet: let the caller fail over to another source
-    FFailedCode := Code;
-    VContinue := False;
+    FFailedCode := lCode;
+    AContinue := False;
     Exit;
   end;
   FWritten := True;
 
-  if Code >= cHttpStatusErrorMin then
+  if lCode >= cHttpStatusErrorMin then
   begin
     // upstream error: tell the client and stop reading the error body
-    FIO.Write(Format('HTTP/1.1 %d Upstream Error'#13#10'Connection: close'#13#10#13#10, [Code]));
-    VContinue := False;
+    FIO.Write(Format('HTTP/1.1 %d Upstream Error'#13#10'Connection: close'#13#10#13#10, [lCode]));
+    AContinue := False;
     Exit;
   end;
 
   // STRIP CR/LF from upstream header values before we concatenate them into our
   // own raw response header — an upstream (or a host it 302-redirects to) could
   // otherwise inject extra headers / a split response (HTTP response splitting).
-  CT := AHeaders.Values[cHeaderContentType].Replace(#13, '').Replace(#10, '');
-  if CT = '' then
-    CT := cMimeMpegTs;
-  CR := AHeaders.Values[cHeaderContentRange].Replace(#13, '').Replace(#10, '');
-  CL := AHeaders.Values[cHeaderContentLength].Replace(#13, '').Replace(#10, '');
+  lContentType := AHeaders.Values[cHeaderContentType].Replace(#13, '').Replace(#10, '');
+  if lContentType = '' then
+    lContentType := cMimeMpegTs;
+  lContentRange := AHeaders.Values[cHeaderContentRange].Replace(#13, '').Replace(#10, '');
+  lContentLength := AHeaders.Values[cHeaderContentLength].Replace(#13, '').Replace(#10, '');
   // Content-Length must be a plain number; ignore anything else (defence in depth)
-  if (CL <> '') and (StrToInt64Def(CL, -1) < 0) then
-    CL := '';
+  if (lContentLength <> '') and (StrToInt64Def(lContentLength, -1) < 0) then
+    lContentLength := '';
 
-  if Code = cHttpStatusPartialContent then
-    Hdr := 'HTTP/1.1 206 Partial Content'#13#10
+  if lCode = cHttpStatusPartialContent then
+    lHeader := 'HTTP/1.1 206 Partial Content'#13#10
   else
-    Hdr := 'HTTP/1.1 200 OK'#13#10;
-  Hdr := Hdr + cHeaderContentType + ': ' + CT + #13#10 + 'Accept-Ranges: bytes'#13#10 +
+    lHeader := 'HTTP/1.1 200 OK'#13#10;
+  lHeader := lHeader + cHeaderContentType + ': ' + lContentType + #13#10 + 'Accept-Ranges: bytes'#13#10 +
     // allow the in-browser Speler (mpegts.js) to fetch the relayed stream
     'Access-Control-Allow-Origin: *'#13#10;
-  if CR <> '' then
-    Hdr := Hdr + cHeaderContentRange + ': ' + CR + #13#10;
-  if CL <> '' then
-    Hdr := Hdr + cHeaderContentLength + ': ' + CL + #13#10;
-  Hdr := Hdr + 'Connection: close'#13#10#13#10;
-  FIO.Write(Hdr);
+  if lContentRange <> '' then
+    lHeader := lHeader + cHeaderContentRange + ': ' + lContentRange + #13#10;
+  if lContentLength <> '' then
+    lHeader := lHeader + cHeaderContentLength + ': ' + lContentLength + #13#10;
+  lHeader := lHeader + 'Connection: close'#13#10#13#10;
+  FIO.Write(lHeader);
 end;
 
 // path segments of a raw request URI (query dropped), each percent-decoded
 function RawPathSegments(const AUri: string): TArray<string>;
 var
   lPath: string;
-  lQ, I: Integer;
+  lQ, i: Integer;
 begin
   lPath := AUri;
   lQ := lPath.IndexOf('?');
   if lQ >= 0 then
     lPath := lPath.Substring(0, lQ);
   Result := lPath.Split(['/']);
-  for I := 0 to High(Result) do
+  for i := 0 to High(Result) do
     try
-      Result[I] := TNetEncoding.URL.URLDecode(Result[I]);
+      Result[i] := TNetEncoding.URL.URLDecode(Result[i]);
     except
       // malformed escape: keep the segment as sent
     end;
@@ -284,6 +312,8 @@ end;
 { TStreamProxyServer }
 
 constructor TStreamProxyServer.Create(APort: Integer; const ALog: TLogProc);
+var
+  lSched: TIdSchedulerOfThreadPool;
 begin
   inherited Create;
   FLog := ALog;
@@ -292,17 +322,17 @@ begin
   FServer.OnCommandGet := DoCommandGet;
   // Bounded thread pool instead of Indy's default thread-per-connection, so a
   // zapping storm can't exhaust the machine (A4 of the proxy hardening spec).
-  var Sched := TIdSchedulerOfThreadPool.Create(FServer);
-  Sched.PoolSize := cProxyPoolSize;
-  Sched.MaxThreads := cProxyMaxThreads;
-  FServer.Scheduler := Sched;
+  lSched := TIdSchedulerOfThreadPool.Create(FServer);
+  lSched.PoolSize := cProxyPoolSize;
+  lSched.MaxThreads := cProxyMaxThreads;
+  FServer.Scheduler := lSched;
   FServer.KeepAlive := False; // streams are close-delimited; no server keep-alive
 end;
 
 destructor TStreamProxyServer.Destroy;
 begin
   Stop;
-  FServer.Free;
+  FreeAndNil(FServer);
   inherited;
 end;
 
@@ -322,24 +352,24 @@ end;
 procedure TStreamProxyServer.DoCommandGet(AContext: TIdContext;
   ARequestInfo: TIdHTTPRequestInfo; AResponseInfo: TIdHTTPResponseInfo);
 var
-  Parts: TArray<string>;
-  User, Pass, IdPart, S: string;
-  Dot, StreamId: Integer;
-  List: TCustomList;
-  Stream: TStreamItem;
-  Upstream: string;
-  SrcId: Integer;
-  Up: TIdHTTP;
-  Fwd: TForwardStream;
-  IO: TIdIOHandler;
-  Session: TRelaySession;
-  SSL: TIdSSLIOHandlerSocketOpenSSL;
-  LStore: IStore;
-  Candidates: TArray<string>;
-  Idx: Integer;
-  IsTimeshift: Boolean;
-  TsStart: TDateTime;
-  TsDur: Integer;
+  lParts: TArray<string>;
+  lUser, lPass, lIdPart, lIdText: string;
+  lDot, lStreamId: Integer;
+  lList: TCustomList;
+  lStream: TStreamItem;
+  lUpstream: string;
+  lSrcId: Integer;
+  lUp: TIdHTTP;
+  lFwd: TForwardStream;
+  lIO: TIdIOHandler;
+  lSession: TRelaySession;
+  lSsl: TIdSSLIOHandlerSocketOpenSSL;
+  lStore: IStore;
+  lCandidates: TArray<string>;
+  lIdx: Integer;
+  lIsTimeshift: Boolean;
+  lTsStart: TDateTime;
+  lTsDur: Integer;
   lSource: TSourceConfig;
   lHlsUrl: string;
 begin
@@ -353,74 +383,74 @@ begin
   // if the service is stopping (App := nil, FStore := nil) mid-stream, this ref keeps
   // the store alive until the relay finishes — no use-after-free. Log via our own
   // FLog (not App.Log) for the same reason.
-  LStore := App.Store;
+  lStore := App.Store;
   // /live/{user}/{pass}/{id}   (or movie|series|stream)
   // Split the RAW path, then decode each segment: Indy's Document is already
   // decoded, so a '/' in a password (sent as %2F) would split the login in two.
-  Parts := RawPathSegments(ARequestInfo.URI);
+  lParts := RawPathSegments(ARequestInfo.URI);
   // catch-up, query flavour: /streaming/timeshift.php?username=&password=&stream=&start=&duration=
   // -> rewritten to the path form below
-  if (Length(Parts) = cSegCountTimeshiftPhp) and SameText(Parts[1], cPathStreaming) and
-    SameText(Parts[2], cPathTimeshiftPhp) then
-    Parts := ['', cPathTimeshift, ARequestInfo.Params.Values[cQueryUsername],
+  if (Length(lParts) = cSegCountTimeshiftPhp) and SameText(lParts[1], cPathStreaming) and
+    SameText(lParts[2], cPathTimeshiftPhp) then
+    lParts := ['', cPathTimeshift, ARequestInfo.Params.Values[cQueryUsername],
       ARequestInfo.Params.Values[cQueryPassword],
       ARequestInfo.Params.Values[cQueryDuration], ARequestInfo.Params.Values[cQueryStart],
       ARequestInfo.Params.Values[cQueryStream]];
-  if Length(Parts) < cSegCountMin then
+  if Length(lParts) < cSegCountMin then
   begin
     AResponseInfo.ResponseNo := cHttpStatusBadRequest;
     Exit;
   end;
   // catch-up: /timeshift/{user}/{pass}/{minutes}/{YYYY-MM-DD:HH-MM}/{id}.ts
-  IsTimeshift := SameText(Parts[cSegKind], cPathTimeshift);
-  TsDur := 0;
-  TsStart := 0;
-  if IsTimeshift then
+  lIsTimeshift := SameText(lParts[cSegKind], cPathTimeshift);
+  lTsDur := 0;
+  lTsStart := 0;
+  if lIsTimeshift then
   begin
-    if (Length(Parts) < cSegCountTimeshift) or not ParseTimeshiftStart(Parts[cSegTsStart], TsStart) then
+    if (Length(lParts) < cSegCountTimeshift) or not ParseTimeshiftStart(lParts[cSegTsStart], lTsStart) then
     begin
       AResponseInfo.ResponseNo := cHttpStatusBadRequest;
       Exit;
     end;
-    TsDur := StrToIntDef(Parts[cSegTsMinutes], 0);
-    if TsDur <= 0 then
+    lTsDur := StrToIntDef(lParts[cSegTsMinutes], 0);
+    if lTsDur <= 0 then
     begin
       AResponseInfo.ResponseNo := cHttpStatusBadRequest;
       Exit;
     end;
   end;
-  User := Parts[cSegUser];
-  Pass := Parts[cSegPass];
-  if IsTimeshift then
-    IdPart := Parts[cSegTsId]
+  lUser := lParts[cSegUser];
+  lPass := lParts[cSegPass];
+  if lIsTimeshift then
+    lIdPart := lParts[cSegTsId]
   else
-    IdPart := Parts[cSegId];
-  S := IdPart;
-  Dot := S.IndexOf('.');
-  if Dot >= 0 then
-    S := S.Substring(0, Dot);
-  StreamId := StrToIntDef(S, 0);
+    lIdPart := lParts[cSegId];
+  lIdText := lIdPart;
+  lDot := lIdText.IndexOf('.');
+  if lDot >= 0 then
+    lIdText := lIdText.Substring(0, lDot);
+  lStreamId := StrToIntDef(lIdText, 0);
 
-  List := FindListForPath(LStore, User, Pass); // '-' = empty login, %-encoding
-  if List = nil then
+  lList := FindListForPath(lStore, lUser, lPass); // '-' = empty login, %-encoding
+  if lList = nil then
   begin
     AResponseInfo.ResponseNo := cHttpStatusUnauthorized;
     Exit;
   end;
   try
     // scope to the authenticated list — don't relay a stream that isn't on it
-    Stream := LStore.LoadListStreamById(List.Id, StreamId);
-    if Stream = nil then
+    lStream := lStore.LoadListStreamById(lList.Id, lStreamId);
+    if lStream = nil then
     begin
       AResponseInfo.ResponseNo := cHttpStatusNotFound;
       Exit;
     end;
     try
-      if IsTimeshift then
+      if lIsTimeshift then
       begin
-        Upstream := TimeshiftUpstreamUrl(LStore, Stream, TsDur, TsStart,
-          IfThen(IdPart.Contains('.'), IdPart.Substring(IdPart.LastIndexOf('.') + 1), cExtTs));
-        if Upstream = '' then
+        lUpstream := TimeshiftUpstreamUrl(lStore, lStream, lTsDur, lTsStart,
+          IfThen(lIdPart.Contains('.'), lIdPart.Substring(lIdPart.LastIndexOf('.') + 1), cExtTs));
+        if lUpstream = '' then
         begin
           AResponseInfo.ResponseNo := cHttpStatusNotFound; // source isn't an Xtream portal
           Exit;
@@ -428,15 +458,15 @@ begin
       end
       else
       begin
-        Upstream := Stream.UpstreamUrl;
+        lUpstream := lStream.UpstreamUrl;
         // HLS (asked as .m3u8, or the source forces it) can't be relayed as one
         // byte stream: bounce the box to the provider's playlist instead
-        if Stream.ContentType = ctLive then
+        if lStream.ContentType = ctLive then
         begin
-          lSource := FindSourceById(LStore, Stream.SourceId);
+          lSource := FindSourceById(lStore, lStream.SourceId);
           try
-            if SameText(UrlExt(IdPart), cExtHls) or ((lSource <> nil) and lSource.ForceHls) then
-              lHlsUrl := LiveUpstreamUrl(LStore, Stream, cExtHls);
+            if SameText(UrlExt(lIdPart), cExtHls) or ((lSource <> nil) and lSource.ForceHls) then
+              lHlsUrl := LiveUpstreamUrl(lStore, lStream, cExtHls);
           finally
             FreeAndNil(lSource);
           end;
@@ -444,12 +474,12 @@ begin
             lHlsUrl := '';
         end;
       end;
-      SrcId := Stream.SourceId;
+      lSrcId := lStream.SourceId;
     finally
-      Stream.Free;
+      FreeAndNil(lStream);
     end;
   finally
-    List.Free;
+    FreeAndNil(lList);
   end;
 
   // HEAD (players probing the URL): answer the headers, never start a relay that
@@ -464,7 +494,7 @@ begin
   if lHlsUrl <> '' then
   begin
     if Assigned(FLog) then
-      FLog(Format('proxy relay %s: HLS -> 302 to the provider %s', [IdPart, MaskCreds(lHlsUrl)]));
+      FLog(Format('proxy relay %s: HLS -> 302 to the provider %s', [lIdPart, MaskCreds(lHlsUrl)]));
     AResponseInfo.Redirect(lHlsUrl);
     Exit;
   end;
@@ -472,57 +502,60 @@ begin
   // Candidate upstreams: the primary first, then the SAME channel from other sources
   // when failover is enabled — so a dead provider transparently falls back to another.
   // (Failover is only possible in relay mode; a single 302 redirect can't fail over.)
-  Candidates := [Upstream];
+  lCandidates := [lUpstream];
   // (no failover for an archive: another provider's archive is a different recording)
-  if App.Config.StreamFailover and not IsTimeshift then
-    Candidates := Candidates + LStore.LoadStreamSiblings(StreamId);
+  if App.Config.StreamFailover and not lIsTimeshift then
+    lCandidates := lCandidates + lStore.LoadStreamSiblings(lStreamId);
 
   // We take the connection over completely: instead of letting Indy build a
   // response (it would emit a default text/html header + bogus Content-Length
   // and corrupt the stream), a TRelaySession writes our own header straight to
   // the socket from the upstream's final status — mirroring 200 vs 206 — right
   // before the body streams. Then TForwardStream pumps the body to the socket.
-  IO := AContext.Connection.IOHandler;
-  for Idx := 0 to High(Candidates) do
+  lIO := AContext.Connection.IOHandler;
+  for lIdx := 0 to High(lCandidates) do
   begin
-    Session := TRelaySession.Create(IO);
-    Fwd := TForwardStream.Create(IO);
-    Up := TIdHTTP.Create(nil);
+    lSession := nil;
+    lFwd := nil;
+    lUp := nil;
     try
-      Up.Request.UserAgent := cRelayUserAgent;
-      Up.HandleRedirects := True; // follow the provider's own 302(s)
-      Up.RedirectMaximum := cMaxRedirects;
-      Up.ConnectTimeout := cTimeoutConnectMs;
-      Up.ReadTimeout := cTimeoutReadMs;
+      lSession := TRelaySession.Create(lIO);
+      lFwd := TForwardStream.Create(lIO);
+      lUp := TIdHTTP.Create(nil);
+      lUp.Request.UserAgent := cRelayUserAgent;
+      lUp.HandleRedirects := True; // follow the provider's own 302(s)
+      lUp.RedirectMaximum := cMaxRedirects;
+      lUp.ConnectTimeout := cTimeoutConnectMs;
+      lUp.ReadTimeout := cTimeoutReadMs;
       // don't raise on 4xx/5xx; TRelaySession maps the status to the client
-      Up.HTTPOptions := Up.HTTPOptions + [hoNoProtocolErrorException];
-      Up.OnHeadersAvailable := Session.HeadersAvailable;
-      Session.AllowFailover := Idx < High(Candidates);
+      lUp.HTTPOptions := lUp.HTTPOptions + [hoNoProtocolErrorException];
+      lUp.OnHeadersAvailable := lSession.HeadersAvailable;
+      lSession.AllowFailover := lIdx < High(lCandidates);
       // Attach a TLS IOHandler unconditionally (Indy keeps it in PassThrough for
       // plain-http legs and only negotiates TLS for https) — a plain-http upstream
       // very commonly 302-redirects to an https streaming node, which would fail
       // with no IOHandler assigned. If OpenSSL libs are missing this raises and we
       // just log the closed relay.
-      SSL := TIdSSLIOHandlerSocketOpenSSL.Create(Up);
-      SSL.SSLOptions.SSLVersions := [sslvTLSv1_2];
-      Up.IOHandler := SSL;
+      lSsl := TIdSSLIOHandlerSocketOpenSSL.Create(lUp);
+      lSsl.SSLOptions.SSLVersions := [sslvTLSv1_2];
+      lUp.IOHandler := lSsl;
       // pass the box's Range / If-Range through so VOD seeking works (A6)
       if ARequestInfo.RawHeaders.Values[cHeaderRange] <> '' then
-        Up.Request.CustomHeaders.AddValue(cHeaderRange, ARequestInfo.RawHeaders.Values[cHeaderRange]);
+        lUp.Request.CustomHeaders.AddValue(cHeaderRange, ARequestInfo.RawHeaders.Values[cHeaderRange]);
       if ARequestInfo.RawHeaders.Values[cHeaderIfRange] <> '' then
-        Up.Request.CustomHeaders.AddValue(cHeaderIfRange, ARequestInfo.RawHeaders.Values[cHeaderIfRange]);
+        lUp.Request.CustomHeaders.AddValue(cHeaderIfRange, ARequestInfo.RawHeaders.Values[cHeaderIfRange]);
       if Assigned(FLog) then
         FLog(Format('proxy relay %s -> provider "%s" %s%s',
-          [IdPart, ProviderName(LStore, SrcId), MaskCreds(Candidates[Idx]),
-           IfThen(Idx > 0, ' (failover)', '')]));
+          [lIdPart, ProviderName(lStore, lSrcId), MaskCreds(lCandidates[lIdx]),
+           IfThen(lIdx > 0, ' (failover)', '')]));
       try
-        Up.Get(Candidates[Idx], Fwd); // blocks, pumping bytes until upstream ends / client closes
-        if Session.FailedCode > 0 then
+        lUp.Get(lCandidates[lIdx], lFwd); // blocks, pumping bytes until upstream ends / client closes
+        if lSession.FailedCode > 0 then
         begin
           // upstream said 4xx/5xx and nothing reached the box: try the next source
           if Assigned(FLog) then
             FLog(Format('proxy relay %s: provider answered HTTP %d - trying next source',
-              [IdPart, Session.FailedCode]));
+              [lIdPart, lSession.FailedCode]));
           Continue;
         end;
         Break; // returned normally: streamed, or an upstream-error header was written
@@ -530,21 +563,21 @@ begin
         on E: Exception do
           // If nothing reached the client yet AND another source is available, fail
           // over to it. Otherwise (response already started, or last candidate) stop.
-          if ((Fwd.Bytes = 0) and (not Session.Wrote) or (Session.FailedCode > 0)) and
-             (Idx < High(Candidates)) then
+          if ((lFwd.Bytes = 0) and (not lSession.Wrote) or (lSession.FailedCode > 0)) and
+             (lIdx < High(lCandidates)) then
           begin
             if Assigned(FLog) then
               FLog(Format('proxy relay %s: source unreachable (%s) — trying next source',
-                [IdPart, E.Message]));
+                [lIdPart, E.Message]));
           end
           else
           begin
             if Assigned(FLog) then
-              FLog(Format('proxy relay %s closed (%d bytes): %s', [IdPart, Fwd.Bytes, E.Message]));
+              FLog(Format('proxy relay %s closed (%d bytes): %s', [lIdPart, lFwd.Bytes, E.Message]));
             // nothing sent yet: a real status instead of an empty reply
-            if (Fwd.Bytes = 0) and not Session.Wrote then
+            if (lFwd.Bytes = 0) and not lSession.Wrote then
               try
-                IO.Write('HTTP/1.1 502 Bad Gateway'#13#10'Connection: close'#13#10#13#10);
+                lIO.Write('HTTP/1.1 502 Bad Gateway'#13#10'Connection: close'#13#10#13#10);
               except
                 // the box is gone already: nothing to tell it
               end;
@@ -552,14 +585,15 @@ begin
           end;
       end;
     finally
-      Up.Free;
-      Fwd.Free;
-      Session.Free;
+      FreeAndNil(lUp);
+      FreeAndNil(lFwd);
+      FreeAndNil(lSession);
     end;
   end;
   try
     AContext.Connection.Disconnect;
   except
+    // the box may already have dropped the connection: nothing left to close
   end;
 end;
 

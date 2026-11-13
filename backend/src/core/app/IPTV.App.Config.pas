@@ -51,6 +51,7 @@ const
   cEnvAdminPassword = 'ADMIN_PASSWORD';  // overrides adminPassword from config.json
 
 type
+  /// Runtime settings (config.json); defaults apply to missing or unparseable fields.
   TAppConfig = record
     HttpPort: Integer;        // Horse listen port (admin + output portal)
     DatabasePath: string;     // SQLite file
@@ -147,8 +148,11 @@ type
     // channel/programme ids are re-keyed together, so EPG coupling still works; the
     // plain box output (get.php / xmltv.php) keeps the real tvg-ids. Default off.
     IdSortPrefix: Boolean;
+    /// The built-in defaults.
     class function Default: TAppConfig; static;
+    /// Reads APath over the defaults (clamping numeric fields); a missing file gives defaults.
     class function Load(const APath: string): TAppConfig; static;
+    /// Writes the settings to APath atomically (temp file + swap).
     procedure Save(const APath: string);
   end;
 
@@ -166,6 +170,7 @@ function ResolveDaemonConfigPath(const AExeDir: string; out ANote: string): stri
 implementation
 
 uses
+  // RTL
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
 {$ENDIF}
@@ -255,7 +260,8 @@ var
 procedure ReplaceFileAtomic(const ASource, ATarget: string);
 begin
 {$IFDEF MSWINDOWS}
-  if not MoveFileEx(PChar(ASource), PChar(ATarget), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+  if not MoveFileEx(PChar(ASource), PChar(ATarget),
+    MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
     RaiseLastOSError;
 {$ELSE}
   if not RenameFile(ASource, ATarget) then // POSIX rename() replaces atomically
@@ -322,23 +328,23 @@ end;
 
 function ResolveDaemonConfigPath(const AExeDir: string; out ANote: string): string;
 var
-  Legacy: string;
+  lLegacy: string;
 begin
   ANote := '';
-  Legacy := TPath.Combine(AExeDir, cConfigFileName);
+  lLegacy := TPath.Combine(AExeDir, cConfigFileName);
   Result := GetEnvironmentVariable(cEnvConfigPath).Trim;
   if Result = '' then
-    Exit(Legacy);
+    Exit(lLegacy);
   RecoverInterruptedSave(Result);
   if TFile.Exists(Result) then
     Exit;
   ForceDirectories(ExtractFileDir(Result));
   // TFile.Exists is False for a directory: a config.json that Docker created as a
   // folder (missing single-file mount) is ignored, not copied
-  if TFile.Exists(Legacy) then
+  if TFile.Exists(lLegacy) then
   begin
-    TFile.Copy(Legacy, Result);
-    ANote := Format('config: created %s from %s (settings now live in the data folder)', [Result, Legacy]);
+    TFile.Copy(lLegacy, Result);
+    ANote := Format('config: created %s from %s (settings now live in the data folder)', [Result, lLegacy]);
   end
   else
   begin
@@ -349,69 +355,69 @@ end;
 
 procedure TAppConfig.Save(const APath: string);
 var
-  Json: TJSONObject;
-  GroupArr: TJSONArray;
-  G: string;
+  lJson: TJSONObject;
+  lGroupArr: TJSONArray;
+  lItem: string;
 begin
-  Json := TJSONObject.Create;
+  lJson := TJSONObject.Create;
   try
-    Json.AddPair(cKeyHttpPort, TJSONNumber.Create(HttpPort));
-    Json.AddPair(cKeyDatabasePath, DatabasePath);
-    Json.AddPair(cKeySeparateReadConnection, TJSONBool.Create(SeparateReadConnection));
-    Json.AddPair(cKeyRefreshHour, TJSONNumber.Create(RefreshHour));
-    Json.AddPair(cKeyRefreshMinute, TJSONNumber.Create(RefreshMinute));
-    Json.AddPair(cKeyEpgMaxDays, TJSONNumber.Create(EpgMaxDays));
-    Json.AddPair(cKeyPublicBaseUrl, PublicBaseUrl);
-    Json.AddPair(cKeyClientUrl, ClientUrl);
-    Json.AddPair(cKeyUseHttps, TJSONBool.Create(UseHttps));
-    Json.AddPair(cKeyTlsCertFile, TlsCertFile);
-    Json.AddPair(cKeyTlsKeyFile, TlsKeyFile);
-    Json.AddPair(cKeyTlsRootCertFile, TlsRootCertFile);
-    Json.AddPair(cKeyProxyStreams, TJSONBool.Create(ProxyStreams));
-    Json.AddPair(cKeyProxyPort, TJSONNumber.Create(ProxyPort));
-    Json.AddPair(cKeyStreamFailover, TJSONBool.Create(StreamFailover));
-    Json.AddPair(cKeyAdminPassword, AdminPasswordFile); // never the env override
-    Json.AddPair(cKeyPlexM3uEnabled, TJSONBool.Create(PlexM3uEnabled));
-    Json.AddPair(cKeyPlexM3uProxy, TJSONBool.Create(PlexM3uProxy));
-    Json.AddPair(cKeyPlexHdhrEnabled, TJSONBool.Create(PlexHdhrEnabled));
-    Json.AddPair(cKeyPlexHdhrProxy, TJSONBool.Create(PlexHdhrProxy));
-    Json.AddPair(cKeyPlexTunerCount, TJSONNumber.Create(PlexTunerCount));
-    Json.AddPair(cKeyPlexListId, TJSONNumber.Create(PlexListId));
-    Json.AddPair(cKeyPlexDeviceId, PlexDeviceId);
-    Json.AddPair(cKeyPlexServerUrl, PlexServerUrl);
-    Json.AddPair(cKeyPlexToken, PlexToken);
-    Json.AddPair(cKeyDummyEpgEnabled, TJSONBool.Create(DummyEpgEnabled));
-    Json.AddPair(cKeyDummyEpgBlockMinutes, TJSONNumber.Create(DummyEpgBlockMinutes));
-    Json.AddPair(cKeyDummyEpgHoursBack, TJSONNumber.Create(DummyEpgHoursBack));
-    Json.AddPair(cKeyDummyEpgHoursAhead, TJSONNumber.Create(DummyEpgHoursAhead));
-    Json.AddPair(cKeyNameShowGroup, TJSONBool.Create(NameShowGroup));
-    Json.AddPair(cKeyNameShowNumber, TJSONBool.Create(NameShowNumber));
-    Json.AddPair(cKeyNameShowSource, TJSONBool.Create(NameShowSource));
-    Json.AddPair(cKeyIdSortPrefix, TJSONBool.Create(IdSortPrefix));
-    GroupArr := TJSONArray.Create;
-    for G in VisibleGroups do
-      GroupArr.Add(G);
-    Json.AddPair(cKeyVisibleGroups, GroupArr);
-    GroupArr := TJSONArray.Create;
-    for G in ExtraEpgUrls do
-      GroupArr.Add(G);
-    Json.AddPair(cKeyExtraEpgUrls, GroupArr);
-    GroupArr := TJSONArray.Create;
-    for G in MediaAllowedClients do
-      GroupArr.Add(G);
-    Json.AddPair(cKeyMediaAllowedClients, GroupArr);
+    lJson.AddPair(cKeyHttpPort, TJSONNumber.Create(HttpPort));
+    lJson.AddPair(cKeyDatabasePath, DatabasePath);
+    lJson.AddPair(cKeySeparateReadConnection, TJSONBool.Create(SeparateReadConnection));
+    lJson.AddPair(cKeyRefreshHour, TJSONNumber.Create(RefreshHour));
+    lJson.AddPair(cKeyRefreshMinute, TJSONNumber.Create(RefreshMinute));
+    lJson.AddPair(cKeyEpgMaxDays, TJSONNumber.Create(EpgMaxDays));
+    lJson.AddPair(cKeyPublicBaseUrl, PublicBaseUrl);
+    lJson.AddPair(cKeyClientUrl, ClientUrl);
+    lJson.AddPair(cKeyUseHttps, TJSONBool.Create(UseHttps));
+    lJson.AddPair(cKeyTlsCertFile, TlsCertFile);
+    lJson.AddPair(cKeyTlsKeyFile, TlsKeyFile);
+    lJson.AddPair(cKeyTlsRootCertFile, TlsRootCertFile);
+    lJson.AddPair(cKeyProxyStreams, TJSONBool.Create(ProxyStreams));
+    lJson.AddPair(cKeyProxyPort, TJSONNumber.Create(ProxyPort));
+    lJson.AddPair(cKeyStreamFailover, TJSONBool.Create(StreamFailover));
+    lJson.AddPair(cKeyAdminPassword, AdminPasswordFile); // never the env override
+    lJson.AddPair(cKeyPlexM3uEnabled, TJSONBool.Create(PlexM3uEnabled));
+    lJson.AddPair(cKeyPlexM3uProxy, TJSONBool.Create(PlexM3uProxy));
+    lJson.AddPair(cKeyPlexHdhrEnabled, TJSONBool.Create(PlexHdhrEnabled));
+    lJson.AddPair(cKeyPlexHdhrProxy, TJSONBool.Create(PlexHdhrProxy));
+    lJson.AddPair(cKeyPlexTunerCount, TJSONNumber.Create(PlexTunerCount));
+    lJson.AddPair(cKeyPlexListId, TJSONNumber.Create(PlexListId));
+    lJson.AddPair(cKeyPlexDeviceId, PlexDeviceId);
+    lJson.AddPair(cKeyPlexServerUrl, PlexServerUrl);
+    lJson.AddPair(cKeyPlexToken, PlexToken);
+    lJson.AddPair(cKeyDummyEpgEnabled, TJSONBool.Create(DummyEpgEnabled));
+    lJson.AddPair(cKeyDummyEpgBlockMinutes, TJSONNumber.Create(DummyEpgBlockMinutes));
+    lJson.AddPair(cKeyDummyEpgHoursBack, TJSONNumber.Create(DummyEpgHoursBack));
+    lJson.AddPair(cKeyDummyEpgHoursAhead, TJSONNumber.Create(DummyEpgHoursAhead));
+    lJson.AddPair(cKeyNameShowGroup, TJSONBool.Create(NameShowGroup));
+    lJson.AddPair(cKeyNameShowNumber, TJSONBool.Create(NameShowNumber));
+    lJson.AddPair(cKeyNameShowSource, TJSONBool.Create(NameShowSource));
+    lJson.AddPair(cKeyIdSortPrefix, TJSONBool.Create(IdSortPrefix));
+    lGroupArr := TJSONArray.Create;
+    for lItem in VisibleGroups do
+      lGroupArr.Add(lItem);
+    lJson.AddPair(cKeyVisibleGroups, lGroupArr);
+    lGroupArr := TJSONArray.Create;
+    for lItem in ExtraEpgUrls do
+      lGroupArr.Add(lItem);
+    lJson.AddPair(cKeyExtraEpgUrls, lGroupArr);
+    lGroupArr := TJSONArray.Create;
+    for lItem in MediaAllowedClients do
+      lGroupArr.Add(lItem);
+    lJson.AddPair(cKeyMediaAllowedClients, lGroupArr);
     // atomic-ish: write a temp file, then swap it in, so a crash or a concurrent
     // save never leaves a truncated config.json (which would load as defaults:
     // admin open, Plex token gone); one save at a time
     GConfigSaveLock.Acquire;
     try
-      TFile.WriteAllText(APath + cTempSuffix, Json.Format(cJsonIndent), TEncoding.UTF8);
+      TFile.WriteAllText(APath + cTempSuffix, lJson.Format(cJsonIndent), TEncoding.UTF8);
       ReplaceFileAtomic(APath + cTempSuffix, APath);
     finally
       GConfigSaveLock.Release;
     end;
   finally
-    Json.Free;
+    FreeAndNil(lJson);
   end;
 end;
 
@@ -423,41 +429,61 @@ class function TAppConfig.Load(const APath: string): TAppConfig;
   // contract is "defaults when a field is missing"; we extend that to "or unparseable".
   function JInt(AJson: TJSONObject; const AKey: string; ADef: Integer): Integer;
   begin
-    try Result := AJson.GetValue<Integer>(AKey, ADef); except Result := ADef; end;
+    try
+      Result := AJson.GetValue<Integer>(AKey, ADef);
+    except
+      Result := ADef;
+    end;
   end;
+
   function JStr(AJson: TJSONObject; const AKey, ADef: string): string;
   begin
-    try Result := AJson.GetValue<string>(AKey, ADef); except Result := ADef; end;
+    try
+      Result := AJson.GetValue<string>(AKey, ADef);
+    except
+      Result := ADef;
+    end;
   end;
+
   function JBool(AJson: TJSONObject; const AKey: string; ADef: Boolean): Boolean;
   begin
-    try Result := AJson.GetValue<Boolean>(AKey, ADef); except Result := ADef; end;
+    try
+      Result := AJson.GetValue<Boolean>(AKey, ADef);
+    except
+      Result := ADef;
+    end;
   end;
-  function Clamp(V, Lo, Hi: Integer): Integer;
+
+  function Clamp(AValue, ALow, AHigh: Integer): Integer;
   begin
-    if V < Lo then Result := Lo else if V > Hi then Result := Hi else Result := V;
+    if AValue < ALow then
+      Result := ALow
+    else if AValue > AHigh then
+      Result := AHigh
+    else
+      Result := AValue;
   end;
 
 var
-  Val: TJSONValue;
-  Json: TJSONObject;
-  GroupsVal, GV: TJSONValue;
-  Groups: TList<string>;
+  lValue: TJSONValue;
+  lJson: TJSONObject;
+  lGroupsVal, lItem: TJSONValue;
+  lGroups: TList<string>;
   lCorruptCopy: string;
 begin
   Result := Default;
-  Json := nil;
+  lJson := nil;
   RecoverInterruptedSave(APath);
   if TFile.Exists(APath) then
   begin
     // parse to a value first: a malformed OR non-object (e.g. a bare array) file
     // must fall back to defaults without raising EInvalidCast or leaking the node
-    Val := TJSONObject.ParseJSONValue(TFile.ReadAllText(APath));
-    if Val is TJSONObject then
-      Json := TJSONObject(Val)
+    lValue := TJSONObject.ParseJSONValue(TFile.ReadAllText(APath));
+    if lValue is TJSONObject then
+      lJson := TJSONObject(lValue)
     else
     begin
-      Val.Free; // nil-safe; frees a non-object value
+      FreeAndNil(lValue); // nil-safe; frees a non-object value
       // keep the broken file instead of letting the first save overwrite it
       // with defaults (that would silently drop the admin password / Plex token)
       lCorruptCopy := APath + cCorruptSuffix + FormatDateTime(cCorruptStampFormat, Now);
@@ -470,91 +496,92 @@ begin
       end;
     end;
   end;
-  if Json <> nil then
+  if lJson <> nil then
   try
     // numeric fields are clamped to valid ranges: an out-of-range refreshHour/Minute
     // would otherwise overflow the Word fields (range error / silent wrap), and a
     // 0/negative port can't bind.
-    Result.HttpPort := Clamp(JInt(Json, cKeyHttpPort, Result.HttpPort), cMinPort, cMaxPort);
-    Result.DatabasePath := JStr(Json, cKeyDatabasePath, Result.DatabasePath);
-    Result.SeparateReadConnection := JBool(Json, cKeySeparateReadConnection, Result.SeparateReadConnection);
-    Result.RefreshHour := Clamp(JInt(Json, cKeyRefreshHour, Result.RefreshHour), 0, cMaxRefreshHour);
-    Result.RefreshMinute := Clamp(JInt(Json, cKeyRefreshMinute, Result.RefreshMinute), 0, cMaxRefreshMinute);
-    Result.EpgMaxDays := Clamp(JInt(Json, cKeyEpgMaxDays, Result.EpgMaxDays), 0, cMaxEpgMaxDays);
-    Result.PublicBaseUrl := JStr(Json, cKeyPublicBaseUrl, Result.PublicBaseUrl);
-    Result.ClientUrl := JStr(Json, cKeyClientUrl, Result.ClientUrl);
-    Result.UseHttps := JBool(Json, cKeyUseHttps, Result.UseHttps);
-    Result.TlsCertFile := JStr(Json, cKeyTlsCertFile, Result.TlsCertFile);
-    Result.TlsKeyFile := JStr(Json, cKeyTlsKeyFile, Result.TlsKeyFile);
-    Result.TlsRootCertFile := JStr(Json, cKeyTlsRootCertFile, Result.TlsRootCertFile);
-    Result.ProxyStreams := JBool(Json, cKeyProxyStreams, Result.ProxyStreams);
-    Result.ProxyPort := Clamp(JInt(Json, cKeyProxyPort, Result.ProxyPort), cMinPort, cMaxPort);
-    Result.StreamFailover := JBool(Json, cKeyStreamFailover, Result.StreamFailover);
-    Result.AdminPassword := JStr(Json, cKeyAdminPassword, Result.AdminPassword);
+    Result.HttpPort := Clamp(JInt(lJson, cKeyHttpPort, Result.HttpPort), cMinPort, cMaxPort);
+    Result.DatabasePath := JStr(lJson, cKeyDatabasePath, Result.DatabasePath);
+    Result.SeparateReadConnection := JBool(lJson, cKeySeparateReadConnection, Result.SeparateReadConnection);
+    Result.RefreshHour := Clamp(JInt(lJson, cKeyRefreshHour, Result.RefreshHour), 0, cMaxRefreshHour);
+    Result.RefreshMinute := Clamp(JInt(lJson, cKeyRefreshMinute, Result.RefreshMinute), 0, cMaxRefreshMinute);
+    Result.EpgMaxDays := Clamp(JInt(lJson, cKeyEpgMaxDays, Result.EpgMaxDays), 0, cMaxEpgMaxDays);
+    Result.PublicBaseUrl := JStr(lJson, cKeyPublicBaseUrl, Result.PublicBaseUrl);
+    Result.ClientUrl := JStr(lJson, cKeyClientUrl, Result.ClientUrl);
+    Result.UseHttps := JBool(lJson, cKeyUseHttps, Result.UseHttps);
+    Result.TlsCertFile := JStr(lJson, cKeyTlsCertFile, Result.TlsCertFile);
+    Result.TlsKeyFile := JStr(lJson, cKeyTlsKeyFile, Result.TlsKeyFile);
+    Result.TlsRootCertFile := JStr(lJson, cKeyTlsRootCertFile, Result.TlsRootCertFile);
+    Result.ProxyStreams := JBool(lJson, cKeyProxyStreams, Result.ProxyStreams);
+    Result.ProxyPort := Clamp(JInt(lJson, cKeyProxyPort, Result.ProxyPort), cMinPort, cMaxPort);
+    Result.StreamFailover := JBool(lJson, cKeyStreamFailover, Result.StreamFailover);
+    Result.AdminPassword := JStr(lJson, cKeyAdminPassword, Result.AdminPassword);
     Result.AdminPasswordFile := Result.AdminPassword;
-    Result.PlexM3uEnabled := JBool(Json, cKeyPlexM3uEnabled, Result.PlexM3uEnabled);
-    Result.PlexM3uProxy := JBool(Json, cKeyPlexM3uProxy, Result.PlexM3uProxy);
-    Result.PlexHdhrEnabled := JBool(Json, cKeyPlexHdhrEnabled, Result.PlexHdhrEnabled);
-    Result.PlexHdhrProxy := JBool(Json, cKeyPlexHdhrProxy, Result.PlexHdhrProxy);
-    Result.PlexTunerCount := Clamp(JInt(Json, cKeyPlexTunerCount, Result.PlexTunerCount), cMinPlexTunerCount,
-      cMaxPlexTunerCount);
-    Result.PlexListId := JInt(Json, cKeyPlexListId, Result.PlexListId);
-    Result.PlexDeviceId := JStr(Json, cKeyPlexDeviceId, Result.PlexDeviceId);
-    Result.PlexServerUrl := JStr(Json, cKeyPlexServerUrl, Result.PlexServerUrl);
-    Result.PlexToken := JStr(Json, cKeyPlexToken, Result.PlexToken);
-    Result.DummyEpgEnabled := JBool(Json, cKeyDummyEpgEnabled, Result.DummyEpgEnabled);
-    Result.DummyEpgBlockMinutes := Clamp(JInt(Json, cKeyDummyEpgBlockMinutes, Result.DummyEpgBlockMinutes), cMinDummyEpgBlockMinutes,
-      cMaxDummyEpgBlockMinutes);
-    Result.DummyEpgHoursBack := Clamp(JInt(Json, cKeyDummyEpgHoursBack, Result.DummyEpgHoursBack), 0, cMaxDummyEpgHoursBack);
-    Result.DummyEpgHoursAhead := Clamp(JInt(Json, cKeyDummyEpgHoursAhead, Result.DummyEpgHoursAhead), cMinDummyEpgHoursAhead,
-      cMaxDummyEpgHoursAhead);
-    Result.NameShowGroup := JBool(Json, cKeyNameShowGroup, Result.NameShowGroup);
-    Result.NameShowNumber := JBool(Json, cKeyNameShowNumber, Result.NameShowNumber);
-    Result.NameShowSource := JBool(Json, cKeyNameShowSource, Result.NameShowSource);
-    Result.IdSortPrefix := JBool(Json, cKeyIdSortPrefix, Result.IdSortPrefix);
+    Result.PlexM3uEnabled := JBool(lJson, cKeyPlexM3uEnabled, Result.PlexM3uEnabled);
+    Result.PlexM3uProxy := JBool(lJson, cKeyPlexM3uProxy, Result.PlexM3uProxy);
+    Result.PlexHdhrEnabled := JBool(lJson, cKeyPlexHdhrEnabled, Result.PlexHdhrEnabled);
+    Result.PlexHdhrProxy := JBool(lJson, cKeyPlexHdhrProxy, Result.PlexHdhrProxy);
+    Result.PlexTunerCount := Clamp(JInt(lJson, cKeyPlexTunerCount, Result.PlexTunerCount),
+      cMinPlexTunerCount, cMaxPlexTunerCount);
+    Result.PlexListId := JInt(lJson, cKeyPlexListId, Result.PlexListId);
+    Result.PlexDeviceId := JStr(lJson, cKeyPlexDeviceId, Result.PlexDeviceId);
+    Result.PlexServerUrl := JStr(lJson, cKeyPlexServerUrl, Result.PlexServerUrl);
+    Result.PlexToken := JStr(lJson, cKeyPlexToken, Result.PlexToken);
+    Result.DummyEpgEnabled := JBool(lJson, cKeyDummyEpgEnabled, Result.DummyEpgEnabled);
+    Result.DummyEpgBlockMinutes := Clamp(JInt(lJson, cKeyDummyEpgBlockMinutes, Result.DummyEpgBlockMinutes),
+      cMinDummyEpgBlockMinutes, cMaxDummyEpgBlockMinutes);
+    Result.DummyEpgHoursBack := Clamp(JInt(lJson, cKeyDummyEpgHoursBack, Result.DummyEpgHoursBack), 0,
+      cMaxDummyEpgHoursBack);
+    Result.DummyEpgHoursAhead := Clamp(JInt(lJson, cKeyDummyEpgHoursAhead, Result.DummyEpgHoursAhead),
+      cMinDummyEpgHoursAhead, cMaxDummyEpgHoursAhead);
+    Result.NameShowGroup := JBool(lJson, cKeyNameShowGroup, Result.NameShowGroup);
+    Result.NameShowNumber := JBool(lJson, cKeyNameShowNumber, Result.NameShowNumber);
+    Result.NameShowSource := JBool(lJson, cKeyNameShowSource, Result.NameShowSource);
+    Result.IdSortPrefix := JBool(lJson, cKeyIdSortPrefix, Result.IdSortPrefix);
     // visibleGroups[] — the global group filter (array of strings)
-    GroupsVal := Json.GetValue(cKeyVisibleGroups);
-    if GroupsVal is TJSONArray then
+    lGroupsVal := lJson.GetValue(cKeyVisibleGroups);
+    if lGroupsVal is TJSONArray then
     begin
-      Groups := TList<string>.Create;
+      lGroups := TList<string>.Create;
       try
-        for GV in TJSONArray(GroupsVal) do
-          if GV is TJSONString then
-            Groups.Add(TJSONString(GV).Value);
-        Result.VisibleGroups := Groups.ToArray;
+        for lItem in TJSONArray(lGroupsVal) do
+          if lItem is TJSONString then
+            lGroups.Add(TJSONString(lItem).Value);
+        Result.VisibleGroups := lGroups.ToArray;
       finally
-        Groups.Free;
+        FreeAndNil(lGroups);
       end;
     end;
     // extraEpgUrls[] — third-party XMLTV guides
-    GroupsVal := Json.GetValue(cKeyExtraEpgUrls);
-    if GroupsVal is TJSONArray then
+    lGroupsVal := lJson.GetValue(cKeyExtraEpgUrls);
+    if lGroupsVal is TJSONArray then
     begin
-      Groups := TList<string>.Create;
+      lGroups := TList<string>.Create;
       try
-        for GV in TJSONArray(GroupsVal) do
-          if (GV is TJSONString) and (TJSONString(GV).Value.Trim <> '') then
-            Groups.Add(TJSONString(GV).Value.Trim);
-        Result.ExtraEpgUrls := Groups.ToArray;
+        for lItem in TJSONArray(lGroupsVal) do
+          if (lItem is TJSONString) and (TJSONString(lItem).Value.Trim <> '') then
+            lGroups.Add(TJSONString(lItem).Value.Trim);
+        Result.ExtraEpgUrls := lGroups.ToArray;
       finally
-        Groups.Free;
+        FreeAndNil(lGroups);
       end;
     end;
-    GroupsVal := Json.GetValue(cKeyMediaAllowedClients);
-    if GroupsVal is TJSONArray then
+    lGroupsVal := lJson.GetValue(cKeyMediaAllowedClients);
+    if lGroupsVal is TJSONArray then
     begin
-      Groups := TList<string>.Create;
+      lGroups := TList<string>.Create;
       try
-        for GV in TJSONArray(GroupsVal) do
-          if (GV is TJSONString) and (TJSONString(GV).Value.Trim <> '') then
-            Groups.Add(TJSONString(GV).Value.Trim);
-        Result.MediaAllowedClients := Groups.ToArray;
+        for lItem in TJSONArray(lGroupsVal) do
+          if (lItem is TJSONString) and (TJSONString(lItem).Value.Trim <> '') then
+            lGroups.Add(TJSONString(lItem).Value.Trim);
+        Result.MediaAllowedClients := lGroups.ToArray;
       finally
-        Groups.Free;
+        FreeAndNil(lGroups);
       end;
     end;
   finally
-    Json.Free;
+    FreeAndNil(lJson);
   end;
   // ADMIN_PASSWORD from the environment wins over config.json — the Docker/Unraid
   // way to set it without editing a mounted file.
@@ -566,6 +593,6 @@ initialization
   GConfigSaveLock := TCriticalSection.Create;
 
 finalization
-  GConfigSaveLock.Free;
+  FreeAndNil(GConfigSaveLock);
 
 end.

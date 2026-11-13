@@ -23,7 +23,9 @@ unit IPTV.Source.Http;
 interface
 
 uses
-  System.SysUtils, System.Net.HttpClient;
+  // RTL
+  System.SysUtils,
+  System.Net.HttpClient;
 
 type
   /// Raised when a provider is fronted by a Cloudflare browser (JS) challenge —
@@ -38,6 +40,8 @@ const
   // read timeout when the caller names none (also the THTTPClient response timeout)
   cTimeoutDefaultReadMs = 30000;
 
+/// A THTTPClient with browser-like headers, identity encoding, redirects and the
+/// default timeouts. Caller frees.
 function NewHttpClient(const AUserAgent: string = ''): THTTPClient;
 /// GET the URL as text (http via Indy, https via the OS HTTP client). Raises on
 /// a transport/HTTP error, or EProviderBlocked on a Cloudflare challenge.
@@ -63,8 +67,17 @@ const
 implementation
 
 uses
-  System.Classes, System.NetConsts, System.Net.URLClient, System.ZLib, System.Math,
-  IdHTTP, IdGlobal, IdCookieManager,
+  // RTL
+  System.Classes,
+  System.NetConsts,
+  System.Net.URLClient,
+  System.ZLib,
+  System.Math,
+  // Indy
+  IdHTTP,
+  IdGlobal,
+  IdCookieManager,
+  // Own units
   IPTV.Core.Utils;
 
 const
@@ -151,34 +164,34 @@ end;
 
 // ── charset detection ──────────────────────────────────────────────────────
 
-function IsValidUtf8(const B: TBytes): Boolean;
+function IsValidUtf8(const ABytes: TBytes): Boolean;
 var
-  I, N, Extra: Integer;
+  i, lLen, lExtra: Integer;
 begin
-  I := 0;
-  N := Length(B);
-  while I < N do
+  i := 0;
+  lLen := Length(ABytes);
+  while i < lLen do
   begin
-    if B[I] < cUtf8AsciiMax then
-      Extra := 0
-    else if (B[I] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
-      Extra := 1
-    else if (B[I] and cUtf8Lead3Mask) = cUtf8Lead3Bits then
-      Extra := 2
-    else if (B[I] and cUtf8Lead4Mask) = cUtf8Lead4Bits then
-      Extra := 3
+    if ABytes[i] < cUtf8AsciiMax then
+      lExtra := 0
+    else if (ABytes[i] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
+      lExtra := 1
+    else if (ABytes[i] and cUtf8Lead3Mask) = cUtf8Lead3Bits then
+      lExtra := 2
+    else if (ABytes[i] and cUtf8Lead4Mask) = cUtf8Lead4Bits then
+      lExtra := 3
     else
       Exit(False);
-    if I + Extra >= N then
+    if i + lExtra >= lLen then
       Exit(False);
-    while Extra > 0 do
+    while lExtra > 0 do
     begin
-      Inc(I);
-      if (B[I] and cUtf8ContMask) <> cUtf8ContBits then
+      Inc(i);
+      if (ABytes[i] and cUtf8ContMask) <> cUtf8ContBits then
         Exit(False);
-      Dec(Extra);
+      Dec(lExtra);
     end;
-    Inc(I);
+    Inc(i);
   end;
   Result := True;
 end;
@@ -297,34 +310,34 @@ begin
   Result := (AStatus = cHttpStatusTooManyRequests) or (AStatus = cHttpStatusServiceUnavailable);
 end;
 
-procedure ApplyDebugProxyIndy(H: TIdHTTP);
+procedure ApplyDebugProxyIndy(AHttp: TIdHTTP);
 var
-  P: string;
-  Colon: Integer;
+  lProxy: string;
+  lColon: Integer;
 begin
-  P := GetEnvironmentVariable(cEnvDebugProxy);
-  if P = '' then
+  lProxy := GetEnvironmentVariable(cEnvDebugProxy);
+  if lProxy = '' then
     Exit;
-  Colon := P.LastIndexOf(':');
-  if Colon > 0 then
+  lColon := lProxy.LastIndexOf(':');
+  if lColon > 0 then
   begin
-    H.ProxyParams.ProxyServer := P.Substring(0, Colon);
-    H.ProxyParams.ProxyPort := StrToIntDef(P.Substring(Colon + 1), cDebugProxyDefaultPort);
+    AHttp.ProxyParams.ProxyServer := lProxy.Substring(0, lColon);
+    AHttp.ProxyParams.ProxyPort := StrToIntDef(lProxy.Substring(lColon + 1), cDebugProxyDefaultPort);
   end;
 end;
 
-procedure ApplyDebugProxyHttp(C: THTTPClient);
+procedure ApplyDebugProxyHttp(AClient: THTTPClient);
 var
-  P: string;
-  Colon: Integer;
+  lProxy: string;
+  lColon: Integer;
 begin
-  P := GetEnvironmentVariable(cEnvDebugProxy);
-  if P = '' then
+  lProxy := GetEnvironmentVariable(cEnvDebugProxy);
+  if lProxy = '' then
     Exit;
-  Colon := P.LastIndexOf(':');
-  if Colon > 0 then
-    C.ProxySettings := TProxySettings.Create(P.Substring(0, Colon),
-      StrToIntDef(P.Substring(Colon + 1), cDebugProxyDefaultPort));
+  lColon := lProxy.LastIndexOf(':');
+  if lColon > 0 then
+    AClient.ProxySettings := TProxySettings.Create(lProxy.Substring(0, lColon),
+      StrToIntDef(lProxy.Substring(lColon + 1), cDebugProxyDefaultPort));
 end;
 
 // ── fetchers ────────────────────────────────────────────────────────────────
@@ -336,12 +349,12 @@ type
   private
     FHttpsTarget: string;
   public
-    procedure HandleRedirect(Sender: TObject; var ADest: string; var ANumRedirect: Integer;
+    procedure HandleRedirect(ASender: TObject; var ADest: string; var ANumRedirect: Integer;
       var AHandled: Boolean; var AMethod: TIdHTTPMethod);
     property HttpsTarget: string read FHttpsTarget;
   end;
 
-procedure TRedirectCatcher.HandleRedirect(Sender: TObject; var ADest: string;
+procedure TRedirectCatcher.HandleRedirect(ASender: TObject; var ADest: string;
   var ANumRedirect: Integer; var AHandled: Boolean; var AMethod: TIdHTTPMethod);
 begin
   if ADest.StartsWith(cSchemeHttps + ':', cIgnoreCase) then
@@ -359,76 +372,78 @@ function WinHttpGetBytes(const AUrl, AUserAgent: string; AReadTimeoutMs: Integer
 function IndyGetBytes(const AUrl, AUserAgent: string; AReadTimeoutMs: Integer;
   const AReferer: string): TBytes;
 var
-  H: TIdHTTP;
-  MS: TBytesStream;
-  Attempt, Status: Integer;
+  lHttp: TIdHTTP;
+  lStream: TBytesStream;
+  lAttempt, lStatus: Integer;
   lCatcher: TRedirectCatcher;
 begin
   Result := nil;
-  lCatcher := TRedirectCatcher.Create;
-  H := TIdHTTP.Create(nil);
+  lCatcher := nil;
+  lHttp := nil;
   try
-    H.OnRedirect := lCatcher.HandleRedirect;
-    H.HandleRedirects := True;
-    H.RedirectMaximum := cMaxRedirects; // cap redirect chains (#3)
-    H.AllowCookies := True;            // keep session cookies across redirects (#4)
-    H.CookieManager := TIdCookieManager.Create(H);
-    TIdHTTPAccess(H).IPVersion := Id_IPv4; // force IPv4 — broken IPv6 on some providers (#11)
-    H.ConnectTimeout := cTimeoutConnectMs;
-    H.ReadTimeout := AReadTimeoutMs;   // per request-type (#17)
-    H.Request.Connection := cConnectionClose; // avoid socket-reuse issues on portal calls (#12)
+    lCatcher := TRedirectCatcher.Create;
+    lHttp := TIdHTTP.Create(nil);
+    lHttp.OnRedirect := lCatcher.HandleRedirect;
+    lHttp.HandleRedirects := True;
+    lHttp.RedirectMaximum := cMaxRedirects; // cap redirect chains (#3)
+    lHttp.AllowCookies := True;            // keep session cookies across redirects (#4)
+    lHttp.CookieManager := TIdCookieManager.Create(lHttp);
+    TIdHTTPAccess(lHttp).IPVersion := Id_IPv4; // force IPv4 — broken IPv6 on some providers (#11)
+    lHttp.ConnectTimeout := cTimeoutConnectMs;
+    lHttp.ReadTimeout := AReadTimeoutMs;   // per request-type (#17)
+    lHttp.Request.Connection := cConnectionClose; // avoid socket-reuse issues on portal calls (#12)
     // don't raise on a 4xx/5xx — we want the body so we can spot a Cloudflare
     // challenge page and decide on backoff ourselves (#13/#14)
-    H.HTTPOptions := H.HTTPOptions + [hoNoProtocolErrorException, hoWantProtocolErrorContent];
+    lHttp.HTTPOptions := lHttp.HTTPOptions + [hoNoProtocolErrorException, hoWantProtocolErrorContent];
     if AUserAgent <> '' then
-      H.Request.UserAgent := AUserAgent
+      lHttp.Request.UserAgent := AUserAgent
     else
-      H.Request.UserAgent := DefaultUserAgent;
+      lHttp.Request.UserAgent := DefaultUserAgent;
     // Look like a media client, not a browser: a real VLC/ffmpeg sends just
     // Accept: */* and NO Accept-Language. Sending browser-y headers under a VLC
     // UA is a fingerprint mismatch some WAFs drop (#2, B2).
-    H.Request.Accept := cAcceptAny;
-    H.Request.AcceptEncoding := cAcceptEncodingIdentity; // no gzip (#2)
+    lHttp.Request.Accept := cAcceptAny;
+    lHttp.Request.AcceptEncoding := cAcceptEncodingIdentity; // no gzip (#2)
     if AReferer <> '' then
-      H.Request.Referer := AReferer;   // some portals gate on Referer (#8)
-    ApplyDebugProxyIndy(H);            // route via mitmproxy when IPTV_DEBUG_PROXY set (#18)
+      lHttp.Request.Referer := AReferer;   // some portals gate on Referer (#8)
+    ApplyDebugProxyIndy(lHttp);            // route via mitmproxy when IPTV_DEBUG_PROXY set (#18)
 
-    Attempt := 0;
+    lAttempt := 0;
     repeat
-      MS := TBytesStream.Create;
+      lStream := TBytesStream.Create;
       try
-        H.Get(AUrl, MS);
+        lHttp.Get(AUrl, lStream);
         if lCatcher.HttpsTarget <> '' then
           Exit(WinHttpGetBytes(lCatcher.HttpsTarget, AUserAgent, AReadTimeoutMs, AReferer));
-        Status := H.ResponseCode;
-        if IsRetryStatus(Status) and (Attempt < cMaxRetries) then
+        lStatus := lHttp.ResponseCode;
+        if IsRetryStatus(lStatus) and (lAttempt < cMaxRetries) then
         begin
-          Inc(Attempt);
-          TThread.Sleep(cBackoffBaseMs * (1 shl Attempt)); // 1s, 2s, 4s backoff (#14)
+          Inc(lAttempt);
+          TThread.Sleep(cBackoffBaseMs * (1 shl lAttempt)); // 1s, 2s, 4s backoff (#14)
           Continue;
         end;
-        Result := Copy(MS.Bytes, 0, MS.Size);
+        Result := Copy(lStream.Bytes, 0, lStream.Size);
         Break;
       finally
-        MS.Free;
+        FreeAndNil(lStream);
       end;
     until False;
 
     if IsCloudflareChallenge(DecodeHead(Result),
-      H.Response.RawHeaders.Values[cHeaderServer], Status) then
+      lHttp.Response.RawHeaders.Values[cHeaderServer], lStatus) then
       raise EProviderBlocked.Create(
         'Provider zit achter een Cloudflare browser-challenge — niet zonder browser op te halen.');
-    if Status >= cHttpStatusErrorMin then
-      raise EIdHTTPProtocolException.CreateError(Status, H.ResponseText, DecodeBytes(Result));
+    if lStatus >= cHttpStatusErrorMin then
+      raise EIdHTTPProtocolException.CreateError(lStatus, lHttp.ResponseText, DecodeBytes(Result));
     // Truncation guard: with identity encoding a declared Content-Length equals the
     // body length, so fewer received bytes means the connection dropped mid-transfer.
     // Fail rather than hand back a truncated playlist/EPG (for EPG, ReplaceEpg would
     // then DELETE the old programmes and store only the partial set).
-    if (H.Response.ContentLength > 0) and (Length(Result) < H.Response.ContentLength) then
+    if (lHttp.Response.ContentLength > 0) and (Length(Result) < lHttp.Response.ContentLength) then
       raise Exception.CreateFmt('truncated response from %s: expected %d bytes, got %d',
-        [MaskUrlSecrets(AUrl), H.Response.ContentLength, Length(Result)]);
+        [MaskUrlSecrets(AUrl), lHttp.Response.ContentLength, Length(Result)]);
   finally
-    FreeAndNil(H);
+    FreeAndNil(lHttp);
     FreeAndNil(lCatcher);
   end;
 end;
@@ -437,53 +452,53 @@ end;
 function WinHttpGetBytes(const AUrl, AUserAgent: string; AReadTimeoutMs: Integer;
   const AReferer: string): TBytes;
 var
-  Http: THTTPClient;
-  MS: TBytesStream;
-  Resp: IHTTPResponse;
-  Attempt: Integer;
-  Headers: TNetHeaders;
+  lHttp: THTTPClient;
+  lStream: TBytesStream;
+  lResp: IHTTPResponse;
+  lAttempt: Integer;
+  lHeaders: TNetHeaders;
 begin
   Result := nil;
-  Headers := [];
+  lHeaders := [];
   if AReferer <> '' then
-    Headers := [TNameValuePair.Create(cHeaderReferer, AReferer)]; // #8
-  Http := NewHttpClient(AUserAgent);
+    lHeaders := [TNameValuePair.Create(cHeaderReferer, AReferer)]; // #8
+  lHttp := NewHttpClient(AUserAgent);
   try
-    Http.ResponseTimeout := AReadTimeoutMs;
-    ApplyDebugProxyHttp(Http);
-    Attempt := 0;
+    lHttp.ResponseTimeout := AReadTimeoutMs;
+    ApplyDebugProxyHttp(lHttp);
+    lAttempt := 0;
     repeat
-      MS := TBytesStream.Create;
+      lStream := TBytesStream.Create;
       try
-        Resp := Http.Get(AUrl, MS, Headers);
-        if IsRetryStatus(Resp.StatusCode) and (Attempt < cMaxRetries) then
+        lResp := lHttp.Get(AUrl, lStream, lHeaders);
+        if IsRetryStatus(lResp.StatusCode) and (lAttempt < cMaxRetries) then
         begin
-          Inc(Attempt);
-          TThread.Sleep(cBackoffBaseMs * (1 shl Attempt));
+          Inc(lAttempt);
+          TThread.Sleep(cBackoffBaseMs * (1 shl lAttempt));
           Continue;
         end;
-        Result := Copy(MS.Bytes, 0, MS.Size);
+        Result := Copy(lStream.Bytes, 0, lStream.Size);
         if IsCloudflareChallenge(DecodeHead(Result),
-          Resp.HeaderValue[cHeaderServer], Resp.StatusCode) then
+          lResp.HeaderValue[cHeaderServer], lResp.StatusCode) then
           raise EProviderBlocked.Create(
             'Provider zit achter een Cloudflare browser-challenge — niet zonder browser op te halen.');
         // surface real HTTP errors instead of returning the error-page body (which
         // parses to nothing → a silently empty/cleared catalog). Mirrors the Indy path.
-        if Resp.StatusCode >= cHttpStatusErrorMin then
-          raise Exception.CreateFmt('HTTP %d fetching %s', [Resp.StatusCode, MaskUrlSecrets(AUrl)]);
+        if lResp.StatusCode >= cHttpStatusErrorMin then
+          raise Exception.CreateFmt('HTTP %d fetching %s', [lResp.StatusCode, MaskUrlSecrets(AUrl)]);
         // truncation guard (see the Indy path): a short body vs a declared
         // Content-Length means a mid-transfer drop — fail instead of persisting
         // an incomplete playlist/EPG.
-        if (Resp.ContentLength > 0) and (Length(Result) < Resp.ContentLength) then
+        if (lResp.ContentLength > 0) and (Length(Result) < lResp.ContentLength) then
           raise Exception.CreateFmt('truncated response from %s: expected %d bytes, got %d',
-            [MaskUrlSecrets(AUrl), Resp.ContentLength, Length(Result)]);
+            [MaskUrlSecrets(AUrl), lResp.ContentLength, Length(Result)]);
         Break;
       finally
-        MS.Free;
+        FreeAndNil(lStream);
       end;
     until False;
   finally
-    Http.Free;
+    FreeAndNil(lHttp);
   end;
 end;
 
@@ -501,36 +516,36 @@ end;
 // Detect the gzip magic and inflate; anything else passes through unchanged.
 function GunzipIfNeeded(const ABytes: TBytes): TBytes;
 var
-  Src: TBytesStream;
-  Z: TZDecompressionStream;
-  Dst: TBytesStream;
-  Buf: TBytes;
-  N: Integer;
+  lSrc: TBytesStream;
+  lZip: TZDecompressionStream;
+  lDst: TBytesStream;
+  lBuf: TBytes;
+  lRead: Integer;
 begin
   if (Length(ABytes) < 2) or (ABytes[0] <> cGzipMagic1) or (ABytes[1] <> cGzipMagic2) then
     Exit(ABytes);
-  Src := TBytesStream.Create(ABytes);
+  lSrc := TBytesStream.Create(ABytes);
   try
-    Z := TZDecompressionStream.Create(Src, cZlibWindowBitsGzip);
+    lZip := TZDecompressionStream.Create(lSrc, cZlibWindowBitsGzip);
     try
-      Dst := TBytesStream.Create;
+      lDst := TBytesStream.Create;
       try
         // read in chunks: a decompression stream has no known Size to CopyFrom
-        SetLength(Buf, cGunzipChunkBytes);
+        SetLength(lBuf, cGunzipChunkBytes);
         repeat
-          N := Z.Read(Buf[0], Length(Buf));
-          if N > 0 then
-            Dst.WriteBuffer(Buf[0], N);
-        until N <= 0;
-        Result := Copy(Dst.Bytes, 0, Dst.Size);
+          lRead := lZip.Read(lBuf[0], Length(lBuf));
+          if lRead > 0 then
+            lDst.WriteBuffer(lBuf[0], lRead);
+        until lRead <= 0;
+        Result := Copy(lDst.Bytes, 0, lDst.Size);
       finally
-        Dst.Free;
+        FreeAndNil(lDst);
       end;
     finally
-      Z.Free;
+      FreeAndNil(lZip);
     end;
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 end;
 

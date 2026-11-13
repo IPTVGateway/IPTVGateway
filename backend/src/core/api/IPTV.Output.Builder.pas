@@ -27,7 +27,12 @@ unit IPTV.Output.Builder;
 interface
 
 uses
-  IPTV.Storage.Intf, IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.CustomList, IPTV.Model.Catalog;
+  // own
+  IPTV.Storage.Intf,
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.CustomList,
+  IPTV.Model.Catalog;
 
 type
   /// Dummy-EPG generation settings (mirrors the config fields). Enabled=False =>
@@ -37,7 +42,9 @@ type
     BlockMinutes: Integer; // block length, aligned to whole local hours
     HoursBack: Integer;    // window start, hours before now
     HoursAhead: Integer;   // window end, hours after now
+    /// Options with dummy EPG disabled.
     class function Off: TDummyEpgOptions; static;
+    /// Options from the individual config values.
     class function Make(AEnabled: Boolean; ABlockMinutes, AHoursBack,
       AHoursAhead: Integer): TDummyEpgOptions; static;
   end;
@@ -69,7 +76,9 @@ type
   ///                it. Re-keys the M3U tvg-id + XMLTV channel/programme ids together.
   TNameOptions = record
     ShowGroup, ShowNumber, ShowSource, IdSort: Boolean;
+    /// No decoration at all (the plain box output).
     class function None: TNameOptions; static;
+    /// Options from the individual toggles.
     class function Make(AGroup, ANumber, ASource: Boolean; AIdSort: Boolean = False): TNameOptions; static;
     function AnyName: Boolean;   // any of the visible-NAME decorations
     function Any: Boolean;       // any decoration at all (name or id)
@@ -109,6 +118,7 @@ function OutputNumbers(const AChannels: TOutputChannelList): TArray<Integer>;
 // ANames: how to decorate the visible name (Plex surfaces only).
 function BuildM3U(const AStore: IStore; AListId: Integer; const AStreamUrlPrefix: string = '';
   ASequentialChno: Boolean = False; const AGroups: TArray<string> = nil): string; overload;
+/// M3U of the list with a global group filter and display-name decoration (ANames).
 function BuildM3U(const AStore: IStore; AListId: Integer; const AStreamUrlPrefix: string;
   ASequentialChno: Boolean; const AGroups: TArray<string>;
   const ANames: TNameOptions): string; overload;
@@ -125,6 +135,7 @@ function BuildXmltv(const AStore: IStore; AListId: Integer; AMaxDays: Integer = 
 /// XMLTV with dummy-EPG filling and an optional global group filter.
 function BuildXmltv(const AStore: IStore; AListId, AMaxDays: Integer;
   const ADummy: TDummyEpgOptions; const AGroups: TArray<string> = nil): string; overload;
+/// XMLTV with dummy-EPG filling, a global group filter and name/id decoration (ANames).
 function BuildXmltv(const AStore: IStore; AListId, AMaxDays: Integer;
   const ADummy: TDummyEpgOptions; const AGroups: TArray<string>;
   const ANames: TNameOptions): string; overload;
@@ -155,7 +166,7 @@ procedure KeepContentTypes(AChannels: TOutputChannelList; const ATypes: TContent
 /// A list login as a URL PATH segment: percent-encoded (a '/', '?' or '#' in a
 /// password would break the path) and '-' for an empty one (an empty segment,
 /// /live///12, is dropped or rejected by players and routers).
-function PathCred(const S: string): string;
+function PathCred(const AValue: string): string;
 
 /// The list a box logs in as, given credentials taken from a URL path: as-is,
 /// else percent-decoded, else '-'/'-' as the empty login. Caller frees; nil = none.
@@ -173,9 +184,16 @@ function ChannelDisplayName(const AChannel: TOutputChannel;
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, System.DateUtils, System.StrUtils,
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.Generics.Collections,
+  System.DateUtils,
+  System.StrUtils,
   System.NetEncoding,
-  IPTV.Model.Epg, IPTV.Core.Utils;
+  // own
+  IPTV.Model.Epg,
+  IPTV.Core.Utils;
 
 const
   // stream extensions
@@ -292,24 +310,24 @@ end;
 function TimeshiftUpstreamUrl(const AStore: IStore; const AStream: TStreamItem;
   ADurationMin: Integer; AStartUtc: TDateTime; const AExt: string): string;
 var
-  Sources: TObjectList<TSourceConfig>;
-  S: TSourceConfig;
+  lSources: TObjectList<TSourceConfig>;
+  lSource: TSourceConfig;
 begin
   Result := '';
   if AStream = nil then
     Exit;
-  Sources := AStore.LoadSources;
+  lSources := AStore.LoadSources;
   try
-    for S in Sources do
-      if S.Id = AStream.SourceId then
+    for lSource in lSources do
+      if lSource.Id = AStream.SourceId then
       begin
-        if S.Kind = skXtream then
-          Result := XtreamTimeshiftUrl(S.Url, S.Username, S.Password, ADurationMin,
-            AStartUtc, S.TzOffsetMin, AStream.UpstreamId, AExt);
+        if lSource.Kind = skXtream then
+          Result := XtreamTimeshiftUrl(lSource.Url, lSource.Username, lSource.Password, ADurationMin,
+            AStartUtc, lSource.TzOffsetMin, AStream.UpstreamId, AExt);
         Break;
       end;
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
 end;
 
@@ -351,58 +369,58 @@ begin
   Result.HoursAhead := AHoursAhead;
 end;
 
-function XmlEscape(const S: string): string;
+function XmlEscape(const AValue: string): string;
 var
-  SB: TStringBuilder;
-  Ch: Char;
+  lSB: TStringBuilder;
+  lCh: Char;
 begin
   // control characters (other than tab/CR/LF) are not allowed in XML 1.0 at all:
   // one stray #1 in a provider title made strict guide parsers reject the file
-  SB := TStringBuilder.Create(S.Length + cXmlEscapeHeadroom);
+  lSB := TStringBuilder.Create(AValue.Length + cXmlEscapeHeadroom);
   try
-    for Ch in S do
-      case Ch of
-        '&': SB.Append('&amp;');
-        '<': SB.Append('&lt;');
-        '>': SB.Append('&gt;');
-        '"': SB.Append('&quot;');
-        #9, #10, #13: SB.Append(Ch);
+    for lCh in AValue do
+      case lCh of
+        '&': lSB.Append('&amp;');
+        '<': lSB.Append('&lt;');
+        '>': lSB.Append('&gt;');
+        '"': lSB.Append('&quot;');
+        #9, #10, #13: lSB.Append(lCh);
         #0..#8, #11, #12, #14..#31, #$FFFE, #$FFFF: ; // dropped
       else
-        SB.Append(Ch);
+        lSB.Append(lCh);
       end;
-    Result := SB.ToString;
+    Result := lSB.ToString;
   finally
-    SB.Free;
+    FreeAndNil(lSB);
   end;
 end;
 
-function PathCred(const S: string): string;
+function PathCred(const AValue: string): string;
 var
-  B: TBytes;
-  I: Integer;
+  lBytes: TBytes;
+  i: Integer;
 begin
-  if S = '' then
+  if AValue = '' then
     Exit(cPathCredEmpty);
   Result := '';
-  B := TEncoding.UTF8.GetBytes(S);
-  for I := 0 to High(B) do
-    if (B[I] < cAsciiLimit) and CharInSet(Char(B[I]), cUrlUnreserved) then
-      Result := Result + Char(B[I])
+  lBytes := TEncoding.UTF8.GetBytes(AValue);
+  for i := 0 to High(lBytes) do
+    if (lBytes[i] < cAsciiLimit) and CharInSet(Char(lBytes[i]), cUrlUnreserved) then
+      Result := Result + Char(lBytes[i])
     else
-      Result := Result + '%' + IntToHex(B[I], 2);
+      Result := Result + '%' + IntToHex(lBytes[i], 2);
 end;
 
 function FindListForPath(const AStore: IStore; const AUser, APass: string): TCustomList;
 var
   lUser, lPass: string;
 
-  function Dash(const S: string): string;
+  function Dash(const AValue: string): string;
   begin
-    if S = cPathCredEmpty then
+    if AValue = cPathCredEmpty then
       Result := ''
     else
-      Result := S;
+      Result := AValue;
   end;
 
 begin
@@ -412,14 +430,16 @@ begin
   lUser := AUser;
   lPass := APass;
   if AUser.Contains('%') or APass.Contains('%') then
-  try
-    lUser := TNetEncoding.URL.URLDecode(AUser);
-    lPass := TNetEncoding.URL.URLDecode(APass);
-    Result := AStore.FindListByCredentials(lUser, lPass);
-    if Result <> nil then
-      Exit;
-  except
-    Exit(nil); // malformed escape
+  begin
+    try
+      lUser := TNetEncoding.URL.URLDecode(AUser);
+      lPass := TNetEncoding.URL.URLDecode(APass);
+      Result := AStore.FindListByCredentials(lUser, lPass);
+      if Result <> nil then
+        Exit;
+    except
+      Exit(nil); // malformed escape
+    end;
   end;
   // PathCred writes '-' for EACH empty field (a login with only a username too)
   if (lUser = cPathCredEmpty) or (lPass = cPathCredEmpty) then
@@ -436,9 +456,9 @@ end;
 // Make a value safe to drop inside a double-quoted #EXTINF attribute (and the
 // trailing display name): strip the characters that would break the line —
 // double-quotes and any CR/LF. (XMLTV output is escaped separately via XmlEscape.)
-function M3uSafe(const S: string): string;
+function M3uSafe(const AValue: string): string;
 begin
-  Result := S.Replace('"', '''', [rfReplaceAll])
+  Result := AValue.Replace('"', '''', [rfReplaceAll])
              .Replace(#13, ' ', [rfReplaceAll])
              .Replace(#10, ' ', [rfReplaceAll]);
 end;
@@ -454,29 +474,29 @@ end;
 function ChannelDisplayName(const AChannel: TOutputChannel;
   AShowGroup, AShowNumber: Boolean; ASeq, ATotal: Integer): string;
 var
-  Width: Integer;
-  NumStr: string;
+  lWidth: Integer;
+  lNumStr: string;
 begin
   Result := AChannel.Name;
   // Compute the zero-padded number FIRST (same value as the lineup GuideNumber:
   // ASeq is the channel's 1-based position; width from the highest number ATotal).
-  NumStr := '';
+  lNumStr := '';
   if AShowNumber and (ASeq > 0) then
   begin
     if ATotal < ASeq then
       ATotal := ASeq;
-    Width := Length(IntToStr(ATotal));
-    NumStr := IntToStr(ASeq).PadLeft(Width, '0');
+    lWidth := Length(IntToStr(ATotal));
+    lNumStr := IntToStr(ASeq).PadLeft(lWidth, '0');
     // Idempotent: if the name already begins with exactly this number, don't
     // add it again (so re-processing or provider-numbered names don't double up).
-    if Result.StartsWith(NumStr + ' ') then
-      NumStr := '';
+    if Result.StartsWith(lNumStr + ' ') then
+      lNumStr := '';
   end;
   if AShowGroup and (AChannel.GroupName <> '') then
     Result := AChannel.GroupName + ' ' + cGroupSeparator + ' ' + Result;
   // zero-padded running number FIRST, so a name-sort yields the output order
-  if NumStr <> '' then
-    Result := NumStr + ' ' + Result;
+  if lNumStr <> '' then
+    Result := lNumStr + ' ' + Result;
 end;
 
 // Excel-column-style letters for a 0-based index: 0→A … 25→Z, 26→AA, 27→AB …
@@ -497,172 +517,175 @@ end;
 // (A = 1st source, B = 2nd, …). Caller frees.
 function SourceLetterMap(const AStore: IStore): TDictionary<Integer, string>;
 var
-  Sources: TObjectList<TSourceConfig>;
-  I: Integer;
+  lSources: TObjectList<TSourceConfig>;
+  i: Integer;
 begin
   Result := TDictionary<Integer, string>.Create;
-  Sources := AStore.LoadSources;
+  lSources := AStore.LoadSources;
   try
-    for I := 0 to Sources.Count - 1 do
-      Result.AddOrSetValue(Sources[I].Id, SourceLetter(I));
+    for i := 0 to lSources.Count - 1 do
+      Result.AddOrSetValue(lSources[i].Id, SourceLetter(i));
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
 end;
 
 function OutputNumbers(const AChannels: TOutputChannelList): TArray<Integer>;
 var
-  Seen: TDictionary<Integer, Boolean>;
-  I: Integer;
-  Own: Boolean;
+  lSeen: TDictionary<Integer, Boolean>;
+  i: Integer;
+  lOwn: Boolean;
 begin
   SetLength(Result, AChannels.Count);
-  Own := AChannels.Count > 0;
-  Seen := TDictionary<Integer, Boolean>.Create;
+  lOwn := AChannels.Count > 0;
+  lSeen := TDictionary<Integer, Boolean>.Create;
   try
-    for I := 0 to AChannels.Count - 1 do
+    for i := 0 to AChannels.Count - 1 do
     begin
-      if (AChannels[I].Number <= 0) or Seen.ContainsKey(AChannels[I].Number) then
+      if (AChannels[i].Number <= 0) or lSeen.ContainsKey(AChannels[i].Number) then
       begin
-        Own := False;
+        lOwn := False;
         Break;
       end;
-      Seen.Add(AChannels[I].Number, True);
+      lSeen.Add(AChannels[i].Number, True);
     end;
   finally
-    Seen.Free;
+    FreeAndNil(lSeen);
   end;
-  for I := 0 to AChannels.Count - 1 do
-    if Own then
-      Result[I] := AChannels[I].Number
+  for i := 0 to AChannels.Count - 1 do
+    if lOwn then
+      Result[i] := AChannels[i].Number
     else
-      Result[I] := I + 1;
+      Result[i] := i + 1;
 end;
 
-function MaxOf(const A: TArray<Integer>): Integer;
+function MaxOf(const AValues: TArray<Integer>): Integer;
 var
-  V: Integer;
+  lValue: Integer;
 begin
   Result := 0;
-  for V in A do
-    if V > Result then
-      Result := V;
+  for lValue in AValues do
+    if lValue > Result then
+      Result := lValue;
 end;
 
 function ComputeDisplayNames(const AStore: IStore; const AChannels: TOutputChannelList;
   const AOpts: TNameOptions): TArray<string>;
 var
-  Nums: TArray<Integer>;
-  Letters: TDictionary<Integer, string>;
-  PerSource: TDictionary<Integer, Integer>;
-  I, Seq, Total: Integer;
-  C: TOutputChannel;
-  Nm, L: string;
+  lNums: TArray<Integer>;
+  lLetters: TDictionary<Integer, string>;
+  lPerSource: TDictionary<Integer, Integer>;
+  i, lSeq, lTotal: Integer;
+  lChannel: TOutputChannel;
+  lName, lLetter: string;
 begin
   SetLength(Result, AChannels.Count);
-  Nums := OutputNumbers(AChannels);
-  Total := MaxOf(Nums);
-  Letters := nil;
-  if AOpts.ShowSource then
-    Letters := SourceLetterMap(AStore);
-  PerSource := TDictionary<Integer, Integer>.Create;
+  lNums := OutputNumbers(AChannels);
+  lTotal := MaxOf(lNums);
+  lLetters := nil;
+  lPerSource := nil;
   try
-    for I := 0 to AChannels.Count - 1 do
+    if AOpts.ShowSource then
+      lLetters := SourceLetterMap(AStore);
+    lPerSource := TDictionary<Integer, Integer>.Create;
+    for i := 0 to AChannels.Count - 1 do
     begin
-      C := AChannels[I];
+      lChannel := AChannels[i];
       // number runs per-source when the source letter groups them, else globally
       if AOpts.ShowSource then
       begin
-        Seq := 0;
-        PerSource.TryGetValue(C.SourceId, Seq);
-        Inc(Seq);
-        PerSource.AddOrSetValue(C.SourceId, Seq);
+        lSeq := 0;
+        lPerSource.TryGetValue(lChannel.SourceId, lSeq);
+        Inc(lSeq);
+        lPerSource.AddOrSetValue(lChannel.SourceId, lSeq);
       end
       else
-        Seq := Nums[I]; // bouquet number (or position) — same as GuideNumber/tvg-chno
-      Nm := ChannelDisplayName(C, AOpts.ShowGroup, AOpts.ShowNumber, Seq, Total);
+        lSeq := lNums[i]; // bouquet number (or position) — same as GuideNumber/tvg-chno
+      lName := ChannelDisplayName(lChannel, AOpts.ShowGroup, AOpts.ShowNumber, lSeq, lTotal);
       // per-source letter FIRST (a leading letter isn't stripped by Plex the way a
       // leading digit is, so it actually drives the sort → group by provider)
-      if AOpts.ShowSource and (Letters <> nil) then
+      if AOpts.ShowSource and (lLetters <> nil) then
       begin
-        L := '';
-        if Letters.TryGetValue(C.SourceId, L) and (L <> '') and
-           not Nm.StartsWith(L + ' ') then
-          Nm := L + ' ' + Nm;
+        lLetter := '';
+        if lLetters.TryGetValue(lChannel.SourceId, lLetter) and (lLetter <> '') and
+           not lName.StartsWith(lLetter + ' ') then
+          lName := lLetter + ' ' + lName;
       end;
-      Result[I] := Nm;
+      Result[i] := lName;
     end;
   finally
-    PerSource.Free;
-    Letters.Free;
+    FreeAndNil(lPerSource);
+    FreeAndNil(lLetters);
   end;
 end;
 
 function ComputeGuideIds(const AChannels: TOutputChannelList; AIdSort: Boolean): TArray<string>;
 var
-  I, Width: Integer;
-  Base: string;
-  Nums: TArray<Integer>;
+  i, lWidth: Integer;
+  lBase: string;
+  lNums: TArray<Integer>;
 begin
   SetLength(Result, AChannels.Count);
-  Nums := OutputNumbers(AChannels);
-  Width := Length(IntToStr(MaxOf(Nums)));
-  if Width < 1 then
-    Width := 1;
-  for I := 0 to AChannels.Count - 1 do
+  lNums := OutputNumbers(AChannels);
+  lWidth := Length(IntToStr(MaxOf(lNums)));
+  if lWidth < 1 then
+    lWidth := 1;
+  for i := 0 to AChannels.Count - 1 do
   begin
-    Base := ChannelGuideId(AChannels[I]);
+    lBase := ChannelGuideId(AChannels[i]);
     if AIdSort then
     begin
       // zero-padded sort number in front so a string-sort of the id = bouquet order.
       // Plex SHOWS this id as the channel title in its Live TV tiles, so the number is
       // followed by the readable channel name ("01 NPO 1"), not the raw tvg-id; the
       // unique sort number alone keeps distinct channels distinct.
-      if Trim(AChannels[I].Name) <> '' then
-        Base := Trim(AChannels[I].Name);
-      Result[I] := IntToStr(Nums[I]).PadLeft(Width, '0') + ' ' + Base;
+      if Trim(AChannels[i].Name) <> '' then
+        lBase := Trim(AChannels[i].Name);
+      Result[i] := IntToStr(lNums[i]).PadLeft(lWidth, '0') + ' ' + lBase;
     end
     else
-      Result[I] := Base;
+      Result[i] := lBase;
   end;
 end;
 
 function SelectOutputChannels(const AStore: IStore; AListId: Integer;
   const AGroups: TArray<string>): TOutputChannelList;
 var
-  All: TOutputChannelList;
-  C: TOutputChannel;
-  Keep: TStringList;
-  Kept: TList<TOutputChannel>;
-  G: string;
+  lAll: TOutputChannelList;
+  lChannel: TOutputChannel;
+  lKeep: TStringList;
+  lKept: TList<TOutputChannel>;
+  lGroup: string;
 begin
-  All := AStore.LoadOutputChannels(AListId);
+  lAll := AStore.LoadOutputChannels(AListId);
   if Length(AGroups) = 0 then
-    Exit(All); // no filter — hand the full list straight back (caller owns it)
+    Exit(lAll); // no filter — hand the full list straight back (caller owns it)
   Result := TOutputChannelList.Create(True);
-  Keep := TStringList.Create;
-  Kept := TList<TOutputChannel>.Create;
+  lKeep := nil;
+  lKept := nil;
   try
-    Keep.CaseSensitive := False;
-    Keep.Sorted := True;
-    Keep.Duplicates := dupIgnore;
-    for G in AGroups do
-      if G.Trim <> '' then
-        Keep.Add(G.Trim);
+    lKeep := TStringList.Create;
+    lKept := TList<TOutputChannel>.Create;
+    lKeep.CaseSensitive := False;
+    lKeep.Sorted := True;
+    lKeep.Duplicates := dupIgnore;
+    for lGroup in AGroups do
+      if lGroup.Trim <> '' then
+        lKeep.Add(lGroup.Trim);
     // note the matches in canonical order, then move them over (Extract leaves the
     // non-kept channels in All so its Free disposes of exactly those)
-    for C in All do
-      if Keep.IndexOf(C.GroupName) >= 0 then
-        Kept.Add(C);
-    for C in Kept do
+    for lChannel in lAll do
+      if lKeep.IndexOf(lChannel.GroupName) >= 0 then
+        lKept.Add(lChannel);
+    for lChannel in lKept do
     begin
-      All.Extract(C); // detach without freeing
-      Result.Add(C);  // Result now owns it
+      lAll.Extract(lChannel); // detach without freeing
+      Result.Add(lChannel);  // Result now owns it
     end;
   finally
-    Kept.Free;
-    Keep.Free;
-    All.Free; // frees the channels left behind (the non-kept ones)
+    FreeAndNil(lKept);
+    FreeAndNil(lKeep);
+    FreeAndNil(lAll); // frees the channels left behind (the non-kept ones)
   end;
 end;
 
@@ -670,54 +693,54 @@ function BuildM3UChannels(const AChannels: TOutputChannelList;
   const AStreamUrlPrefix: string; ASequentialChno: Boolean;
   const ADisplayNames: TArray<string>; const AGuideIds: TArray<string>): string;
 var
-  C: TOutputChannel;
-  SB: TStringBuilder;
-  Chno, DName, TvgId, Catchup: string;
-  Seq: Integer;
-  Nums: TArray<Integer>;
+  lChannel: TOutputChannel;
+  lSB: TStringBuilder;
+  lChno, lDName, lTvgId, lCatchup: string;
+  lSeq: Integer;
+  lNums: TArray<Integer>;
 begin
-  Nums := OutputNumbers(AChannels);
-  SB := TStringBuilder.Create;
+  lNums := OutputNumbers(AChannels);
+  lSB := TStringBuilder.Create;
   try
-    SB.AppendLine('#EXTM3U');
-    Seq := 0;
-    for C in AChannels do
+    lSB.AppendLine('#EXTM3U');
+    lSeq := 0;
+    for lChannel in AChannels do
     begin
-      Inc(Seq);
+      Inc(lSeq);
       if ASequentialChno then
         // globally-unique running number (Plex M3U tuner needs no duplicates)
-        Chno := Format(' tvg-chno="%d"', [Nums[Seq - 1]])
-      else if C.Number > 0 then
+        lChno := Format(' tvg-chno="%d"', [lNums[lSeq - 1]])
+      else if lChannel.Number > 0 then
         // convey the operator's channel number (drag/sort-by-Nr) to M3U players
-        Chno := Format(' tvg-chno="%d"', [C.Number])
+        lChno := Format(' tvg-chno="%d"', [lChannel.Number])
       else
-        Chno := '';
-      if (Seq - 1 <= High(ADisplayNames)) and (Length(ADisplayNames) > 0) then
-        DName := ADisplayNames[Seq - 1] // pre-computed decorated name (Plex surfaces)
+        lChno := '';
+      if (lSeq - 1 <= High(ADisplayNames)) and (Length(ADisplayNames) > 0) then
+        lDName := ADisplayNames[lSeq - 1] // pre-computed decorated name (Plex surfaces)
       else
-        DName := C.Name;                // plain upstream name (box output)
-      if (Seq - 1 <= High(AGuideIds)) and (Length(AGuideIds) > 0) then
-        TvgId := AGuideIds[Seq - 1]     // pre-computed (maybe sort-prefixed) id
+        lDName := lChannel.Name;            // plain upstream name (box output)
+      if (lSeq - 1 <= High(AGuideIds)) and (Length(AGuideIds) > 0) then
+        lTvgId := AGuideIds[lSeq - 1]       // pre-computed (maybe sort-prefixed) id
       else
-        TvgId := ChannelGuideId(C);
+        lTvgId := ChannelGuideId(lChannel);
       // catch-up for box players (TiviMate / OTT Navigator): "xc" = derive the
       // Xtream /timeshift/ URL from the stream URL — that is the provider's own
       // (direct) or our relay, which serves /timeshift/ as well. Plex ignores it.
-      if (not ASequentialChno) and (C.ContentType = ctLive) and (C.ArchiveDays > 0) then
-        Catchup := Format(' catchup="xc" catchup-days="%d"', [C.ArchiveDays])
+      if (not ASequentialChno) and (lChannel.ContentType = ctLive) and (lChannel.ArchiveDays > 0) then
+        lCatchup := Format(' catchup="xc" catchup-days="%d"', [lChannel.ArchiveDays])
       else
-        Catchup := '';
-      SB.AppendFormat('#EXTINF:-1 tvg-id="%s"%s tvg-name="%s" tvg-logo="%s" group-title="%s"%s,%s'#10,
-        [M3uSafe(TvgId), Chno, M3uSafe(DName), M3uSafe(C.Logo),
-         M3uSafe(C.GroupName), Catchup, M3uSafe(DName)]);
+        lCatchup := '';
+      lSB.AppendFormat('#EXTINF:-1 tvg-id="%s"%s tvg-name="%s" tvg-logo="%s" group-title="%s"%s,%s'#10,
+        [M3uSafe(lTvgId), lChno, M3uSafe(lDName), M3uSafe(lChannel.Logo),
+         M3uSafe(lChannel.GroupName), lCatchup, M3uSafe(lDName)]);
       if AStreamUrlPrefix <> '' then
-        SB.AppendLine(AStreamUrlPrefix + C.StreamItemId.ToString + '.' + cExtTs) // via our proxy
+        lSB.AppendLine(AStreamUrlPrefix + lChannel.StreamItemId.ToString + '.' + cExtTs) // via our proxy
       else
-        SB.AppendLine(C.UpstreamUrl); // RAW upstream URL — box talks straight to the provider
+        lSB.AppendLine(lChannel.UpstreamUrl); // RAW upstream URL — box talks straight to the provider
     end;
-    Result := SB.ToString;
+    Result := lSB.ToString;
   finally
-    SB.Free;
+    FreeAndNil(lSB);
   end;
 end;
 
@@ -731,26 +754,26 @@ function BuildM3U(const AStore: IStore; AListId: Integer; const AStreamUrlPrefix
   ASequentialChno: Boolean; const AGroups: TArray<string>;
   const ANames: TNameOptions): string;
 var
-  Channels: TOutputChannelList;
-  Names, Ids: TArray<string>;
+  lChannels: TOutputChannelList;
+  lNames, lIds: TArray<string>;
 begin
-  Channels := SelectOutputChannels(AStore, AListId, AGroups);
+  lChannels := SelectOutputChannels(AStore, AListId, AGroups);
   try
     // a series item is a container (get_series_info), not a playable file; the
     // Plex/Jellyfin tuner (sequential numbers) only takes linear channels
     if ASequentialChno then
-      KeepContentTypes(Channels, cLinearContentTypes)
+      KeepContentTypes(lChannels, cLinearContentTypes)
     else
-      KeepContentTypes(Channels, cBoxContentTypes);
-    Names := nil;
+      KeepContentTypes(lChannels, cBoxContentTypes);
+    lNames := nil;
     if ANames.AnyName then
-      Names := ComputeDisplayNames(AStore, Channels, ANames);
-    Ids := nil;
+      lNames := ComputeDisplayNames(AStore, lChannels, ANames);
+    lIds := nil;
     if ANames.IdSort then
-      Ids := ComputeGuideIds(Channels, cIdSort);
-    Result := BuildM3UChannels(Channels, AStreamUrlPrefix, ASequentialChno, Names, Ids);
+      lIds := ComputeGuideIds(lChannels, cIdSort);
+    Result := BuildM3UChannels(lChannels, AStreamUrlPrefix, ASequentialChno, lNames, lIds);
   finally
-    Channels.Free;
+    FreeAndNil(lChannels);
   end;
 end;
 
@@ -766,25 +789,26 @@ end;
 procedure AppendDummy(ASB: TStringBuilder; const AGuideId, AName, ACategory: string;
   const ADummy: TDummyEpgOptions);
 var
-  NowU, BlockDays, EndU, B, StopU: TDateTime;
-  Guard: Integer;
+  lNowU, lBlockDays, lEndU, lBlock, lStopU: TDateTime;
+  lGuard: Integer;
 begin
   if ADummy.BlockMinutes <= 0 then
     Exit;
-  NowU := NowUtc;
-  BlockDays := ADummy.BlockMinutes / MinsPerDay;
-  B := FloorToHour(IncHour(NowU, -ADummy.HoursBack));
-  EndU := IncHour(NowU, ADummy.HoursAhead);
-  Guard := 0;
-  while (B < EndU) and (Guard < cDummyMaxBlocks) do
+  lNowU := NowUtc;
+  lBlockDays := ADummy.BlockMinutes / MinsPerDay;
+  lBlock := FloorToHour(IncHour(lNowU, -ADummy.HoursBack));
+  lEndU := IncHour(lNowU, ADummy.HoursAhead);
+  lGuard := 0;
+  while (lBlock < lEndU) and (lGuard < cDummyMaxBlocks) do
   begin
-    Inc(Guard);
-    StopU := B + BlockDays;
+    Inc(lGuard);
+    lStopU := lBlock + lBlockDays;
     ASB.AppendFormat(
-      '  <programme start="%s" stop="%s" channel="%s"><title>%s</title><desc>%s</desc><category>%s</category></programme>'#10,
-      [XmltvTime(B), XmltvTime(StopU),
+      '  <programme start="%s" stop="%s" channel="%s"><title>%s</title><desc>%s</desc>' +
+      '<category>%s</category></programme>'#10,
+      [XmltvTime(lBlock), XmltvTime(lStopU),
        XmlEscape(AGuideId), XmlEscape(AName), XmlEscape(cDummyDescription), XmlEscape(ACategory)]);
-    B := StopU;
+    lBlock := lStopU;
   end;
 end;
 
@@ -792,123 +816,130 @@ function BuildXmltvChannels(const AStore: IStore; const AChannels: TOutputChanne
   AMaxDays: Integer; const ADummy: TDummyEpgOptions; const ADisplayNames: TArray<string>;
   const AGuideIds: TArray<string>): string;
 var
-  C: TOutputChannel;
-  Upstreams, SeenEff: TStringList;
-  EffById: TDictionary<string, TArray<string>>; // upstream tvg-id -> published id
-  GroupById: TDictionary<string, string>; // published id -> group-title (category)
-  NameById: TDictionary<string, string>;  // published id -> display name (dummy title)
-  GotEpg: TStringList;                     // published ids that received ≥1 real programme
-  Progs: TEpgProgrammeList;
-  P: TEpgProgramme;
-  SB: TStringBuilder;
-  ChannelLabel, Gid, Grp, DName, RId: string;
-  Pubs: TArray<string>;
-  I, Seq: Integer;
+  lChannel: TOutputChannel;
+  lUpstreams, lSeenEff: TStringList;
+  lEffById: TDictionary<string, TArray<string>>; // upstream tvg-id -> published id
+  lGroupById: TDictionary<string, string>; // published id -> group-title (category)
+  lNameById: TDictionary<string, string>;  // published id -> display name (dummy title)
+  lGotEpg: TStringList;                     // published ids that received ≥1 real programme
+  lProgs: TEpgProgrammeList;
+  lProg: TEpgProgramme;
+  lSB: TStringBuilder;
+  lChannelLabel, lGid, lGrp, lDName, lRId: string;
+  lPubs: TArray<string>;
+  i, lSeq: Integer;
 begin
-  Upstreams := TStringList.Create;
-  Upstreams.Sorted := True;
-  Upstreams.Duplicates := dupIgnore;
-  SeenEff := TStringList.Create;
-  SeenEff.Sorted := True;
-  SeenEff.Duplicates := dupIgnore;
-  GotEpg := TStringList.Create;
-  GotEpg.Sorted := True;
-  GotEpg.Duplicates := dupIgnore;
-  EffById := TDictionary<string, TArray<string>>.Create;
-  GroupById := TDictionary<string, string>.Create;
-  NameById := TDictionary<string, string>.Create;
-  SB := TStringBuilder.Create;
+  lUpstreams := nil;
+  lSeenEff := nil;
+  lGotEpg := nil;
+  lEffById := nil;
+  lGroupById := nil;
+  lNameById := nil;
+  lSB := nil;
   try
-    SB.AppendLine('<?xml version="1.0" encoding="UTF-8"?>');
-    SB.AppendLine('<tv generator-info-name="IPTVPlay">');
-    Seq := 0;
-    for C in AChannels do
+    lUpstreams := TStringList.Create;
+    lUpstreams.Sorted := True;
+    lUpstreams.Duplicates := dupIgnore;
+    lSeenEff := TStringList.Create;
+    lSeenEff.Sorted := True;
+    lSeenEff.Duplicates := dupIgnore;
+    lGotEpg := TStringList.Create;
+    lGotEpg.Sorted := True;
+    lGotEpg.Duplicates := dupIgnore;
+    lEffById := TDictionary<string, TArray<string>>.Create;
+    lGroupById := TDictionary<string, string>.Create;
+    lNameById := TDictionary<string, string>.Create;
+    lSB := TStringBuilder.Create;
+    lSB.AppendLine('<?xml version="1.0" encoding="UTF-8"?>');
+    lSB.AppendLine('<tv generator-info-name="IPTVPlay">');
+    lSeq := 0;
+    for lChannel in AChannels do
     begin
-      Inc(Seq); // position, to index the pre-computed display name / id
-      if (Seq - 1 <= High(AGuideIds)) and (Length(AGuideIds) > 0) then
-        Gid := AGuideIds[Seq - 1] // pre-computed (maybe sort-prefixed) published id
+      Inc(lSeq); // position, to index the pre-computed display name / id
+      if (lSeq - 1 <= High(AGuideIds)) and (Length(AGuideIds) > 0) then
+        lGid := AGuideIds[lSeq - 1] // pre-computed (maybe sort-prefixed) published id
       else
-        Gid := ChannelGuideId(C);
+        lGid := ChannelGuideId(lChannel);
       // an override relabels the guide: advertise the published id, and pull EPG
       // stored under EITHER the upstream id OR the effective id (or the matched
       // extra guide), re-keyed to it. One stored id can feed several channels.
-      for RId in C.EpgReadIds do
+      for lRId in lChannel.EpgReadIds do
       begin
-        if not EffById.TryGetValue(RId, Pubs) then
-          Pubs := nil;
-        if IndexStr(Gid, Pubs) < 0 then
-          EffById.AddOrSetValue(RId, Pubs + [Gid]);
-        Upstreams.Add(RId);
+        if not lEffById.TryGetValue(lRId, lPubs) then
+          lPubs := nil;
+        if IndexStr(lGid, lPubs) < 0 then
+          lEffById.AddOrSetValue(lRId, lPubs + [lGid]);
+        lUpstreams.Add(lRId);
       end;
       // one <channel> per distinct published id; remember group + name (first seen)
-      if SeenEff.IndexOf(Gid) < 0 then
+      if lSeenEff.IndexOf(lGid) < 0 then
       begin
-        SeenEff.Add(Gid);
-        if (Seq - 1 <= High(ADisplayNames)) and (Length(ADisplayNames) > 0) then
-          DName := ADisplayNames[Seq - 1] // pre-computed decorated name (same as M3U/lineup)
+        lSeenEff.Add(lGid);
+        if (lSeq - 1 <= High(ADisplayNames)) and (Length(ADisplayNames) > 0) then
+          lDName := ADisplayNames[lSeq - 1] // pre-computed decorated name (same as M3U/lineup)
         else
-          DName := C.Name;
-        GroupById.AddOrSetValue(Gid, C.GroupName);
-        NameById.AddOrSetValue(Gid, DName);
+          lDName := lChannel.Name;
+        lGroupById.AddOrSetValue(lGid, lChannel.GroupName);
+        lNameById.AddOrSetValue(lGid, lDName);
         // <icon>: Plex takes the channel logo from the XMLTV guide (the HDHomeRun
         // lineup has no logo field), so publish the effective logo here too
-        if C.Logo <> '' then
-          SB.AppendFormat('  <channel id="%s"><display-name>%s</display-name><icon src="%s"/></channel>'#10,
-            [XmlEscape(Gid), XmlEscape(DName), XmlEscape(C.Logo)])
+        if lChannel.Logo <> '' then
+          lSB.AppendFormat('  <channel id="%s"><display-name>%s</display-name><icon src="%s"/></channel>'#10,
+            [XmlEscape(lGid), XmlEscape(lDName), XmlEscape(lChannel.Logo)])
         else
-          SB.AppendFormat('  <channel id="%s"><display-name>%s</display-name></channel>'#10,
-            [XmlEscape(Gid), XmlEscape(DName)]);
+          lSB.AppendFormat('  <channel id="%s"><display-name>%s</display-name></channel>'#10,
+            [XmlEscape(lGid), XmlEscape(lDName)]);
       end;
     end;
 
-    Progs := AStore.LoadEpgForTvgIds(Upstreams.ToStringArray, AMaxDays);
+    lProgs := AStore.LoadEpgForTvgIds(lUpstreams.ToStringArray, AMaxDays);
     try
-      for I := 0 to Progs.Count - 1 do
+      for i := 0 to lProgs.Count - 1 do
       begin
-        P := Progs[I];
+        lProg := lProgs[i];
         // re-key the stored (upstream-id) programme to every published id using it
-        if not EffById.TryGetValue(P.ChannelTvgId, Pubs) then
-          Pubs := [P.ChannelTvgId];
-        for ChannelLabel in Pubs do
+        if not lEffById.TryGetValue(lProg.ChannelTvgId, lPubs) then
+          lPubs := [lProg.ChannelTvgId];
+        for lChannelLabel in lPubs do
         begin
-        GotEpg.Add(ChannelLabel); // this published id has real data — no dummy for it
-        SB.AppendFormat('  <programme start="%s" stop="%s" channel="%s"><title>%s</title><desc>%s</desc>',
-          [XmltvTime(P.StartUtc), XmltvTime(P.StopUtc), XmlEscape(ChannelLabel),
-           XmlEscape(P.Title), XmlEscape(P.Description)]);
-        // keep the provider's own category (if any) ...
-        if P.Category <> '' then
-          SB.AppendFormat('<category>%s</category>', [XmlEscape(P.Category)]);
-        // ... and ALWAYS add the group-title category (the guide's grouping), unless
-        // it would just duplicate the provider one
-        if GroupById.TryGetValue(ChannelLabel, Grp) and (Grp <> '') and
-           not SameText(Grp, P.Category) then
-          SB.AppendFormat('<category>%s</category>', [XmlEscape(Grp)]);
-        SB.AppendLine('</programme>');
+          lGotEpg.Add(lChannelLabel); // this published id has real data — no dummy for it
+          lSB.AppendFormat('  <programme start="%s" stop="%s" channel="%s"><title>%s</title><desc>%s</desc>',
+            [XmltvTime(lProg.StartUtc), XmltvTime(lProg.StopUtc), XmlEscape(lChannelLabel),
+             XmlEscape(lProg.Title), XmlEscape(lProg.Description)]);
+          // keep the provider's own category (if any) ...
+          if lProg.Category <> '' then
+            lSB.AppendFormat('<category>%s</category>', [XmlEscape(lProg.Category)]);
+          // ... and ALWAYS add the group-title category (the guide's grouping), unless
+          // it would just duplicate the provider one
+          if lGroupById.TryGetValue(lChannelLabel, lGrp) and (lGrp <> '') and
+             not SameText(lGrp, lProg.Category) then
+            lSB.AppendFormat('<category>%s</category>', [XmlEscape(lGrp)]);
+          lSB.AppendLine('</programme>');
         end;
       end;
     finally
-      Progs.Free;
+      FreeAndNil(lProgs);
     end;
 
     // fill the gaps: every published id with no real programme gets dummy blocks
     if ADummy.Enabled then
-      for I := 0 to SeenEff.Count - 1 do
+      for i := 0 to lSeenEff.Count - 1 do
       begin
-        Gid := SeenEff[I];
-        if GotEpg.IndexOf(Gid) < 0 then
-          AppendDummy(SB, Gid, NameById[Gid], GroupById[Gid], ADummy);
+        lGid := lSeenEff[i];
+        if lGotEpg.IndexOf(lGid) < 0 then
+          AppendDummy(lSB, lGid, lNameById[lGid], lGroupById[lGid], ADummy);
       end;
 
-    SB.AppendLine('</tv>');
-    Result := SB.ToString;
+    lSB.AppendLine('</tv>');
+    Result := lSB.ToString;
   finally
-    SB.Free;
-    Upstreams.Free;
-    SeenEff.Free;
-    GotEpg.Free;
-    EffById.Free;
-    GroupById.Free;
-    NameById.Free;
+    FreeAndNil(lSB);
+    FreeAndNil(lUpstreams);
+    FreeAndNil(lSeenEff);
+    FreeAndNil(lGotEpg);
+    FreeAndNil(lEffById);
+    FreeAndNil(lGroupById);
+    FreeAndNil(lNameById);
   end;
 end;
 
@@ -922,21 +953,21 @@ function BuildXmltv(const AStore: IStore; AListId, AMaxDays: Integer;
   const ADummy: TDummyEpgOptions; const AGroups: TArray<string>;
   const ANames: TNameOptions): string;
 var
-  Channels: TOutputChannelList;
-  Names, Ids: TArray<string>;
+  lChannels: TOutputChannelList;
+  lNames, lIds: TArray<string>;
 begin
-  Channels := SelectOutputChannels(AStore, AListId, AGroups);
+  lChannels := SelectOutputChannels(AStore, AListId, AGroups);
   try
-    KeepContentTypes(Channels, cLinearContentTypes); // a guide is for linear channels only
-    Names := nil;
+    KeepContentTypes(lChannels, cLinearContentTypes); // a guide is for linear channels only
+    lNames := nil;
     if ANames.AnyName then
-      Names := ComputeDisplayNames(AStore, Channels, ANames);
-    Ids := nil;
+      lNames := ComputeDisplayNames(AStore, lChannels, ANames);
+    lIds := nil;
     if ANames.IdSort then
-      Ids := ComputeGuideIds(Channels, cIdSort);
-    Result := BuildXmltvChannels(AStore, Channels, AMaxDays, ADummy, Names, Ids);
+      lIds := ComputeGuideIds(lChannels, cIdSort);
+    Result := BuildXmltvChannels(AStore, lChannels, AMaxDays, ADummy, lNames, lIds);
   finally
-    Channels.Free;
+    FreeAndNil(lChannels);
   end;
 end;
 

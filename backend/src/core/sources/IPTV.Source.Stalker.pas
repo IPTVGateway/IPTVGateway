@@ -21,7 +21,10 @@ unit IPTV.Source.Stalker;
 interface
 
 uses
-  IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Source.Intf;
+  // Own units
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Source.Intf;
 
 const
   // A MAG-250 emulating User-Agent — the default unless the source overrides it.
@@ -40,6 +43,7 @@ function StalkerActionUrl(const APortal, AType, AAction, AExtra: string): string
 function StalkerCookie(const AMac: string): string;
 
 type
+  /// Source reader for Stalker / Ministra (MAG) portals (experimental).
   TStalkerReader = class(TInterfacedObject, ISourceReader)
   private
     FMac: string;
@@ -57,8 +61,15 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.JSON,
-  IdHTTP, IdGlobal, IdCookieManager,
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.JSON,
+  // Indy
+  IdHTTP,
+  IdGlobal,
+  IdCookieManager,
+  // Own units
   IPTV.Model.Types;
 
 const
@@ -101,14 +112,14 @@ type
 
 function StalkerPortalUrl(const ABaseUrl: string): string;
 var
-  U: string;
+  lUrl: string;
 begin
-  U := ABaseUrl.Trim.TrimRight(['/']);
-  if U.ToLower.EndsWith(cPortalPhp) or U.ToLower.EndsWith(cLoadPhp) then
-    Exit(U);
-  if U.ToLower.EndsWith(cConsolePath) then
-    U := U.Substring(0, U.Length - Length(cConsolePath));
-  Result := U + '/' + cPortalPhp;
+  lUrl := ABaseUrl.Trim.TrimRight(['/']);
+  if lUrl.ToLower.EndsWith(cPortalPhp) or lUrl.ToLower.EndsWith(cLoadPhp) then
+    Exit(lUrl);
+  if lUrl.ToLower.EndsWith(cConsolePath) then
+    lUrl := lUrl.Substring(0, lUrl.Length - Length(cConsolePath));
+  Result := lUrl + '/' + cPortalPhp;
 end;
 
 function StalkerActionUrl(const APortal, AType, AAction, AExtra: string): string;
@@ -128,133 +139,133 @@ end;
 
 function TStalkerReader.Fetch(const AUrl: string): string;
 var
-  H: TIdHTTP;
+  lHttp: TIdHTTP;
 begin
-  H := TIdHTTP.Create(nil);
+  lHttp := TIdHTTP.Create(nil);
   try
-    H.HandleRedirects := True;
-    H.RedirectMaximum := cMaxRedirects;
-    H.AllowCookies := True;
-    H.CookieManager := TIdCookieManager.Create(H);
-    TIdHTTPAccess(H).IPVersion := Id_IPv4;
-    H.ConnectTimeout := cTimeoutConnectMs;
-    H.ReadTimeout := cTimeoutReadMs;
+    lHttp.HandleRedirects := True;
+    lHttp.RedirectMaximum := cMaxRedirects;
+    lHttp.AllowCookies := True;
+    lHttp.CookieManager := TIdCookieManager.Create(lHttp);
+    TIdHTTPAccess(lHttp).IPVersion := Id_IPv4;
+    lHttp.ConnectTimeout := cTimeoutConnectMs;
+    lHttp.ReadTimeout := cTimeoutReadMs;
     if FUserAgent <> '' then
-      H.Request.UserAgent := FUserAgent
+      lHttp.Request.UserAgent := FUserAgent
     else
-      H.Request.UserAgent := StalkerUserAgent;
+      lHttp.Request.UserAgent := StalkerUserAgent;
     if FReferer <> '' then
-      H.Request.Referer := FReferer;
-    H.Request.CustomHeaders.Values[cHeaderXUserAgent] := StalkerXUserAgent;
-    H.Request.CustomHeaders.Values[cHeaderCookie] := StalkerCookie(FMac);
+      lHttp.Request.Referer := FReferer;
+    lHttp.Request.CustomHeaders.Values[cHeaderXUserAgent] := StalkerXUserAgent;
+    lHttp.Request.CustomHeaders.Values[cHeaderCookie] := StalkerCookie(FMac);
     if FToken <> '' then
-      H.Request.CustomHeaders.Values[cHeaderAuthorization] := cBearerPrefix + FToken;
-    Result := H.Get(AUrl);
+      lHttp.Request.CustomHeaders.Values[cHeaderAuthorization] := cBearerPrefix + FToken;
+    Result := lHttp.Get(AUrl);
   finally
-    H.Free;
+    FreeAndNil(lHttp);
   end;
 end;
 
 function TStalkerReader.Handshake: Boolean;
 var
-  Resp: string;
-  JV, Js: TJSONValue;
+  lResp: string;
+  lJson, lJs: TJSONValue;
 begin
   Result := False;
-  Resp := Fetch(StalkerActionUrl(FPortal, cTypeStb, cActionHandshake, '&token='));
-  JV := TJSONObject.ParseJSONValue(Resp);
+  lResp := Fetch(StalkerActionUrl(FPortal, cTypeStb, cActionHandshake, '&token='));
+  lJson := TJSONObject.ParseJSONValue(lResp);
   try
-    if JV is TJSONObject then
+    if lJson is TJSONObject then
     begin
-      Js := TJSONObject(JV).GetValue(cJsonJs);
-      if Js is TJSONObject then
+      lJs := TJSONObject(lJson).GetValue(cJsonJs);
+      if lJs is TJSONObject then
       begin
-        FToken := TJSONObject(Js).GetValue<string>('token', '');
+        FToken := TJSONObject(lJs).GetValue<string>('token', '');
         Result := FToken <> '';
       end;
     end;
   finally
-    JV.Free;
+    FreeAndNil(lJson);
   end;
 end;
 
 procedure TStalkerReader.LoadGenresAndChannels(ASource: TSourceConfig;
   ASnapshot: TSourceSnapshot);
 var
-  Resp, Cmd: string;
-  JV, Js: TJSONValue;
-  Arr, Data: TJSONArray;
-  Item: TJSONValue;
-  O: TJSONObject;
-  Cat: TCategory;
-  S: TStreamItem;
-  Page: Integer;
+  lResp, lCmd: string;
+  lJson, lJs: TJSONValue;
+  lArr, lData: TJSONArray;
+  lItem: TJSONValue;
+  lObj: TJSONObject;
+  lCat: TCategory;
+  lStream: TStreamItem;
+  lPage: Integer;
 begin
   // genres → categories (live tv)
-  Resp := Fetch(StalkerActionUrl(FPortal, cTypeItv, cActionGetGenres, ''));
-  JV := TJSONObject.ParseJSONValue(Resp);
+  lResp := Fetch(StalkerActionUrl(FPortal, cTypeItv, cActionGetGenres, ''));
+  lJson := TJSONObject.ParseJSONValue(lResp);
   try
-    if (JV is TJSONObject) and (TJSONObject(JV).GetValue(cJsonJs) is TJSONArray) then
+    if (lJson is TJSONObject) and (TJSONObject(lJson).GetValue(cJsonJs) is TJSONArray) then
     begin
-      Arr := TJSONArray(TJSONObject(JV).GetValue(cJsonJs));
-      for Item in Arr do
-        if Item is TJSONObject then
+      lArr := TJSONArray(TJSONObject(lJson).GetValue(cJsonJs));
+      for lItem in lArr do
+        if lItem is TJSONObject then
         begin
-          O := TJSONObject(Item);
-          Cat := TCategory.Create;
-          Cat.SourceId := ASource.Id;
-          Cat.ContentType := ctLive;
-          Cat.UpstreamId := O.GetValue<string>(cJsonId, '');
-          Cat.Name := O.GetValue<string>('title', O.GetValue<string>(cJsonName, ''));
-          ASnapshot.Categories.Add(Cat);
+          lObj := TJSONObject(lItem);
+          lCat := TCategory.Create;
+          lCat.SourceId := ASource.Id;
+          lCat.ContentType := ctLive;
+          lCat.UpstreamId := lObj.GetValue<string>(cJsonId, '');
+          lCat.Name := lObj.GetValue<string>('title', lObj.GetValue<string>(cJsonName, ''));
+          ASnapshot.Categories.Add(lCat);
         end;
     end;
   finally
-    JV.Free;
+    FreeAndNil(lJson);
   end;
 
   // channels (paged) → streams
-  Page := 1;
+  lPage := 1;
   repeat
-    Resp := Fetch(StalkerActionUrl(FPortal, cTypeItv, cActionGetOrderedList,
-      Format('&genre=*&p=%d', [Page])));
-    JV := TJSONObject.ParseJSONValue(Resp);
+    lResp := Fetch(StalkerActionUrl(FPortal, cTypeItv, cActionGetOrderedList,
+      Format('&genre=*&p=%d', [lPage])));
+    lJson := TJSONObject.ParseJSONValue(lResp);
     try
-      Data := nil;
-      if JV is TJSONObject then
+      lData := nil;
+      if lJson is TJSONObject then
       begin
-        Js := TJSONObject(JV).GetValue(cJsonJs);
-        if (Js is TJSONObject) and (TJSONObject(Js).GetValue(cJsonData) is TJSONArray) then
-          Data := TJSONArray(TJSONObject(Js).GetValue(cJsonData));
+        lJs := TJSONObject(lJson).GetValue(cJsonJs);
+        if (lJs is TJSONObject) and (TJSONObject(lJs).GetValue(cJsonData) is TJSONArray) then
+          lData := TJSONArray(TJSONObject(lJs).GetValue(cJsonData));
       end;
-      if (Data = nil) or (Data.Count = 0) then
+      if (lData = nil) or (lData.Count = 0) then
         Break;
-      for Item in Data do
-        if Item is TJSONObject then
+      for lItem in lData do
+        if lItem is TJSONObject then
         begin
-          O := TJSONObject(Item);
-          S := TStreamItem.Create;
-          S.SourceId := ASource.Id;
-          S.ContentType := ctLive;
-          S.UpstreamId := O.GetValue<string>(cJsonId, '');
-          S.Name := O.GetValue<string>(cJsonName, '');
-          S.Logo := O.GetValue<string>('logo', '');
-          S.TvgId := O.GetValue<string>('xmltv_id', '');
-          S.CategoryUpstreamId := O.GetValue<string>('tv_genre_id', '');
+          lObj := TJSONObject(lItem);
+          lStream := TStreamItem.Create;
+          lStream.SourceId := ASource.Id;
+          lStream.ContentType := ctLive;
+          lStream.UpstreamId := lObj.GetValue<string>(cJsonId, '');
+          lStream.Name := lObj.GetValue<string>(cJsonName, '');
+          lStream.Logo := lObj.GetValue<string>('logo', '');
+          lStream.TvgId := lObj.GetValue<string>('xmltv_id', '');
+          lStream.CategoryUpstreamId := lObj.GetValue<string>('tv_genre_id', '');
           // cmd is usually "ffmpeg http://.../ch/<id>" — strip the player prefix.
           // NOTE: some panels need a per-channel create_link call instead; that
           // refinement is pending a live portal to validate against.
-          Cmd := O.GetValue<string>('cmd', '');
-          if Cmd.StartsWith(cCmdPlayerPrefix, cIgnoreCase) then
-            Cmd := Cmd.Substring(Length(cCmdPlayerPrefix)).Trim;
-          S.UpstreamUrl := Cmd;
-          ASnapshot.Streams.Add(S);
+          lCmd := lObj.GetValue<string>('cmd', '');
+          if lCmd.StartsWith(cCmdPlayerPrefix, cIgnoreCase) then
+            lCmd := lCmd.Substring(Length(cCmdPlayerPrefix)).Trim;
+          lStream.UpstreamUrl := lCmd;
+          ASnapshot.Streams.Add(lStream);
         end;
-      Inc(Page);
+      Inc(lPage);
     finally
-      JV.Free;
+      FreeAndNil(lJson);
     end;
-  until Page > cMaxPages;
+  until lPage > cMaxPages;
 end;
 
 function TStalkerReader.Read(const ASource: TSourceConfig): TSourceSnapshot;

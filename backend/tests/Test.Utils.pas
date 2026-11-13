@@ -5,62 +5,107 @@ unit Test.Utils;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Tests for IPTV.Core.Utils and related helpers.</summary>
   [TestFixture]
   TUtilsTests = class
   public
+    /// <summary>Content-type sets round-trip through the CSV form.</summary>
     [Test] procedure ContentTypesRoundtrip;
+    /// <summary>Blank CSV entries are ignored.</summary>
     [Test] procedure ContentTypesParseIgnoresBlanks;
+    /// <summary>ISO-8601 UTC dates round-trip.</summary>
     [Test] procedure IsoDateRoundtrip;
+    /// <summary>An empty ISO date is 0 and vice versa.</summary>
     [Test] procedure EmptyDateIsZero;
+    /// <summary>A prefix token clears the common separator shapes.</summary>
     [Test] procedure StripPrefix_HandlesPipeAndSpaceVariants;
+    /// <summary>Unicode vertical bars count as separators.</summary>
     [Test] procedure StripPrefix_HandlesUnicodeVerticalBars;
+    /// <summary>A prefix only strips at a word boundary.</summary>
     [Test] procedure StripPrefix_RequiresWordBoundary;
+    /// <summary>Prefix stripping is case-insensitive and trims.</summary>
     [Test] procedure StripPrefix_IsCaseInsensitiveAndTrims;
+    /// <summary>Chained prefixes are all stripped.</summary>
     [Test] procedure StripPrefix_StripsMultiplePrefixes;
+    /// <summary>Without a match the name is only trimmed.</summary>
     [Test] procedure StripPrefix_NoTokensOrNoMatchLeavesNameTrimmed;
+    /// <summary>A trailing quality token is detected and stripped.</summary>
     [Test] procedure Quality_DetectsAndStripsTrailingToken;
+    /// <summary>Quality variants of one channel share the base key.</summary>
     [Test] procedure Quality_VariantsShareBaseKey;
+    /// <summary>Plus tiers (4K+) are distinct qualities.</summary>
     [Test] procedure Quality_PlusTiersAreDistinct;
+    /// <summary>Without a quality word the name is the base key.</summary>
     [Test] procedure Quality_NoneLeavesNameAsBase;
+    /// <summary>Quality synonyms map to the canonical form.</summary>
     [Test] procedure Quality_CanonicalMapsSynonyms;
+    /// <summary>Small-caps RAW is a quality.</summary>
     [Test] procedure Quality_SmallCapsRawIsAQuality;
+    /// <summary>The head key ignores tags after the quality.</summary>
     [Test] procedure Quality_HeadKeyIgnoresTagsAfterQuality;
+    /// <summary>Suffix tokens remove trailing tags.</summary>
     [Test] procedure StripSuffix_RemovesTrailingTags;
+    /// <summary>Suffixes strip at word boundaries only and never empty the name.</summary>
     [Test] procedure StripSuffix_RequiresWordBoundaryAndKeepsName;
+    /// <summary>CleanChannelName applies prefixes and suffixes.</summary>
     [Test] procedure CleanChannelName_PrefixAndSuffix;
+    /// <summary>Timeshift start parses the wire and other forms.</summary>
     [Test] procedure Timeshift_ParsesWireAndOtherForms;
+    /// <summary>The portal clock offset derives from server_info.</summary>
     [Test] procedure Timeshift_PortalOffsetFromServerInfo;
+    /// <summary>The timeshift URL shifts the start to the portal clock.</summary>
     [Test] procedure Timeshift_UrlShiftsStartToPortalClock;
+    /// <summary>Xtream Base64 output has no line breaks.</summary>
     [Test] procedure XtreamBase64_IsOneLine;
+    /// <summary>EPG name/id keys match provider and guide names.</summary>
     [Test] procedure EpgKeys_MatchProviderAndGuideNames;
+    /// <summary>EpgIdKey strips only country codes.</summary>
     [Test] procedure EpgIdKey_StripsOnlyCountryCodes;
+    /// <summary>Missing stop times use the next start.</summary>
     [Test] procedure FillMissingStops_UsesNextStart;
+    /// <summary>XMLTV attributes are read in both quote styles.</summary>
     [Test] procedure XmltvAttr_BothQuoteStyles;
+    /// <summary>FirstEpgUrl takes the first URL of a list.</summary>
     [Test] procedure FirstEpgUrl_TakesFirstOfList;
+    /// <summary>publicBaseUrl is normalised and validated.</summary>
     [Test] procedure PublicBaseUrl_Normalised;
+    /// <summary>Non-UTF-8 bytes decode as Latin-1 or CP1251.</summary>
     [Test] procedure DecodeBytes_Latin1AndCyrillic;
+    /// <summary>The URL extension is swapped in the path only.</summary>
     [Test] procedure SwapUrlExt_OnlyInPath;
+    /// <summary>The client allow-list matches IPs and prefixes.</summary>
     [Test] procedure ClientAllowList_IpsAndPrefixes;
+    /// <summary>Password comparison is exact.</summary>
     [Test] procedure SamePassword_ConstantTimeCompare;
+    /// <summary>Credentials in URLs are masked.</summary>
     [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.DateUtils, System.NetEncoding,
-  IPTV.Model.Types, IPTV.Model.Epg, IPTV.Core.Utils, IPTV.Source.Epg, IPTV.Source.Http,
+  // RTL
+  System.SysUtils,
+  System.DateUtils,
+  System.NetEncoding,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Epg,
+  IPTV.Core.Utils,
+  IPTV.Source.Epg,
+  IPTV.Source.Http,
   IPTV.Output.Builder;
 
 procedure TUtilsTests.ContentTypesRoundtrip;
 var
-  CT: TContentTypes;
+  lTypes: TContentTypes;
 begin
-  CT := [ctLive, ctSeries];
-  Assert.IsTrue(CT = StrToContentTypes(ContentTypesToStr(CT)));
+  lTypes := [ctLive, ctSeries];
+  Assert.IsTrue(lTypes = StrToContentTypes(ContentTypesToStr(lTypes)));
   Assert.IsTrue(AllContentTypes = StrToContentTypes(ContentTypesToStr(AllContentTypes)));
 end;
 
@@ -71,10 +116,10 @@ end;
 
 procedure TUtilsTests.IsoDateRoundtrip;
 var
-  Dt: TDateTime;
+  lDate: TDateTime;
 begin
-  Dt := EncodeDateTime(2026, 6, 14, 18, 30, 0, 0);
-  Assert.AreEqual(Dt, IsoUtcToDateTime(DateTimeToIsoUtc(Dt)), 1.0 / 86400);
+  lDate := EncodeDateTime(2026, 6, 14, 18, 30, 0, 0);
+  Assert.AreEqual(lDate, IsoUtcToDateTime(DateTimeToIsoUtc(lDate)), 1.0 / 86400);
 end;
 
 procedure TUtilsTests.EmptyDateIsZero;
@@ -136,45 +181,46 @@ end;
 
 procedure TUtilsTests.Quality_DetectsAndStripsTrailingToken;
 var
-  Q: string;
+  lQuality: string;
 begin
-  Assert.AreEqual('nl npo 1', QualityMatchKey('NL| NPO 1 HD', Q));
-  Assert.AreEqual('HD', Q);
-  Assert.AreEqual('espn 1', QualityMatchKey('ESPN 1 UHD', Q));
-  Assert.AreEqual('UHD', Q);
+  Assert.AreEqual('nl npo 1', QualityMatchKey('NL| NPO 1 HD', lQuality));
+  Assert.AreEqual('HD', lQuality);
+  Assert.AreEqual('espn 1', QualityMatchKey('ESPN 1 UHD', lQuality));
+  Assert.AreEqual('UHD', lQuality);
 end;
 
 procedure TUtilsTests.Quality_VariantsShareBaseKey;
 var
-  Qa, Qb: string;
+  lQualityA: string;
+  lQualityB: string;
 begin
   // the whole point: HD and UHD of one channel key to the same base
-  Assert.AreEqual(QualityMatchKey('NL| NPO 1 HD', Qa), QualityMatchKey('NL| NPO 1 UHD', Qb));
-  Assert.AreEqual('HD', Qa);
-  Assert.AreEqual('UHD', Qb);
+  Assert.AreEqual(QualityMatchKey('NL| NPO 1 HD', lQualityA), QualityMatchKey('NL| NPO 1 UHD', lQualityB));
+  Assert.AreEqual('HD', lQualityA);
+  Assert.AreEqual('UHD', lQualityB);
 end;
 
 procedure TUtilsTests.Quality_PlusTiersAreDistinct;
 var
-  Q: string;
+  lQuality: string;
 begin
   // "4K+" must canonicalise as a tier distinct from "4K"
-  Assert.AreEqual('film1 action', QualityMatchKey('Film1 Action 4K+', Q));
-  Assert.AreEqual('4K+', Q);
+  Assert.AreEqual('film1 action', QualityMatchKey('Film1 Action 4K+', lQuality));
+  Assert.AreEqual('4K+', lQuality);
   Assert.AreEqual('4K', CanonicalQuality('4k'));
   Assert.AreNotEqual('4K', CanonicalQuality('4k+'));
 end;
 
 procedure TUtilsTests.Quality_NoneLeavesNameAsBase;
 var
-  Q: string;
+  lQuality: string;
 begin
   // no quality word → quality empty, base is the (lowercased) name
-  Assert.AreEqual('discovery channel', QualityMatchKey('Discovery Channel', Q));
-  Assert.AreEqual('', Q);
+  Assert.AreEqual('discovery channel', QualityMatchKey('Discovery Channel', lQuality));
+  Assert.AreEqual('', lQuality);
   // a quality-looking substring inside a word is NOT a token ("HD" in "HDNET")
-  Assert.AreEqual('hdnet', QualityMatchKey('HDNET', Q));
-  Assert.AreEqual('', Q);
+  Assert.AreEqual('hdnet', QualityMatchKey('HDNET', lQuality));
+  Assert.AreEqual('', lQuality);
 end;
 
 procedure TUtilsTests.Quality_CanonicalMapsSynonyms;
@@ -190,31 +236,33 @@ const
 
 procedure TUtilsTests.Quality_SmallCapsRawIsAQuality;
 var
-  Qa, Qb: string;
+  lQualityA: string;
+  lQualityB: string;
 begin
   Assert.AreEqual('RAW', CanonicalQuality(RAW_SC));
   Assert.AreEqual('RAW', CanonicalQuality('raw'));
   // a RAW channel and its 4K+ variant share the base key
-  Assert.AreEqual(QualityMatchKey('NL | NPO 1 ' + RAW_SC, Qa), QualityMatchKey('NL | NPO 1 4K+', Qb));
-  Assert.AreEqual('RAW', Qa);
-  Assert.AreEqual('4K+', Qb);
+  Assert.AreEqual(QualityMatchKey('NL | NPO 1 ' + RAW_SC, lQualityA), QualityMatchKey('NL | NPO 1 4K+', lQualityB));
+  Assert.AreEqual('RAW', lQualityA);
+  Assert.AreEqual('4K+', lQualityB);
   // decorative letters in the rest of the name are folded too
-  Assert.AreEqual('npo 1 rec', QualityMatchKey('NPO 1 HD ' + REC_SUP, Qa));
+  Assert.AreEqual('npo 1 rec', QualityMatchKey('NPO 1 HD ' + REC_SUP, lQualityA));
 end;
 
 procedure TUtilsTests.Quality_HeadKeyIgnoresTagsAfterQuality;
 var
-  Q, Head: string;
+  lQuality: string;
+  lHead: string;
 begin
-  Assert.AreEqual('nl history s', QualityMatchKey('NL | HISTORY ' + RAW_SC + ' (S)', Q, Head));
-  Assert.AreEqual('nl history', Head);
-  Assert.AreEqual('RAW', Q);
+  Assert.AreEqual('nl history s', QualityMatchKey('NL | HISTORY ' + RAW_SC + ' (S)', lQuality, lHead));
+  Assert.AreEqual('nl history', lHead);
+  Assert.AreEqual('RAW', lQuality);
   // nothing after the quality: head = base
-  Assert.AreEqual('nl npo 1', QualityMatchKey('NL | NPO 1 4K+', Q, Head));
-  Assert.AreEqual('nl npo 1', Head);
+  Assert.AreEqual('nl npo 1', QualityMatchKey('NL | NPO 1 4K+', lQuality, lHead));
+  Assert.AreEqual('nl npo 1', lHead);
   // no quality: head = base
-  QualityMatchKey('Discovery Channel', Q, Head);
-  Assert.AreEqual('discovery channel', Head);
+  QualityMatchKey('Discovery Channel', lQuality, lHead);
+  Assert.AreEqual('discovery channel', lHead);
 end;
 
 procedure TUtilsTests.StripSuffix_RemovesTrailingTags;
@@ -243,38 +291,39 @@ end;
 
 procedure TUtilsTests.Timeshift_ParsesWireAndOtherForms;
 var
-  D: TDateTime;
+  lStart: TDateTime;
 begin
-  Assert.IsTrue(ParseTimeshiftStart('2026-11-12:20-30', D));
-  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), D, 1 / 86400);
-  Assert.IsTrue(ParseTimeshiftStart('2026-11-12:20-30-15', D));
-  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 15, 0), D, 1 / 86400);
-  Assert.IsTrue(ParseTimeshiftStart('2026-11-12 20:30:00', D));
-  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), D, 1 / 86400);
-  Assert.IsTrue(ParseTimeshiftStart(IntToStr(DateTimeToUnix(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), True)), D));
-  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), D, 1 / 86400);
-  Assert.IsFalse(ParseTimeshiftStart('', D));
-  Assert.IsFalse(ParseTimeshiftStart('2026-13-40:20-30', D), 'invalid date');
-  Assert.IsFalse(ParseTimeshiftStart('yesterday', D));
+  Assert.IsTrue(ParseTimeshiftStart('2026-11-12:20-30', lStart));
+  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), lStart, 1 / 86400);
+  Assert.IsTrue(ParseTimeshiftStart('2026-11-12:20-30-15', lStart));
+  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 15, 0), lStart, 1 / 86400);
+  Assert.IsTrue(ParseTimeshiftStart('2026-11-12 20:30:00', lStart));
+  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), lStart, 1 / 86400);
+  Assert.IsTrue(ParseTimeshiftStart(
+    IntToStr(DateTimeToUnix(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), True)), lStart));
+  Assert.AreEqual(EncodeDateTime(2026, 11, 12, 20, 30, 0, 0), lStart, 1 / 86400);
+  Assert.IsFalse(ParseTimeshiftStart('', lStart));
+  Assert.IsFalse(ParseTimeshiftStart('2026-13-40:20-30', lStart), 'invalid date');
+  Assert.IsFalse(ParseTimeshiftStart('yesterday', lStart));
   Assert.AreEqual('2026-11-12:20-30', FormatTimeshiftStart(EncodeDateTime(2026, 11, 12, 20, 30, 59, 0)));
 end;
 
 procedure TUtilsTests.Timeshift_PortalOffsetFromServerInfo;
 var
-  M: Integer;
-  U: Int64;
+  lOffset: Integer;
+  lUnix: Int64;
 begin
-  U := DateTimeToUnix(EncodeDateTime(2026, 11, 13, 13, 0, 0, 0), True);
+  lUnix := DateTimeToUnix(EncodeDateTime(2026, 11, 13, 13, 0, 0, 0), True);
   // CET portal: local 14:00:02 while UTC is 13:00 -> +60 (rounded to 15 min)
-  Assert.IsTrue(XtreamTzOffsetMin('2026-11-13 14:00:02', U, M));
-  Assert.AreEqual(60, M);
-  Assert.IsTrue(XtreamTzOffsetMin('2026-11-13 08:00:00', U, M));
-  Assert.AreEqual(-300, M, 'US east');
-  Assert.IsTrue(XtreamTzOffsetMin('2026-11-13 13:00:00', U, M));
-  Assert.AreEqual(0, M);
-  Assert.IsFalse(XtreamTzOffsetMin('', U, M), 'no time_now');
-  Assert.IsFalse(XtreamTzOffsetMin('2026-11-13 14:00:00', 0, M), 'no timestamp_now');
-  Assert.IsFalse(XtreamTzOffsetMin('2026-11-20 14:00:00', U, M), 'a week off is nonsense');
+  Assert.IsTrue(XtreamTzOffsetMin('2026-11-13 14:00:02', lUnix, lOffset));
+  Assert.AreEqual(60, lOffset);
+  Assert.IsTrue(XtreamTzOffsetMin('2026-11-13 08:00:00', lUnix, lOffset));
+  Assert.AreEqual(-300, lOffset, 'US east');
+  Assert.IsTrue(XtreamTzOffsetMin('2026-11-13 13:00:00', lUnix, lOffset));
+  Assert.AreEqual(0, lOffset);
+  Assert.IsFalse(XtreamTzOffsetMin('', lUnix, lOffset), 'no time_now');
+  Assert.IsFalse(XtreamTzOffsetMin('2026-11-13 14:00:00', 0, lOffset), 'no timestamp_now');
+  Assert.IsFalse(XtreamTzOffsetMin('2026-11-20 14:00:00', lUnix, lOffset), 'a week off is nonsense');
 end;
 
 procedure TUtilsTests.Timeshift_UrlShiftsStartToPortalClock;
@@ -290,12 +339,13 @@ end;
 
 procedure TUtilsTests.XtreamBase64_IsOneLine;
 var
-  Long, B: string;
+  lText: string;
+  lEncoded: string;
 begin
-  Long := 'Met het laatste nieuws en de weersverwachting. En op NPO 1 Extra en NPO 2 met gebarentaal.';
-  B := XtreamBase64(Long);
-  Assert.IsFalse(B.Contains(#13) or B.Contains(#10), 'no line breaks');
-  Assert.AreEqual(Long, TEncoding.UTF8.GetString(TNetEncoding.Base64.DecodeStringToBytes(B)), 'round-trips');
+  lText := 'Met het laatste nieuws en de weersverwachting. En op NPO 1 Extra en NPO 2 met gebarentaal.';
+  lEncoded := XtreamBase64(lText);
+  Assert.IsFalse(lEncoded.Contains(#13) or lEncoded.Contains(#10), 'no line breaks');
+  Assert.AreEqual(lText, TEncoding.UTF8.GetString(TNetEncoding.Base64.DecodeStringToBytes(lEncoded)), 'round-trips');
   Assert.AreEqual('w6k=', XtreamBase64(#$00E9), 'UTF-8');
 end;
 
@@ -307,7 +357,8 @@ begin
   Assert.AreEqual('npo1', EpgIdKey('npo1.nl'));
   Assert.AreEqual('npo1', EpgIdKey('extra:NPO.1.nl'));
   // decorative record tag + heavy-bar country prefix
-  Assert.AreEqual('nationalgeographic', EpgNameKey(#$2503'NL'#$2503' NATIONAL GEOGRAPHIC HD '#$23FA#$02B3#$1D49#$1D9C));
+  Assert.AreEqual('nationalgeographic',
+    EpgNameKey(#$2503'NL'#$2503' NATIONAL GEOGRAPHIC HD '#$23FA#$02B3#$1D49#$1D9C));
   Assert.AreEqual('nationalgeographic', EpgIdKey('natgeo.nl'), 'alias');
   Assert.AreEqual('nationalgeographicwild', EpgNameKey('NAT GEO WILD'));
   Assert.AreEqual('discovery', EpgNameKey('DISCOVERY CHANNEL'));
@@ -340,7 +391,7 @@ end;
 
 procedure TUtilsTests.FillMissingStops_UsesNextStart;
 var
-  L: TEpgProgrammeList;
+  lList: TEpgProgrammeList;
 
   function Add(const ACh: string; AStartH, AStopH: Integer): TEpgProgramme;
   begin
@@ -349,21 +400,21 @@ var
     Result.StartUtc := EncodeDateTime(2026, 11, 13, AStartH, 0, 0, 0);
     if AStopH >= 0 then
       Result.StopUtc := EncodeDateTime(2026, 11, 13, AStopH, 0, 0, 0);
-    L.Add(Result);
+    lList.Add(Result);
   end;
 
 begin
-  L := TEpgProgrammeList.Create(True);
+  lList := TEpgProgrammeList.Create(True);
   try
     Add('a', 10, -1);
     Add('b', 10, 11);
     Add('a', 12, -1);
-    FillMissingStops(L);
-    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 12, 0, 0, 0), L[0].StopUtc, 'ends at the next start');
-    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 11, 0, 0, 0), L[1].StopUtc, 'a real stop is kept');
-    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 13, 0, 0, 0), L[2].StopUtc, 'the last gets an hour');
+    FillMissingStops(lList);
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 12, 0, 0, 0), lList[0].StopUtc, 'ends at the next start');
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 11, 0, 0, 0), lList[1].StopUtc, 'a real stop is kept');
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 13, 0, 0, 0), lList[2].StopUtc, 'the last gets an hour');
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 

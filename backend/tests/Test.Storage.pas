@@ -7,15 +7,19 @@ unit Test.Storage;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Integration tests for TSQLiteStore / TLockingStore on a fresh temp database per test.</summary>
   [TestFixture]
   TStorageTests = class
   private
     FDbPath: string;
   public
+    /// <summary>Picks a unique temp database path for the test.</summary>
     [Setup] procedure Setup;
+    /// <summary>Deletes the temp database and its WAL/SHM side files.</summary>
     [TearDown] procedure TearDown;
 
     [Test] procedure SourceCrudRoundtrips;
@@ -95,10 +99,23 @@ type
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, System.DateUtils, System.Generics.Collections,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
-  IPTV.Model.CustomList, IPTV.Storage.Intf, IPTV.Storage.SQLite, IPTV.Storage.Locking,
-  IPTV.Core.Utils, IPTV.Ingest.Service, IPTV.Output.Builder;
+  // RTL
+  System.SysUtils,
+  System.IOUtils,
+  System.DateUtils,
+  System.Generics.Collections,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
+  IPTV.Model.CustomList,
+  IPTV.Storage.Intf,
+  IPTV.Storage.SQLite,
+  IPTV.Storage.Locking,
+  IPTV.Core.Utils,
+  IPTV.Ingest.Service,
+  IPTV.Output.Builder;
 
 { helpers }
 
@@ -142,610 +159,708 @@ end;
 
 procedure TStorageTests.SourceCrudRoundtrips;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Id: Integer;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lId: Integer;
+  lL: TObjectList<TSourceConfig>;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'Provider A';
-    Src.Kind := skXtream;
-    Src.Url := 'http://host:8080';
-    Src.Username := 'u';
-    Src.Password := 'p';
-    Src.ContentTypes := [ctLive, ctMovie];
-    Id := Store.SaveSource(Src);
-    Assert.IsTrue(Id > 0);
+    lSrc.Name := 'Provider A';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://host:8080';
+    lSrc.Username := 'u';
+    lSrc.Password := 'p';
+    lSrc.ContentTypes := [ctLive, ctMovie];
+    lId := lStore.SaveSource(lSrc);
+    Assert.IsTrue(lId > 0);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  var L := Store.LoadSources;
+  lL := lStore.LoadSources;
   try
-    Assert.AreEqual<Integer>(1, L.Count);
-    Assert.AreEqual('Provider A', L[0].Name);
-    Assert.AreEqual(skXtream, L[0].Kind);
-    Assert.IsTrue([ctLive, ctMovie] = L[0].ContentTypes);
+    Assert.AreEqual<Integer>(1, lL.Count);
+    Assert.AreEqual('Provider A', lL[0].Name);
+    Assert.AreEqual(skXtream, lL[0].Kind);
+    Assert.IsTrue([ctLive, ctMovie] = lL[0].ContentTypes);
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.SaveSourceUpdateRoundtrips;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Id: Integer;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lId: Integer;
+  lL: TObjectList<TSourceConfig>;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'Orig';
-    Src.Kind := skM3U;
-    Src.Url := 'http://a';
-    Src.ContentTypes := [ctLive];
-    Id := Store.SaveSource(Src);
+    lSrc.Name := 'Orig';
+    lSrc.Kind := skM3U;
+    lSrc.Url := 'http://a';
+    lSrc.ContentTypes := [ctLive];
+    lId := lStore.SaveSource(lSrc);
     // update existing
-    Src.Name := 'Renamed';
-    Src.Url := 'http://b';
-    Src.ContentTypes := [ctLive, ctMovie];
-    Src.IncludeFilters := ['NL|'];
-    Src.StripPrefixes := ['NL', 'UK'];
-    Src.UserAgent := 'VLC/3.0.20 LibVLC/3.0.20';
-    Src.Referer := 'http://provider.example/c/';
-    Src.ForceHls := True;
-    Src.AccountStatus := 'Active';
-    Src.ExpiresUtc := EncodeDateTime(2027, 3, 1, 12, 0, 0, 0);
-    Src.MaxConnections := 2;
-    Store.SaveSource(Src);
+    lSrc.Name := 'Renamed';
+    lSrc.Url := 'http://b';
+    lSrc.ContentTypes := [ctLive, ctMovie];
+    lSrc.IncludeFilters := ['NL|'];
+    lSrc.StripPrefixes := ['NL', 'UK'];
+    lSrc.UserAgent := 'VLC/3.0.20 LibVLC/3.0.20';
+    lSrc.Referer := 'http://provider.example/c/';
+    lSrc.ForceHls := True;
+    lSrc.AccountStatus := 'Active';
+    lSrc.ExpiresUtc := EncodeDateTime(2027, 3, 1, 12, 0, 0, 0);
+    lSrc.MaxConnections := 2;
+    lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
-  var L := Store.LoadSources;
+  lL := lStore.LoadSources;
   try
-    Assert.AreEqual<Integer>(1, L.Count, 'update must not insert a second row');
-    Assert.AreEqual<Integer>(Id, L[0].Id);
-    Assert.AreEqual('Renamed', L[0].Name);
-    Assert.AreEqual('http://b', L[0].Url);
-    Assert.IsTrue([ctLive, ctMovie] = L[0].ContentTypes);
-    Assert.AreEqual<Integer>(1, Length(L[0].IncludeFilters));
-    Assert.AreEqual<Integer>(2, Length(L[0].StripPrefixes), 'strip prefixes round-trip');
-    Assert.AreEqual('NL', L[0].StripPrefixes[0]);
-    Assert.AreEqual('VLC/3.0.20 LibVLC/3.0.20', L[0].UserAgent, 'per-provider UA round-trips');
-    Assert.AreEqual('http://provider.example/c/', L[0].Referer, 'per-provider Referer round-trips');
-    Assert.IsTrue(L[0].ForceHls, 'per-provider force-HLS round-trips');
-    Assert.AreEqual('Active', L[0].AccountStatus, 'account status round-trips');
-    Assert.AreEqual(EncodeDateTime(2027, 3, 1, 12, 0, 0, 0), L[0].ExpiresUtc, 1 / SecsPerDay, 'expiry round-trips');
-    Assert.AreEqual<Integer>(2, L[0].MaxConnections, 'max connections round-trips');
+    Assert.AreEqual<Integer>(1, lL.Count, 'update must not insert a second row');
+    Assert.AreEqual<Integer>(lId, lL[0].Id);
+    Assert.AreEqual('Renamed', lL[0].Name);
+    Assert.AreEqual('http://b', lL[0].Url);
+    Assert.IsTrue([ctLive, ctMovie] = lL[0].ContentTypes);
+    Assert.AreEqual<Integer>(1, Length(lL[0].IncludeFilters));
+    Assert.AreEqual<Integer>(2, Length(lL[0].StripPrefixes), 'strip prefixes round-trip');
+    Assert.AreEqual('NL', lL[0].StripPrefixes[0]);
+    Assert.AreEqual('VLC/3.0.20 LibVLC/3.0.20', lL[0].UserAgent, 'per-provider UA round-trips');
+    Assert.AreEqual('http://provider.example/c/', lL[0].Referer, 'per-provider Referer round-trips');
+    Assert.IsTrue(lL[0].ForceHls, 'per-provider force-HLS round-trips');
+    Assert.AreEqual('Active', lL[0].AccountStatus, 'account status round-trips');
+    Assert.AreEqual(EncodeDateTime(2027, 3, 1, 12, 0, 0, 0), lL[0].ExpiresUtc, 1 / SecsPerDay, 'expiry round-trips');
+    Assert.AreEqual<Integer>(2, lL[0].MaxConnections, 'max connections round-trips');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.DeleteSourceCascades;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  Progs: TEpgProgrammeList;
-  P: TEpgProgramme;
-  Id: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lProgs: TEpgProgrammeList;
+  lP: TEpgProgramme;
+  lId: Integer;
+  lF: TCatalogFilter;
+  lS: TStreamItemList;
+  lC: TCategoryList;
+  lE: TEpgProgrammeList;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
-  try Src.Name := 'S'; Src.Kind := skXtream; Src.Url := 'http://h'; Id := Store.SaveSource(Src); finally Src.Free; end;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
+  try
+    lSrc.Name := 'S';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lId := lStore.SaveSource(lSrc);
+  finally
+    FreeAndNil(lSrc);
+  end;
 
-  Snap := TSourceSnapshot.Create(Id);
-  Snap.Streams.Add(MakeStream(Id, ctLive, 'a', 'A', '', 'tv1', 'http://p/a.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'c'; Cat.Name := 'Cat';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Progs := TEpgProgrammeList.Create(True);
-  P := TEpgProgramme.Create; P.ChannelTvgId := 'tv1'; P.Title := 'X';
-  P.StartUtc := EncodeDateTime(2026, 6, 14, 10, 0, 0, 0); P.StopUtc := EncodeDateTime(2026, 6, 14, 11, 0, 0, 0);
-  Progs.Add(P);
-  Store.ReplaceEpg(Id, Progs);
-  Progs.Free;
+  lSnap := TSourceSnapshot.Create(lId);
+  lSnap.Streams.Add(MakeStream(lId, ctLive, 'a', 'A', '', 'tv1', 'http://p/a.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'c';
+  lCat.Name := 'Cat';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lProgs := TEpgProgrammeList.Create(True);
+  lP := TEpgProgramme.Create;
+  lP.ChannelTvgId := 'tv1';
+  lP.Title := 'X';
+  lP.StartUtc := EncodeDateTime(2026, 6, 14, 10, 0, 0, 0);
+  lP.StopUtc := EncodeDateTime(2026, 6, 14, 11, 0, 0, 0);
+  lProgs.Add(lP);
+  lStore.ReplaceEpg(lId, lProgs);
+  FreeAndNil(lProgs);
 
-  Store.DeleteSource(Id);
+  lStore.DeleteSource(lId);
 
-  Assert.AreEqual<Integer>(0, Store.LoadSources.Count, 'source row gone');
-  F := Default(TCatalogFilter); F.SourceId := Id;
-  var S := Store.LoadStreams(F);
-  try Assert.AreEqual<Integer>(0, S.Count, 'streams cascaded'); finally S.Free; end;
-  var C := Store.LoadCategories(F);
-  try Assert.AreEqual<Integer>(0, C.Count, 'categories cascaded'); finally C.Free; end;
-  var E := Store.LoadEpgForTvgIds(['tv1']);
-  try Assert.AreEqual<Integer>(0, E.Count, 'epg cascaded'); finally E.Free; end;
+  Assert.AreEqual<Integer>(0, lStore.LoadSources.Count, 'source row gone');
+  lF := Default(TCatalogFilter);
+  lF.SourceId := lId;
+  lS := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(0, lS.Count, 'streams cascaded');
+  finally
+    FreeAndNil(lS);
+  end;
+  lC := lStore.LoadCategories(lF);
+  try
+    Assert.AreEqual<Integer>(0, lC.Count, 'categories cascaded');
+  finally
+    FreeAndNil(lC);
+  end;
+  lE := lStore.LoadEpgForTvgIds(['tv1']);
+  try
+    Assert.AreEqual<Integer>(0, lE.Count, 'epg cascaded');
+  finally
+    FreeAndNil(lE);
+  end;
 end;
 
 procedure TStorageTests.SaveListUpdateRoundtrips;
 var
-  Store: IStore;
-  Lst: TCustomList;
-  Id: Integer;
+  lStore: IStore;
+  lLst: TCustomList;
+  lId: Integer;
+  lL: TObjectList<TCustomList>;
 begin
-  Store := NewStore(FDbPath);
-  Lst := TCustomList.Create;
+  lStore := NewStore(FDbPath);
+  lLst := TCustomList.Create;
   try
-    Lst.Name := 'L1'; Lst.OutputUsername := 'u'; Lst.OutputPassword := 'p'; Lst.Enabled := True;
-    Id := Store.SaveList(Lst);
-    Lst.Name := 'L2'; Lst.OutputUsername := 'u2'; Lst.Enabled := False;
-    Store.SaveList(Lst);
+    lLst.Name := 'L1';
+    lLst.OutputUsername := 'u';
+    lLst.OutputPassword := 'p';
+    lLst.Enabled := True;
+    lId := lStore.SaveList(lLst);
+    lLst.Name := 'L2';
+    lLst.OutputUsername := 'u2';
+    lLst.Enabled := False;
+    lStore.SaveList(lLst);
   finally
-    Lst.Free;
+    FreeAndNil(lLst);
   end;
-  var L := Store.LoadLists;
+  lL := lStore.LoadLists;
   try
-    Assert.AreEqual<Integer>(1, L.Count);
-    Assert.AreEqual<Integer>(Id, L[0].Id);
-    Assert.AreEqual('L2', L[0].Name);
-    Assert.AreEqual('u2', L[0].OutputUsername);
-    Assert.IsFalse(L[0].Enabled);
+    Assert.AreEqual<Integer>(1, lL.Count);
+    Assert.AreEqual<Integer>(lId, lL[0].Id);
+    Assert.AreEqual('L2', lL[0].Name);
+    Assert.AreEqual('u2', lL[0].OutputUsername);
+    Assert.IsFalse(lL[0].Enabled);
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.MarkCategoriesSeenClearsNew;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
-  CatId: Integer;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lCatId: Integer;
+  lL: TCategoryList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'g'; Cat.Name := 'Group';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'g';
+  lCat.Name := 'Group';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter); F.OnlyNew := True;
-  var L := Store.LoadCategories(F);
+  lF := Default(TCatalogFilter);
+  lF.OnlyNew := True;
+  lL := lStore.LoadCategories(lF);
   try
-    Assert.AreEqual<Integer>(1, L.Count, 'new category present');
-    CatId := L[0].Id;
+    Assert.AreEqual<Integer>(1, lL.Count, 'new category present');
+    lCatId := lL[0].Id;
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 
-  Store.MarkCategoriesSeen([CatId]);
-  L := Store.LoadCategories(F);
+  lStore.MarkCategoriesSeen([lCatId]);
+  lL := lStore.LoadCategories(lF);
   try
-    Assert.AreEqual<Integer>(0, L.Count, 'no longer flagged new after mark-seen');
+    Assert.AreEqual<Integer>(0, lL.Count, 'no longer flagged new after mark-seen');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.LoadStreamByIdFoundAndMissing;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
-  Id: Integer;
-  S: TStreamItem;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lId: Integer;
+  lS: TStreamItem;
+  lL: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u', 'The Channel', '', '', 'http://p/u.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  F := Default(TCatalogFilter);
-  var L := Store.LoadStreams(F);
-  try Id := L[0].Id; finally L.Free; end;
-
-  S := Store.LoadStreamById(Id);
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u', 'The Channel', '', '', 'http://p/u.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lF := Default(TCatalogFilter);
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.IsNotNull(S);
-    Assert.AreEqual('The Channel', S.Name);
-    Assert.AreEqual('http://p/u.ts', S.UpstreamUrl);
+    lId := lL[0].Id;
   finally
-    S.Free;
+    FreeAndNil(lL);
   end;
-  Assert.IsNull(Store.LoadStreamById(999999), 'missing id => nil');
+
+  lS := lStore.LoadStreamById(lId);
+  try
+    Assert.IsNotNull(lS);
+    Assert.AreEqual('The Channel', lS.Name);
+    Assert.AreEqual('http://p/u.ts', lS.UpstreamUrl);
+  finally
+    FreeAndNil(lS);
+  end;
+  Assert.IsNull(lStore.LoadStreamById(999999), 'missing id => nil');
 end;
 
 procedure TStorageTests.LoadKnownTvgIdsDistinctSortedByName;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Ids: TArray<TTvgIdInfo>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lIds: TArray<TTvgIdInfo>;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'Zeta', '', 'z.tv', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'b', 'Alpha', '', 'a.tv', 'http://p/b.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'c', 'NoGuide', '', '', 'http://p/c.ts')); // no tvg-id
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'Zeta', '', 'z.tv', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'b', 'Alpha', '', 'a.tv', 'http://p/b.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'c', 'NoGuide', '', '', 'http://p/c.ts')); // no tvg-id
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Ids := Store.LoadKnownTvgIds;
-  Assert.AreEqual<Integer>(2, Length(Ids), 'only non-empty tvg-ids, distinct');
+  lIds := lStore.LoadKnownTvgIds;
+  Assert.AreEqual<Integer>(2, Length(lIds), 'only non-empty tvg-ids, distinct');
   // sorted by sample channel name (case-insensitive): Alpha (a.tv) before Zeta (z.tv)
-  Assert.AreEqual('a.tv', Ids[0].TvgId);
-  Assert.AreEqual('Alpha', Ids[0].Name);
-  Assert.AreEqual('z.tv', Ids[1].TvgId);
+  Assert.AreEqual('a.tv', lIds[0].TvgId);
+  Assert.AreEqual('Alpha', lIds[0].Name);
+  Assert.AreEqual('z.tv', lIds[1].TvgId);
 end;
 
 procedure TStorageTests.AppStateGetSetRoundtrips;
 var
-  Store: IStore;
+  lStore: IStore;
 begin
-  Store := NewStore(FDbPath);
-  Assert.AreEqual('', Store.GetState('missing'), 'unknown key => empty');
-  Store.SetState('k', 'v1');
-  Assert.AreEqual('v1', Store.GetState('k'), 'value stored');
-  Store.SetState('k', 'v2'); // upsert
-  Assert.AreEqual('v2', Store.GetState('k'), 'value updated, not duplicated');
+  lStore := NewStore(FDbPath);
+  Assert.AreEqual('', lStore.GetState('missing'), 'unknown key => empty');
+  lStore.SetState('k', 'v1');
+  Assert.AreEqual('v1', lStore.GetState('k'), 'value stored');
+  lStore.SetState('k', 'v2'); // upsert
+  Assert.AreEqual('v2', lStore.GetState('k'), 'value updated, not duplicated');
 end;
 
 procedure TStorageTests.LoadListTvgIdsDistinctNonEmpty;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId: Integer;
-  F: TCatalogFilter;
-  Ids: TArray<string>;
-  Tvgs: TArray<string>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId: Integer;
+  lF: TCatalogFilter;
+  lIds: TArray<string>;
+  lTvgs: TArray<string>;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lIntIds: TArray<Integer>;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', 'A', '', 'aa', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', 'B', '', 'bb', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'C', '', '', 'http://p/3.ts')); // no tvg-id
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', 'A', '', 'aa', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', 'B', '', 'bb', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'C', '', '', 'http://p/3.ts')); // no tvg-id
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    SetLength(Ids, Streams.Count);
-    for var I := 0 to Streams.Count - 1 do Ids[I] := IntToStr(Streams[I].Id);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Streams.Free;
+    FreeAndNil(lLst);
+  end;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    SetLength(lIds, lStreams.Count);
+    for i := 0 to lStreams.Count - 1 do
+      lIds[i] := IntToStr(lStreams[i].Id);
+  finally
+    FreeAndNil(lStreams);
   end;
   // add all three to the list
-  var IntIds: TArray<Integer>;
-  SetLength(IntIds, Length(Ids));
-  for var I := 0 to High(Ids) do IntIds[I] := StrToInt(Ids[I]);
-  Store.AddItems(ListId, 0, IntIds);
+  SetLength(lIntIds, Length(lIds));
+  for i := 0 to High(lIds) do
+    lIntIds[i] := StrToInt(lIds[i]);
+  lStore.AddItems(lListId, 0, lIntIds);
 
-  Tvgs := Store.LoadListTvgIds;
-  Assert.AreEqual<Integer>(2, Length(Tvgs), 'only non-empty, distinct tvg-ids');
-  Assert.IsTrue((Tvgs[0] = 'aa') or (Tvgs[1] = 'aa'));
-  Assert.IsTrue((Tvgs[0] = 'bb') or (Tvgs[1] = 'bb'));
+  lTvgs := lStore.LoadListTvgIds;
+  Assert.AreEqual<Integer>(2, Length(lTvgs), 'only non-empty, distinct tvg-ids');
+  Assert.IsTrue((lTvgs[0] = 'aa') or (lTvgs[1] = 'aa'));
+  Assert.IsTrue((lTvgs[0] = 'bb') or (lTvgs[1] = 'bb'));
 end;
 
 procedure TStorageTests.DeleteItemRemovesIt;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
+  lItemId: Integer;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try Store.AddItems(ListId, 0, [Streams[0].Id]); finally Streams.Free; end;
-
-  var Items := Store.LoadItems(ListId);
-  var ItemId: Integer;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lLst := TCustomList.Create;
   try
-    Assert.AreEqual<Integer>(1, Items.Count);
-    ItemId := Items[0].Id;
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Items.Free;
+    FreeAndNil(lLst);
   end;
-  Store.DeleteItem(ItemId);
-  Items := Store.LoadItems(ListId);
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(0, Items.Count, 'item removed');
+    lStore.AddItems(lListId, 0, [lStreams[0].Id]);
   finally
-    Items.Free;
+    FreeAndNil(lStreams);
+  end;
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lItems.Count);
+    lItemId := lItems[0].Id;
+  finally
+    FreeAndNil(lItems);
+  end;
+  lStore.DeleteItem(lItemId);
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(0, lItems.Count, 'item removed');
+  finally
+    FreeAndNil(lItems);
   end;
 end;
 
 procedure TStorageTests.MergeFlagsNewThenStaysStable;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lL: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
+  lStore := NewStore(FDbPath);
 
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'x1', 'Channel 1', 'NL', 'nl1', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'x1', 'Channel 1', 'NL', 'nl1', 'http://p/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  var L := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, L.Count);
-    Assert.IsTrue(L[0].IsNew, 'first appearance must be flagged new');
+    Assert.AreEqual<Integer>(1, lL.Count);
+    Assert.IsTrue(lL[0].IsNew, 'first appearance must be flagged new');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 
   // mark seen, then re-merge the same upstream item: must NOT be re-flagged new
-  Store.MarkStreamsSeen([Store.LoadStreams(F)[0].Id]);
+  lStore.MarkStreamsSeen([lStore.LoadStreams(lF)[0].Id]);
 
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'x1', 'Channel 1 renamed upstream', 'NL', 'nl1', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'x1', 'Channel 1 renamed upstream', 'NL', 'nl1', 'http://p/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  L := Store.LoadStreams(F);
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, L.Count, 'same upstream id must not duplicate');
-    Assert.IsFalse(L[0].IsNew, 'a seen item must stay seen across refreshes');
-    Assert.AreEqual('Channel 1 renamed upstream', L[0].Name, 'metadata refreshes');
+    Assert.AreEqual<Integer>(1, lL.Count, 'same upstream id must not duplicate');
+    Assert.IsFalse(lL[0].IsNew, 'a seen item must stay seen across refreshes');
+    Assert.AreEqual('Channel 1 renamed upstream', lL[0].Name, 'metadata refreshes');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.MarkStreamsSeenClearsNew;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lId: Integer;
+  lL: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  var Id := Store.LoadStreams(F)[0].Id;
-  Store.MarkStreamsSeen([Id]);
+  lF := Default(TCatalogFilter);
+  lId := lStore.LoadStreams(lF)[0].Id;
+  lStore.MarkStreamsSeen([lId]);
 
-  F.OnlyNew := True;
-  var L := Store.LoadStreams(F);
+  lF.OnlyNew := True;
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(0, L.Count, 'no items remain new after mark-seen');
+    Assert.AreEqual<Integer>(0, lL.Count, 'no items remain new after mark-seen');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.FilterByPrefixAndSearch;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lL: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', 'NL: One', 'NL', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', 'NL: Two', 'NL', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'UK Three', 'UK', '', 'http://p/3.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', 'NL: One', 'NL', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', 'NL: Two', 'NL', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'UK Three', 'UK', '', 'http://p/3.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  F.Prefix := 'NL:';
-  var L := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.Prefix := 'NL:';
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(2, L.Count, 'prefix NL: matches two');
+    Assert.AreEqual<Integer>(2, lL.Count, 'prefix NL: matches two');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 
-  F := Default(TCatalogFilter);
-  F.Search := 'three';
-  L := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.Search := 'three';
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, L.Count, 'search is case-insensitive contains');
-    Assert.AreEqual('UK Three', L[0].Name);
+    Assert.AreEqual<Integer>(1, lL.Count, 'search is case-insensitive contains');
+    Assert.AreEqual('UK Three', lL[0].Name);
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.MultiWordSearchIsAnd;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lS: TStreamItemList;
+  lC: TCategoryList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| NPO 1 UHD', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', 'NL| NPO 2 HD', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'UK| BBC UHD', '', '', 'http://p/3.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'g1'; Cat.Name := 'NL UHD Sport';
-  Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'g2'; Cat.Name := 'NL HD News';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| NPO 1 UHD', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', 'NL| NPO 2 HD', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'UK| BBC UHD', '', '', 'http://p/3.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'g1';
+  lCat.Name := 'NL UHD Sport';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'g2';
+  lCat.Name := 'NL HD News';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
   // "NL UHD" => AND: only the NL channel that is also UHD
-  F := Default(TCatalogFilter);
-  F.Search := 'NL UHD';
-  var S := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.Search := 'NL UHD';
+  lS := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, S.Count, 'AND of both terms');
-    Assert.AreEqual('NL| NPO 1 UHD', S[0].Name);
-  finally S.Free; end;
+    Assert.AreEqual<Integer>(1, lS.Count, 'AND of both terms');
+    Assert.AreEqual('NL| NPO 1 UHD', lS[0].Name);
+  finally
+    FreeAndNil(lS);
+  end;
 
   // comma works as a separator too, and applies to categories as well
-  var C := Store.LoadCategories(F);
+  lC := lStore.LoadCategories(lF);
   try
-    Assert.AreEqual<Integer>(1, C.Count, 'category AND search');
-    Assert.AreEqual('NL UHD Sport', C[0].Name);
-  finally C.Free; end;
+    Assert.AreEqual<Integer>(1, lC.Count, 'category AND search');
+    Assert.AreEqual('NL UHD Sport', lC[0].Name);
+  finally
+    FreeAndNil(lC);
+  end;
 
   // single term still behaves as plain contains
-  F := Default(TCatalogFilter);
-  F.Search := 'NL';
-  S := Store.LoadStreams(F);
-  try Assert.AreEqual<Integer>(2, S.Count, 'one term = contains'); finally S.Free; end;
+  lF := Default(TCatalogFilter);
+  lF.Search := 'NL';
+  lS := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(2, lS.Count, 'one term = contains');
+  finally
+    FreeAndNil(lS);
+  end;
 end;
 
 procedure TStorageTests.DiscoverPrefixesCountsAndOrders;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Prefixes: TArray<TPrefixCount>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lPrefixes: TArray<TPrefixCount>;
+  lCat: TCategory;
 
   function CountFor(const APrefix: string): Integer;
   var
-    P: TPrefixCount;
+    lP: TPrefixCount;
   begin
     Result := -1; // -1 => prefix not present at all
-    for P in Prefixes do
-      if P.Prefix = APrefix then
-        Exit(P.Count);
+    for lP in lPrefixes do
+      if lP.Prefix = APrefix then
+        Exit(lP.Count);
   end;
 
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', 'NL| Two', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'UK| Three', '', '', 'http://p/3.ts'));
-  Snap.Streams.Add(MakeStream(1, ctMovie, '4', 'The Big Movie', '', '', 'http://p/4.ts')); // no delimiter, not a code
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', 'NL| Two', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'UK| Three', '', '', 'http://p/3.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctMovie, '4', 'The Big Movie', '', '', 'http://p/4.ts')); // no delimiter, not a code
   // a group/category whose prefix does NOT appear in any channel name — must
   // still be discovered (groups are filtered by their own names)
-  var Cat := TCategory.Create;
-  Cat.ContentType := ctLive; Cat.UpstreamId := 'asia'; Cat.Name := 'ASIA | India';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'asia';
+  lCat.Name := 'ASIA | India';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Prefixes := Store.DiscoverPrefixes(1);
+  lPrefixes := lStore.DiscoverPrefixes(1);
 
   Assert.AreEqual<Integer>(2, CountFor('NL|'), 'NL| occurs twice');
   Assert.AreEqual<Integer>(1, CountFor('UK|'), 'UK| occurs once');
   Assert.AreEqual<Integer>(1, CountFor('ASIA |'), 'a group-only prefix is discovered from category names');
   Assert.AreEqual<Integer>(-1, CountFor('The'), 'an ordinary first word is not a prefix');
   // ordering: most common first
-  Assert.IsTrue(Length(Prefixes) >= 2);
-  Assert.AreEqual('NL|', Prefixes[0].Prefix, 'most common prefix sorts first');
+  Assert.IsTrue(Length(lPrefixes) >= 2);
+  Assert.AreEqual('NL|', lPrefixes[0].Prefix, 'most common prefix sorts first');
 end;
 
 procedure TStorageTests.FilterOnlyNew;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lL: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctMovie, 'm1', 'Movie', 'VOD', '', 'http://p/m.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctMovie, 'm1', 'Movie', 'VOD', '', 'http://p/m.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  F.HasContentType := True;
-  F.ContentType := ctLive;
-  var L := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.HasContentType := True;
+  lF.ContentType := ctLive;
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(0, L.Count, 'content-type filter excludes movies');
+    Assert.AreEqual<Integer>(0, lL.Count, 'content-type filter excludes movies');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.ListGroupItemCrud;
 var
-  Store: IStore;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId, GroupId: Integer;
+  lStore: IStore;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lListId, lGroupId: Integer;
+  lG: TCustomGroupList;
 begin
-  Store := NewStore(FDbPath);
-  Lst := TCustomList.Create;
+  lStore := NewStore(FDbPath);
+  lLst := TCustomList.Create;
   try
-    Lst.Name := 'My List';
-    ListId := Store.SaveList(Lst);
+    lLst.Name := 'My List';
+    lListId := lStore.SaveList(lLst);
   finally
-    Lst.Free;
+    FreeAndNil(lLst);
   end;
-  Assert.IsTrue(ListId > 0);
+  Assert.IsTrue(lListId > 0);
 
-  Grp := TCustomGroup.Create;
+  lGrp := TCustomGroup.Create;
   try
-    Grp.ListId := ListId;
-    Grp.Name := 'Favorites';
-    Grp.IsFavorite := True;
-    GroupId := Store.SaveGroup(Grp);
+    lGrp.ListId := lListId;
+    lGrp.Name := 'Favorites';
+    lGrp.IsFavorite := True;
+    lGroupId := lStore.SaveGroup(lGrp);
   finally
-    Grp.Free;
-  end;
-
-  var G := Store.LoadGroups(ListId);
-  try
-    Assert.AreEqual<Integer>(1, G.Count);
-    Assert.IsTrue(G[0].IsFavorite);
-  finally
-    G.Free;
+    FreeAndNil(lGrp);
   end;
 
-  Store.DeleteGroup(GroupId);
-  G := Store.LoadGroups(ListId);
+  lG := lStore.LoadGroups(lListId);
   try
-    Assert.AreEqual<Integer>(0, G.Count);
+    Assert.AreEqual<Integer>(1, lG.Count);
+    Assert.IsTrue(lG[0].IsFavorite);
   finally
-    G.Free;
+    FreeAndNil(lG);
+  end;
+
+  lStore.DeleteGroup(lGroupId);
+  lG := lStore.LoadGroups(lListId);
+  try
+    Assert.AreEqual<Integer>(0, lG.Count);
+  finally
+    FreeAndNil(lG);
   end;
 end;
 
 procedure TStorageTests.SaveGroupUpdateRenamesAndKeepsList;
 // Regression: updating (renaming) a group must not bind the INSERT-only :l param.
 var
-  Store: IStore;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId: Integer;
+  lStore: IStore;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lListId: Integer;
+  lL: TCustomGroupList;
 begin
-  Store := NewStore(FDbPath);
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  Grp := TCustomGroup.Create;
+  lStore := NewStore(FDbPath);
+  lLst := TCustomList.Create;
   try
-    Grp.ListId := ListId;
-    Grp.Name := 'Old';
-    Grp.ContentType := ctLive;
-    Grp.IsFavorite := False;
-    Store.SaveGroup(Grp);            // INSERT
-    Grp.Name := 'New';
-    Grp.IsFavorite := True;
-    Store.SaveGroup(Grp);            // UPDATE — must NOT raise 'Parameter l not found'
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Grp.Free;
+    FreeAndNil(lLst);
   end;
 
-  var L := Store.LoadGroups(ListId);
+  lGrp := TCustomGroup.Create;
   try
-    Assert.AreEqual<Integer>(1, L.Count);
-    Assert.AreEqual('New', L[0].Name, 'rename persisted');
-    Assert.IsTrue(L[0].IsFavorite, 'favorite persisted');
-    Assert.AreEqual<Integer>(ListId, L[0].ListId, 'list_id preserved on update');
+    lGrp.ListId := lListId;
+    lGrp.Name := 'Old';
+    lGrp.ContentType := ctLive;
+    lGrp.IsFavorite := False;
+    lStore.SaveGroup(lGrp);            // INSERT
+    lGrp.Name := 'New';
+    lGrp.IsFavorite := True;
+    lStore.SaveGroup(lGrp);            // UPDATE — must NOT raise 'Parameter l not found'
   finally
-    L.Free;
+    FreeAndNil(lGrp);
+  end;
+
+  lL := lStore.LoadGroups(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lL.Count);
+    Assert.AreEqual('New', lL[0].Name, 'rename persisted');
+    Assert.IsTrue(lL[0].IsFavorite, 'favorite persisted');
+    Assert.AreEqual<Integer>(lListId, lL[0].ListId, 'list_id preserved on update');
+  finally
+    FreeAndNil(lL);
   end;
 end;
 
@@ -753,96 +868,109 @@ procedure TStorageTests.SaveItemUpdateKeepsListAndStream;
 // Regression: updating a list item must not bind the INSERT-only :l/:sid params,
 // and must preserve list_id + stream_item_id.
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  It: TCustomItem;
-  ListId, Sid: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lIt: TCustomItem;
+  lListId, lSid: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 's', 'Chan', '', '', 'http://p/s.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try Sid := Streams[0].Id; finally Streams.Free; end;
-
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  It := TCustomItem.Create;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 's', 'Chan', '', '', 'http://p/s.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    It.ListId := ListId;
-    It.StreamItemId := Sid;
-    It.CustomGroupId := 0;
-    It.ContentType := ctLive;
-    It.DisplayName := '';
-    Store.SaveItem(It);              // INSERT
-    It.DisplayName := 'Renamed';
-    It.ChannelNumber := 5;
-    Store.SaveItem(It);              // UPDATE — must NOT raise
+    lSid := lStreams[0].Id;
   finally
-    It.Free;
+    FreeAndNil(lStreams);
   end;
 
-  var Items := Store.LoadItems(ListId);
+  lLst := TCustomList.Create;
   try
-    Assert.AreEqual<Integer>(1, Items.Count);
-    Assert.AreEqual('Renamed', Items[0].DisplayName, 'rename persisted');
-    Assert.AreEqual<Integer>(5, Items[0].ChannelNumber);
-    Assert.AreEqual<Integer>(Sid, Items[0].StreamItemId, 'stream link preserved on update');
-    Assert.AreEqual<Integer>(ListId, Items[0].ListId, 'list link preserved on update');
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Items.Free;
+    FreeAndNil(lLst);
+  end;
+
+  lIt := TCustomItem.Create;
+  try
+    lIt.ListId := lListId;
+    lIt.StreamItemId := lSid;
+    lIt.CustomGroupId := 0;
+    lIt.ContentType := ctLive;
+    lIt.DisplayName := '';
+    lStore.SaveItem(lIt);              // INSERT
+    lIt.DisplayName := 'Renamed';
+    lIt.ChannelNumber := 5;
+    lStore.SaveItem(lIt);              // UPDATE — must NOT raise
+  finally
+    FreeAndNil(lIt);
+  end;
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lItems.Count);
+    Assert.AreEqual('Renamed', lItems[0].DisplayName, 'rename persisted');
+    Assert.AreEqual<Integer>(5, lItems[0].ChannelNumber);
+    Assert.AreEqual<Integer>(lSid, lItems[0].StreamItemId, 'stream link preserved on update');
+    Assert.AreEqual<Integer>(lListId, lItems[0].ListId, 'list link preserved on update');
+  finally
+    FreeAndNil(lItems);
   end;
 end;
 
 procedure TStorageTests.AddItemsBulkDedupes;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId, Added: Integer;
-  Ids: TArray<Integer>;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId, lAdded: Integer;
+  lIds: TArray<Integer>;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'b', 'B', '', '', 'http://p/b.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'b', 'B', '', '', 'http://p/b.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
+  lLst := TCustomList.Create;
   try
-    Lst.Name := 'L';
-    ListId := Store.SaveList(Lst);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Lst.Free;
+    FreeAndNil(lLst);
   end;
 
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    Ids := [Streams[0].Id, Streams[1].Id];
+    lIds := [lStreams[0].Id, lStreams[1].Id];
   finally
-    Streams.Free;
+    FreeAndNil(lStreams);
   end;
 
-  Added := Store.AddItems(ListId, 0, Ids);
-  Assert.AreEqual<Integer>(2, Added);
+  lAdded := lStore.AddItems(lListId, 0, lIds);
+  Assert.AreEqual<Integer>(2, lAdded);
 
   // adding the same ids again must add nothing (UNIQUE list_id+stream_item_id)
-  Added := Store.AddItems(ListId, 0, Ids);
-  Assert.AreEqual<Integer>(0, Added, 'bulk add must dedupe already-present items');
+  lAdded := lStore.AddItems(lListId, 0, lIds);
+  Assert.AreEqual<Integer>(0, lAdded, 'bulk add must dedupe already-present items');
 
-  var Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    Assert.AreEqual<Integer>(2, Items.Count);
+    Assert.AreEqual<Integer>(2, lItems.Count);
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 end;
 
@@ -854,43 +982,50 @@ end;
 // channel (e.g. NPO 2).
 procedure TStorageTests.LoadStreamSiblingsMatchesByTvgIdAndName;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
-  NpoA, BbcA: Integer;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lNpoA, lBbcA: Integer;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lSibsNpo: TArray<string>;
+  lSibsBbc: TArray<string>;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', '', 'npo1', 'http://a/npo1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u2', 'BBC One', '', '', 'http://a/bbc.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Snap := TSourceSnapshot.Create(2);
-  Snap.Streams.Add(MakeStream(2, ctLive, 'u1', 'NPO 1 HD', '', 'npo1', 'http://b/npo1.ts')); // same tvg-id
-  Snap.Streams.Add(MakeStream(2, ctLive, 'u2', 'BBC One', '', '', 'http://b/bbc.ts'));        // same exact name
-  Snap.Streams.Add(MakeStream(2, ctLive, 'u3', 'NPO 2', '', 'npo2', 'http://b/npo2.ts'));     // decoy
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', '', 'npo1', 'http://a/npo1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u2', 'BBC One', '', '', 'http://a/bbc.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lSnap := TSourceSnapshot.Create(2);
+  lSnap.Streams.Add(MakeStream(2, ctLive, 'u1', 'NPO 1 HD', '', 'npo1', 'http://b/npo1.ts')); // same tvg-id
+  lSnap.Streams.Add(MakeStream(2, ctLive, 'u2', 'BBC One', '', '', 'http://b/bbc.ts'));        // same exact name
+  lSnap.Streams.Add(MakeStream(2, ctLive, 'u3', 'NPO 2', '', 'npo2', 'http://b/npo2.ts'));     // decoy
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  NpoA := -1; BbcA := -1;
-  F := Default(TCatalogFilter);
-  F.SourceId := 1;
-  var Streams := Store.LoadStreams(F);
+  lNpoA := -1;
+  lBbcA := -1;
+  lF := Default(TCatalogFilter);
+  lF.SourceId := 1;
+  lStreams := lStore.LoadStreams(lF);
   try
-    for var I := 0 to Streams.Count - 1 do
-      if Streams[I].Name = 'NPO 1' then NpoA := Streams[I].Id
-      else if Streams[I].Name = 'BBC One' then BbcA := Streams[I].Id;
+    for i := 0 to lStreams.Count - 1 do
+      if lStreams[i].Name = 'NPO 1' then
+        lNpoA := lStreams[i].Id
+      else if lStreams[i].Name = 'BBC One' then
+        lBbcA := lStreams[i].Id;
   finally
-    Streams.Free;
+    FreeAndNil(lStreams);
   end;
 
-  var SibsNpo := Store.LoadStreamSiblings(NpoA);
-  Assert.AreEqual<Integer>(1, Length(SibsNpo), 'NPO 1 → one sibling (same tvg-id), NOT NPO 2');
-  Assert.AreEqual('http://b/npo1.ts', SibsNpo[0]);
+  lSibsNpo := lStore.LoadStreamSiblings(lNpoA);
+  Assert.AreEqual<Integer>(1, Length(lSibsNpo), 'NPO 1 → one sibling (same tvg-id), NOT NPO 2');
+  Assert.AreEqual('http://b/npo1.ts', lSibsNpo[0]);
 
-  var SibsBbc := Store.LoadStreamSiblings(BbcA);
-  Assert.AreEqual<Integer>(1, Length(SibsBbc), 'BBC One → one sibling (same exact name, no tvg-id)');
-  Assert.AreEqual('http://b/bbc.ts', SibsBbc[0]);
+  lSibsBbc := lStore.LoadStreamSiblings(lBbcA);
+  Assert.AreEqual<Integer>(1, Length(lSibsBbc), 'BBC One → one sibling (same exact name, no tvg-id)');
+  Assert.AreEqual('http://b/bbc.ts', lSibsBbc[0]);
 end;
 
 // The credential-scoped output (302 redirect / proxy relay) must only serve a
@@ -898,41 +1033,53 @@ end;
 // the stream for an on-list id, but nil for a catalog stream NOT on that list.
 procedure TStorageTests.LoadListStreamByIdScopesToList;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId, OnId, OffId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId, lOnId, lOffId: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lOnStream: TStreamItem;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'On List', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u2', 'Off List', '', '', 'http://p/2.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', 'On List', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u2', 'Off List', '', '', 'http://p/2.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'Box'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  OnId := -1; OffId := -1;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    for var I := 0 to Streams.Count - 1 do
-      if Streams[I].Name = 'On List' then OnId := Streams[I].Id else OffId := Streams[I].Id;
+    lLst.Name := 'Box';
+    lListId := lStore.SaveList(lLst);
   finally
-    Streams.Free;
+    FreeAndNil(lLst);
   end;
-  Store.AddItems(ListId, 0, [OnId]); // only the first stream is on the list
 
-  var OnStream := Store.LoadListStreamById(ListId, OnId);
+  lOnId := -1;
+  lOffId := -1;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    Assert.IsNotNull(OnStream, 'an on-list stream resolves');
-    Assert.AreEqual('http://p/1.ts', OnStream.UpstreamUrl);
+    for i := 0 to lStreams.Count - 1 do
+      if lStreams[i].Name = 'On List' then
+        lOnId := lStreams[i].Id
+      else
+        lOffId := lStreams[i].Id;
   finally
-    OnStream.Free;
+    FreeAndNil(lStreams);
   end;
-  Assert.IsNull(Store.LoadListStreamById(ListId, OffId),
+  lStore.AddItems(lListId, 0, [lOnId]); // only the first stream is on the list
+
+  lOnStream := lStore.LoadListStreamById(lListId, lOnId);
+  try
+    Assert.IsNotNull(lOnStream, 'an on-list stream resolves');
+    Assert.AreEqual('http://p/1.ts', lOnStream.UpstreamUrl);
+  finally
+    FreeAndNil(lOnStream);
+  end;
+  Assert.IsNull(lStore.LoadListStreamById(lListId, lOffId),
     'a catalog stream NOT on the list does not resolve (no cross-list / off-list access)');
 end;
 
@@ -942,50 +1089,75 @@ end;
 // the historical "tests green but broken" class of bug.)
 procedure TStorageTests.MergeFlagsNewItemAmongSeenOnes;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lS1: TStreamItemList;
+  lC1: TCategoryList;
+  lNewS: TStreamItemList;
+  lNewC: TCategoryList;
 begin
-  Store := NewStore(FDbPath);
+  lStore := NewStore(FDbPath);
   // refresh #1: one stream + one category
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'Alpha', '', '', 'http://p/a.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'ca'; Cat.Name := 'CatA';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'Alpha', '', '', 'http://p/a.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'ca';
+  lCat.Name := 'CatA';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
   // mark everything from refresh #1 seen (clears their "new" badge)
-  F := Default(TCatalogFilter);
-  var S1 := Store.LoadStreams(F);
-  try Store.MarkStreamsSeen([S1[0].Id]); finally S1.Free; end;
-  var C1 := Store.LoadCategories(F);
-  try Store.MarkCategoriesSeen([C1[0].Id]); finally C1.Free; end;
+  lF := Default(TCatalogFilter);
+  lS1 := lStore.LoadStreams(lF);
+  try
+    lStore.MarkStreamsSeen([lS1[0].Id]);
+  finally
+    FreeAndNil(lS1);
+  end;
+  lC1 := lStore.LoadCategories(lF);
+  try
+    lStore.MarkCategoriesSeen([lC1[0].Id]);
+  finally
+    FreeAndNil(lC1);
+  end;
 
   // refresh #2: the old item PLUS a brand-new one
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'Alpha', '', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'b', 'Bravo', '', '', 'http://p/b.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'ca'; Cat.Name := 'CatA';
-  Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'cb'; Cat.Name := 'CatB';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'Alpha', '', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'b', 'Bravo', '', '', 'http://p/b.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'ca';
+  lCat.Name := 'CatA';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'cb';
+  lCat.Name := 'CatB';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  F.OnlyNew := True;
-  var NewS := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.OnlyNew := True;
+  lNewS := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, NewS.Count, 'only the brand-new stream is flagged new');
-    Assert.AreEqual('Bravo', NewS[0].Name);
-  finally NewS.Free; end;
-  var NewC := Store.LoadCategories(F);
+    Assert.AreEqual<Integer>(1, lNewS.Count, 'only the brand-new stream is flagged new');
+    Assert.AreEqual('Bravo', lNewS[0].Name);
+  finally
+    FreeAndNil(lNewS);
+  end;
+  lNewC := lStore.LoadCategories(lF);
   try
-    Assert.AreEqual<Integer>(1, NewC.Count, 'only the brand-new category is flagged new');
-    Assert.AreEqual('CatB', NewC[0].Name);
-  finally NewC.Free; end;
+    Assert.AreEqual<Integer>(1, lNewC.Count, 'only the brand-new category is flagged new');
+    Assert.AreEqual('CatB', lNewC[0].Name);
+  finally
+    FreeAndNil(lNewC);
+  end;
 end;
 
 // canonical channel ordering WITHIN a group: numbered channels first in NUMERIC
@@ -993,60 +1165,88 @@ end;
 // tests put one channel per group with no numbers, so this clause was unproven.
 procedure TStorageTests.OutputChannelNumberOrderingWithinGroup;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId, OneId, TwoId, TenId, AlphaId, BravoId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId, lOneId, lTwoId, lTenId, lAlphaId, lBravoId: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lItems: TCustomItemList;
+  lCh: TOutputChannelList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'Ten', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u2', 'Two', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u3', 'One', '', '', 'http://p/3.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u4', 'Bravo', '', '', 'http://p/4.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u5', 'Alpha', '', '', 'http://p/5.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', 'Ten', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u2', 'Two', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u3', 'One', '', '', 'http://p/3.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u4', 'Bravo', '', '', 'http://p/4.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u5', 'Alpha', '', '', 'http://p/5.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  OneId := -1; TwoId := -1; TenId := -1; AlphaId := -1; BravoId := -1;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    for var I := 0 to Streams.Count - 1 do
-      if Streams[I].Name = 'One' then OneId := Streams[I].Id
-      else if Streams[I].Name = 'Two' then TwoId := Streams[I].Id
-      else if Streams[I].Name = 'Ten' then TenId := Streams[I].Id
-      else if Streams[I].Name = 'Alpha' then AlphaId := Streams[I].Id
-      else if Streams[I].Name = 'Bravo' then BravoId := Streams[I].Id;
-  finally Streams.Free; end;
-  Store.AddItems(ListId, 0, [OneId, TwoId, TenId, AlphaId, BravoId]);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+
+  lOneId := -1;
+  lTwoId := -1;
+  lTenId := -1;
+  lAlphaId := -1;
+  lBravoId := -1;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    for i := 0 to lStreams.Count - 1 do
+      if lStreams[i].Name = 'One' then
+        lOneId := lStreams[i].Id
+      else if lStreams[i].Name = 'Two' then
+        lTwoId := lStreams[i].Id
+      else if lStreams[i].Name = 'Ten' then
+        lTenId := lStreams[i].Id
+      else if lStreams[i].Name = 'Alpha' then
+        lAlphaId := lStreams[i].Id
+      else if lStreams[i].Name = 'Bravo' then
+        lBravoId := lStreams[i].Id;
+  finally
+    FreeAndNil(lStreams);
+  end;
+  lStore.AddItems(lListId, 0, [lOneId, lTwoId, lTenId, lAlphaId, lBravoId]);
 
   // number One=1, Two=2, Ten=10; leave Alpha/Bravo unnumbered (0)
-  var Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
+    for i := 0 to lItems.Count - 1 do
     begin
-      if Items[I].StreamItemId = OneId then Items[I].ChannelNumber := 1
-      else if Items[I].StreamItemId = TwoId then Items[I].ChannelNumber := 2
-      else if Items[I].StreamItemId = TenId then Items[I].ChannelNumber := 10
-      else Continue;
-      Store.SaveItem(Items[I]);
+      if lItems[i].StreamItemId = lOneId then
+        lItems[i].ChannelNumber := 1
+      else if lItems[i].StreamItemId = lTwoId then
+        lItems[i].ChannelNumber := 2
+      else if lItems[i].StreamItemId = lTenId then
+        lItems[i].ChannelNumber := 10
+      else
+        Continue;
+      lStore.SaveItem(lItems[i]);
     end;
-  finally Items.Free; end;
+  finally
+    FreeAndNil(lItems);
+  end;
 
-  var Ch := Store.LoadOutputChannels(ListId);
+  lCh := lStore.LoadOutputChannels(lListId);
   try
-    Assert.AreEqual<Integer>(5, Ch.Count);
-    Assert.AreEqual('One', Ch[0].Name, 'number 1 first');
-    Assert.AreEqual('Two', Ch[1].Name, 'number 2 next');
-    Assert.AreEqual('Ten', Ch[2].Name, 'number 10 after 2 (numeric order, not text)');
-    Assert.AreEqual('Alpha', Ch[3].Name, 'unnumbered come after numbered, A→Z');
-    Assert.AreEqual('Bravo', Ch[4].Name);
-  finally Ch.Free; end;
+    Assert.AreEqual<Integer>(5, lCh.Count);
+    Assert.AreEqual('One', lCh[0].Name, 'number 1 first');
+    Assert.AreEqual('Two', lCh[1].Name, 'number 2 next');
+    Assert.AreEqual('Ten', lCh[2].Name, 'number 10 after 2 (numeric order, not text)');
+    Assert.AreEqual('Alpha', lCh[3].Name, 'unnumbered come after numbered, A→Z');
+    Assert.AreEqual('Bravo', lCh[4].Name);
+  finally
+    FreeAndNil(lCh);
+  end;
 end;
 
 // credential resolution: a DISABLED list is never resolved (enabled=1), a wrong
@@ -1054,51 +1254,76 @@ end;
 // when a disabled list exists. Earlier test had only one enabled list.
 procedure TStorageTests.FindListByCredentialsRespectsEnabledAndUser;
 var
-  Store: IStore;
-  Lst: TCustomList;
+  lStore: IStore;
+  lLst: TCustomList;
+  lL: TCustomList;
 begin
-  Store := NewStore(FDbPath);
-  Lst := TCustomList.Create;
+  lStore := NewStore(FDbPath);
+  lLst := TCustomList.Create;
   try
-    Lst.Name := 'Disabled'; Lst.OutputUsername := 'x'; Lst.OutputPassword := 'y'; Lst.Enabled := False;
-    Store.SaveList(Lst);
-  finally Lst.Free; end;
-  Lst := TCustomList.Create;
-  try Lst.Name := 'Default'; Lst.Enabled := True; Store.SaveList(Lst); finally Lst.Free; end;
+    lLst.Name := 'Disabled';
+    lLst.OutputUsername := 'x';
+    lLst.OutputPassword := 'y';
+    lLst.Enabled := False;
+    lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+  lLst := TCustomList.Create;
+  try
+    lLst.Name := 'Default';
+    lLst.Enabled := True;
+    lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
 
-  Assert.IsNull(Store.FindListByCredentials('nobody', 'z'), 'unknown username -> nil (401)');
-  Assert.IsNull(Store.FindListByCredentials('x', 'y'), 'a disabled list is never resolved');
-  var L := Store.FindListByCredentials('', '');
+  Assert.IsNull(lStore.FindListByCredentials('nobody', 'z'), 'unknown username -> nil (401)');
+  Assert.IsNull(lStore.FindListByCredentials('x', 'y'), 'a disabled list is never resolved');
+  lL := lStore.FindListByCredentials('', '');
   try
-    Assert.IsNotNull(L, 'empty creds resolve to the enabled default');
-    Assert.AreEqual('Default', L.Name);
-  finally L.Free; end;
+    Assert.IsNotNull(lL, 'empty creds resolve to the enabled default');
+    Assert.AreEqual('Default', lL.Name);
+  finally
+    FreeAndNil(lL);
+  end;
 end;
 
 // EpgMaxDays caps the FUTURE, but a programme that started in the past and is still
 // airing (the "now" programme) must NOT be dropped from the served guide.
 procedure TStorageTests.EpgKeepsCurrentlyAiringProgramme;
 var
-  Store: IStore;
-  Progs: TEpgProgrammeList;
-  P: TEpgProgramme;
+  lStore: IStore;
+  lProgs: TEpgProgrammeList;
+  lP: TEpgProgramme;
+  lL: TEpgProgrammeList;
 begin
-  Store := NewStore(FDbPath);
-  Progs := TEpgProgrammeList.Create(True);
+  lStore := NewStore(FDbPath);
+  lProgs := TEpgProgrammeList.Create(True);
   try
-    P := TEpgProgramme.Create; P.ChannelTvgId := 'nl1';
-    P.StartUtc := IncHour(NowUtc, -1); P.StopUtc := IncHour(NowUtc, 1); P.Title := 'Now';
-    Progs.Add(P);
-    P := TEpgProgramme.Create; P.ChannelTvgId := 'nl1';
-    P.StartUtc := IncHour(NowUtc, 2); P.StopUtc := IncHour(NowUtc, 3); P.Title := 'Next';
-    Progs.Add(P);
-    Store.ReplaceEpg(1, Progs);
-  finally Progs.Free; end;
+    lP := TEpgProgramme.Create;
+    lP.ChannelTvgId := 'nl1';
+    lP.StartUtc := IncHour(NowUtc, -1);
+    lP.StopUtc := IncHour(NowUtc, 1);
+    lP.Title := 'Now';
+    lProgs.Add(lP);
+    lP := TEpgProgramme.Create;
+    lP.ChannelTvgId := 'nl1';
+    lP.StartUtc := IncHour(NowUtc, 2);
+    lP.StopUtc := IncHour(NowUtc, 3);
+    lP.Title := 'Next';
+    lProgs.Add(lP);
+    lStore.ReplaceEpg(1, lProgs);
+  finally
+    FreeAndNil(lProgs);
+  end;
 
-  var L := Store.LoadEpgForTvgIds(['nl1'], 7);
+  lL := lStore.LoadEpgForTvgIds(['nl1'], 7);
   try
-    Assert.AreEqual<Integer>(2, L.Count, 'the currently-airing (past-started) programme is still served');
-  finally L.Free; end;
+    Assert.AreEqual<Integer>(2, lL.Count, 'the currently-airing (past-started) programme is still served');
+  finally
+    FreeAndNil(lL);
+  end;
 end;
 
 // The prefix picker (DiscoverPrefixes) must surface the Unicode-bar prefixes
@@ -1106,51 +1331,52 @@ end;
 // tick them. ExtractNamePrefix treats the heavy vertical bar (U+2503) as a delimiter.
 procedure TStorageTests.DiscoverPrefixesFindsUnicodeBarPrefix;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Prefixes: TArray<TPrefixCount>;
-  P: TPrefixCount;
-  FoundNl: Integer;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lPrefixes: TArray<TPrefixCount>;
+  lP: TPrefixCount;
+  lFoundNl: Integer;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', #$2503 + 'NL' + #$2503 + ' NPO 1', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u2', #$2503 + 'NL' + #$2503 + ' NPO 2', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u3', #$2503 + 'F1 TV' + #$2503 + ' Race', '', '', 'http://p/3.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', #$2503 + 'NL' + #$2503 + ' NPO 1', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u2', #$2503 + 'NL' + #$2503 + ' NPO 2', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u3', #$2503 + 'F1 TV' + #$2503 + ' Race', '', '', 'http://p/3.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Prefixes := Store.DiscoverPrefixes(1);
-  FoundNl := -1;
-  for P in Prefixes do
-    if P.Prefix = #$2503 + 'NL' + #$2503 then
-      FoundNl := P.Count;
-  Assert.AreEqual<Integer>(2, FoundNl, 'the ┃NL┃ Unicode-bar prefix is discovered with its count');
+  lPrefixes := lStore.DiscoverPrefixes(1);
+  lFoundNl := -1;
+  for lP in lPrefixes do
+    if lP.Prefix = #$2503 + 'NL' + #$2503 then
+      lFoundNl := lP.Count;
+  Assert.AreEqual<Integer>(2, lFoundNl, 'the ┃NL┃ Unicode-bar prefix is discovered with its count');
 end;
 
 // A discovered/typed prefix can legitimately contain a LIKE wildcard ('_' or '%').
 // The prefix filter must escape it, else 'S_T' would also match 'SAT' (any char).
 procedure TStorageTests.PrefixFilterEscapesLikeWildcards;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'S_T News', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u2', 'SAT News', '', '', 'http://p/2.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', 'S_T News', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u2', 'SAT News', '', '', 'http://p/2.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  F.Prefix := 'S_T';
-  var Streams := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.Prefix := 'S_T';
+  lStreams := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, Streams.Count, 'underscore is matched literally, not as a wildcard');
-    Assert.AreEqual('S_T News', Streams[0].Name);
+    Assert.AreEqual<Integer>(1, lStreams.Count, 'underscore is matched literally, not as a wildcard');
+    Assert.AreEqual('S_T News', lStreams[0].Name);
   finally
-    Streams.Free;
+    FreeAndNil(lStreams);
   end;
 end;
 
@@ -1158,96 +1384,122 @@ end;
 // display_name '' so the channel keeps following its upstream name verbatim.
 procedure TStorageTests.AddItemsNoPrefixesKeepsUpstreamName;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  SrcId, ListId, Sid: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lSrcId, lListId, lSid: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
     // StripPrefixes left empty
-    SrcId := Store.SaveSource(Src);
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u1',
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1',
     #$2503 + 'NL' + #$2503 + ' ESPN 1 HD', '', '', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try Sid := Streams[0].Id; finally Streams.Free; end;
-  Store.AddItems(ListId, 0, [Sid]);
-
-  var Items := Store.LoadItems(ListId);
+  lLst := TCustomList.Create;
   try
-    Assert.AreEqual('', Items[0].DisplayName,
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    lSid := lStreams[0].Id;
+  finally
+    FreeAndNil(lStreams);
+  end;
+  lStore.AddItems(lListId, 0, [lSid]);
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual('', lItems[0].DisplayName,
       'no strip prefixes configured -> display_name stays empty (follows upstream)');
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 end;
 
 // strip-prefix matrix #2 — SINGLE configured prefix (and a non-matching channel).
 procedure TStorageTests.AddItemsStripsConfiguredPrefix;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  SrcId, ListId, PrefixedId, PlainId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lSrcId, lListId, lPrefixedId, lPlainId: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
-    Src.StripPrefixes := ['NL'];
-    SrcId := Store.SaveSource(Src);
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrc.StripPrefixes := ['NL'];
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u1', 'NL| NPO 1 HD', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u2', 'BBC One', '', '', 'http://p/2.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1', 'NL| NPO 1 HD', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u2', 'BBC One', '', '', 'http://p/2.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  PrefixedId := -1; PlainId := -1;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    for var I := 0 to Streams.Count - 1 do
-      if Streams[I].Name.StartsWith('NL') then PrefixedId := Streams[I].Id
-      else PlainId := Streams[I].Id;
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Streams.Free;
+    FreeAndNil(lLst);
   end;
-  Store.AddItems(ListId, 0, [PrefixedId, PlainId]);
 
-  var Items := Store.LoadItems(ListId);
+  lPrefixedId := -1;
+  lPlainId := -1;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamItemId = PrefixedId then
-        Assert.AreEqual('NPO 1 HD', Items[I].DisplayName, 'prefix stripped + trimmed into display name')
+    for i := 0 to lStreams.Count - 1 do
+      if lStreams[i].Name.StartsWith('NL') then
+        lPrefixedId := lStreams[i].Id
       else
-        Assert.AreEqual('', Items[I].DisplayName, 'unprefixed name keeps following the upstream name');
+        lPlainId := lStreams[i].Id;
   finally
-    Items.Free;
+    FreeAndNil(lStreams);
+  end;
+  lStore.AddItems(lListId, 0, [lPrefixedId, lPlainId]);
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamItemId = lPrefixedId then
+        Assert.AreEqual('NPO 1 HD', lItems[i].DisplayName, 'prefix stripped + trimmed into display name')
+      else
+        Assert.AreEqual('', lItems[i].DisplayName, 'unprefixed name keeps following the upstream name');
+  finally
+    FreeAndNil(lItems);
   end;
 end;
 
@@ -1258,48 +1510,57 @@ end;
 // multi-prefix broke — exactly the "┃NL┃ ESPN" the operator reported.)
 procedure TStorageTests.AddItemsStripsOneOfMultipleSemicolonPrefixes;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  SrcId, ListId, EspnId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lSrcId, lListId, lEspnId: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
     // three tokens; the Unicode heavy bar (U+2503) and an embedded space ("F1 TV")
-    Src.StripPrefixes := [#$2503 + 'F1 TV' + #$2503, #$2503 + 'NL' + #$2503];
-    SrcId := Store.SaveSource(Src);
+    lSrc.StripPrefixes := [#$2503 + 'F1 TV' + #$2503, #$2503 + 'NL' + #$2503];
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u1',
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1',
     #$2503 + 'NL' + #$2503 + ' ESPN 1 HD', '', '', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    EspnId := Streams[0].Id;
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Streams.Free;
+    FreeAndNil(lLst);
   end;
-  Store.AddItems(ListId, 0, [EspnId]);
 
-  var Items := Store.LoadItems(ListId);
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual('ESPN 1 HD', Items[0].DisplayName,
+    lEspnId := lStreams[0].Id;
+  finally
+    FreeAndNil(lStreams);
+  end;
+  lStore.AddItems(lListId, 0, [lEspnId]);
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual('ESPN 1 HD', lItems[0].DisplayName,
       'the matching ┃NL┃ prefix is stripped even with several ;-delimited tokens');
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 end;
 
@@ -1308,81 +1569,95 @@ end;
 // while leaving manual renames alone.
 procedure TStorageTests.RestripAllItemsAppliesCurrentPrefixes;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  SrcId, ListId, NpoId, RenId, Updated: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lSrcId, lListId, lNpoId, lRenId, lUpdated: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lItems: TCustomItemList;
+  lSrcs: TObjectList<TSourceConfig>;
 begin
-  Store := NewStore(FDbPath);
+  lStore := NewStore(FDbPath);
   // source starts with NO strip prefixes
-  Src := TSourceConfig.Create;
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
-    SrcId := Store.SaveSource(Src);
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u1', 'NL| NPO 1 HD', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u2', 'NL| Sport', '', '', 'http://p/2.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1', 'NL| NPO 1 HD', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u2', 'NL| Sport', '', '', 'http://p/2.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  NpoId := -1; RenId := -1;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    for var I := 0 to Streams.Count - 1 do
-      if Streams[I].Name.Contains('NPO') then NpoId := Streams[I].Id
-      else RenId := Streams[I].Id;
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Streams.Free;
+    FreeAndNil(lLst);
+  end;
+
+  lNpoId := -1;
+  lRenId := -1;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    for i := 0 to lStreams.Count - 1 do
+      if lStreams[i].Name.Contains('NPO') then
+        lNpoId := lStreams[i].Id
+      else
+        lRenId := lStreams[i].Id;
+  finally
+    FreeAndNil(lStreams);
   end;
   // added while the source had no prefixes -> display_name '' (follows upstream)
-  Store.AddItems(ListId, 0, [NpoId, RenId]);
+  lStore.AddItems(lListId, 0, [lNpoId, lRenId]);
   // manually rename the Sport channel
-  var Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamItemId = RenId then
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamItemId = lRenId then
       begin
-        Items[I].DisplayName := 'My Sport';
-        Store.SaveItem(Items[I]);
+        lItems[i].DisplayName := 'My Sport';
+        lStore.SaveItem(lItems[i]);
       end;
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 
   // now configure the strip prefix and apply to all
-  var Srcs := Store.LoadSources;
+  lSrcs := lStore.LoadSources;
   try
-    for var I := 0 to Srcs.Count - 1 do
-      if Srcs[I].Id = SrcId then
+    for i := 0 to lSrcs.Count - 1 do
+      if lSrcs[i].Id = lSrcId then
       begin
-        Srcs[I].StripPrefixes := ['NL'];
-        Store.SaveSource(Srcs[I]);
+        lSrcs[i].StripPrefixes := ['NL'];
+        lStore.SaveSource(lSrcs[i]);
       end;
   finally
-    Srcs.Free;
+    FreeAndNil(lSrcs);
   end;
-  Updated := Store.RestripAllItems;
-  Assert.AreEqual<Integer>(1, Updated, 'only the auto-named NPO channel is restripped');
+  lUpdated := lStore.RestripAllItems;
+  Assert.AreEqual<Integer>(1, lUpdated, 'only the auto-named NPO channel is restripped');
 
-  Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamItemId = NpoId then
-        Assert.AreEqual('NPO 1 HD', Items[I].DisplayName, 'auto channel got the prefix stripped')
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamItemId = lNpoId then
+        Assert.AreEqual('NPO 1 HD', lItems[i].DisplayName, 'auto channel got the prefix stripped')
       else
-        Assert.AreEqual('My Sport', Items[I].DisplayName, 'manual rename is preserved');
+        Assert.AreEqual('My Sport', lItems[i].DisplayName, 'manual rename is preserved');
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 end;
 
@@ -1391,58 +1666,73 @@ end;
 // existed. (Was broken: the whole "┃F1 TV┃;┃NL┃" string parsed as one token.)
 procedure TStorageTests.RestripAllItemsHandlesMultipleSemicolonPrefixes;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  SrcId, ListId, EspnId, Updated: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lSrcId, lListId, lEspnId, lUpdated: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lSrcs: TObjectList<TSourceConfig>;
+  i: Integer;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
+  lStore := NewStore(FDbPath);
   // source starts with NO strip prefixes -> channel added with display_name ''
-  Src := TSourceConfig.Create;
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
-    SrcId := Store.SaveSource(Src);
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u1',
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1',
     #$2503 + 'NL' + #$2503 + ' ESPN 1 HD', '', '', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
+  lLst := TCustomList.Create;
+  try
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
 
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try EspnId := Streams[0].Id; finally Streams.Free; end;
-  Store.AddItems(ListId, 0, [EspnId]); // display_name '' (no prefixes yet)
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    lEspnId := lStreams[0].Id;
+  finally
+    FreeAndNil(lStreams);
+  end;
+  lStore.AddItems(lListId, 0, [lEspnId]); // display_name '' (no prefixes yet)
 
   // now configure SEVERAL strip prefixes and apply to all
-  var Srcs := Store.LoadSources;
+  lSrcs := lStore.LoadSources;
   try
-    for var I := 0 to Srcs.Count - 1 do
-      if Srcs[I].Id = SrcId then
+    for i := 0 to lSrcs.Count - 1 do
+      if lSrcs[i].Id = lSrcId then
       begin
-        Srcs[I].StripPrefixes := [#$2503 + 'F1 TV' + #$2503, #$2503 + 'NL' + #$2503];
-        Store.SaveSource(Srcs[I]);
+        lSrcs[i].StripPrefixes := [#$2503 + 'F1 TV' + #$2503, #$2503 + 'NL' + #$2503];
+        lStore.SaveSource(lSrcs[i]);
       end;
   finally
-    Srcs.Free;
+    FreeAndNil(lSrcs);
   end;
-  Updated := Store.RestripAllItems;
-  Assert.AreEqual<Integer>(1, Updated, 'the ┃NL┃ ESPN channel is restripped');
+  lUpdated := lStore.RestripAllItems;
+  Assert.AreEqual<Integer>(1, lUpdated, 'the ┃NL┃ ESPN channel is restripped');
 
-  var Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    Assert.AreEqual('ESPN 1 HD', Items[0].DisplayName,
+    Assert.AreEqual('ESPN 1 HD', lItems[0].DisplayName,
       'restrip-all splits ;-delimited prefixes and strips the matching one');
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 end;
 
@@ -1450,121 +1740,144 @@ end;
 // auto-named items follow the new rule, but a manual rename is left untouched.
 procedure TStorageTests.RestripUpdatesAutoNamesKeepsManualRenames;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  SrcId, ListId, NpoStream, SportStream, Updated: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lSrcId, lListId, lNpoStream, lSportStream, lUpdated: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
-    Src.StripPrefixes := ['NL'];
-    SrcId := Store.SaveSource(Src);
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrc.StripPrefixes := ['NL'];
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u1', 'NL| NPO 1 HD', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u2', 'NL| Sport', '', '', 'http://p/2.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1', 'NL| NPO 1 HD', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u2', 'NL| Sport', '', '', 'http://p/2.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  NpoStream := -1; SportStream := -1;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    for var I := 0 to Streams.Count - 1 do
-      if Streams[I].Name.Contains('NPO') then NpoStream := Streams[I].Id
-      else SportStream := Streams[I].Id;
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Streams.Free;
+    FreeAndNil(lLst);
+  end;
+
+  lNpoStream := -1;
+  lSportStream := -1;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    for i := 0 to lStreams.Count - 1 do
+      if lStreams[i].Name.Contains('NPO') then
+        lNpoStream := lStreams[i].Id
+      else
+        lSportStream := lStreams[i].Id;
+  finally
+    FreeAndNil(lStreams);
   end;
   // added with NL configured -> both display names stripped ("NPO 1 HD", "Sport")
-  Store.AddItems(ListId, 0, [NpoStream, SportStream]);
+  lStore.AddItems(lListId, 0, [lNpoStream, lSportStream]);
 
   // operator manually renames the Sport channel
-  var Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamItemId = SportStream then
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamItemId = lSportStream then
       begin
-        Items[I].DisplayName := 'Mijn Sport';
-        Store.SaveItem(Items[I]);
+        lItems[i].DisplayName := 'Mijn Sport';
+        lStore.SaveItem(lItems[i]);
       end;
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 
   // drop the NL rule: the auto-named NPO reverts to upstream, the manual stays
-  Updated := Store.RestripSourceItems(SrcId, ['NL'], [], [], []);
-  Assert.AreEqual<Integer>(1, Updated, 'only the auto-named item is rewritten');
+  lUpdated := lStore.RestripSourceItems(lSrcId, ['NL'], [], [], []);
+  Assert.AreEqual<Integer>(1, lUpdated, 'only the auto-named item is rewritten');
 
-  Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamItemId = NpoStream then
-        Assert.AreEqual('', Items[I].DisplayName, 'auto name follows the new (empty) rule')
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamItemId = lNpoStream then
+        Assert.AreEqual('', lItems[i].DisplayName, 'auto name follows the new (empty) rule')
       else
-        Assert.AreEqual('Mijn Sport', Items[I].DisplayName, 'manual rename preserved');
+        Assert.AreEqual('Mijn Sport', lItems[i].DisplayName, 'manual rename preserved');
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 end;
 
 procedure TStorageTests.AddItemsStripsConfiguredSuffix;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  SrcId, ListId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lSrcId, lListId: Integer;
+  lF: TCatalogFilter;
+  lSrcs: TObjectList<TSourceConfig>;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
-    Src.StripPrefixes := ['NL |'];
-    Src.StripSuffixes := ['(S)'];
-    SrcId := Store.SaveSource(Src);
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrc.StripPrefixes := ['NL |'];
+    lSrc.StripSuffixes := ['(S)'];
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
-  var Srcs := Store.LoadSources;
+  lSrcs := lStore.LoadSources;
   try
-    Assert.AreEqual<Integer>(1, Length(Srcs[0].StripSuffixes), 'strip suffixes round-trip');
-    Assert.AreEqual('(S)', Srcs[0].StripSuffixes[0]);
+    Assert.AreEqual<Integer>(1, Length(lSrcs[0].StripSuffixes), 'strip suffixes round-trip');
+    Assert.AreEqual('(S)', lSrcs[0].StripSuffixes[0]);
   finally
-    Srcs.Free;
+    FreeAndNil(lSrcs);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, 'u1', 'NL | HISTORY HD (S)', '', '', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1', 'NL | HISTORY HD (S)', '', '', 'http://p/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lLst := TCustomList.Create;
   try
-    Store.AddItems(ListId, 0, [Streams[0].Id]);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Streams.Free;
+    FreeAndNil(lLst);
   end;
-  var Items := Store.LoadItems(ListId);
+
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual('HISTORY HD', Items[0].DisplayName, 'prefix and suffix stripped');
-    Assert.AreEqual('NL | HISTORY HD (S)', Items[0].StreamName, 'original name still available');
+    lStore.AddItems(lListId, 0, [lStreams[0].Id]);
   finally
-    Items.Free;
+    FreeAndNil(lStreams);
+  end;
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual('HISTORY HD', lItems[0].DisplayName, 'prefix and suffix stripped');
+    Assert.AreEqual('NL | HISTORY HD (S)', lItems[0].StreamName, 'original name still available');
+  finally
+    FreeAndNil(lItems);
   end;
 end;
 
@@ -1576,76 +1889,82 @@ procedure TStorageTests.StreamVariantsFindsAllQualitiesOfOneChannel;
 const
   RAW_SC = #$0280#$1D00#$1D21;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  SrcId, Src2: Integer;
-  Ids: TDictionary<string, Integer>;
-  F: TCatalogFilter;
-  V: TArray<TStreamVariant>;
-  Names: string;
-  X: TStreamVariant;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lSrcId, lSrc2: Integer;
+  lIds: TDictionary<string, Integer>;
+  lF: TCatalogFilter;
+  lV: TArray<TStreamVariant>;
+  lNames: string;
+  lX: TStreamVariant;
+  lStreams: TStreamItemList;
+  i: Integer;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'ProviderB'; Src.Kind := skXtream; Src.Url := 'http://h';
-    Src.StripPrefixes := ['NL |'];
-    SrcId := Store.SaveSource(Src);
+    lSrc.Name := 'ProviderB';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrc.StripPrefixes := ['NL |'];
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
-  Src := TSourceConfig.Create;
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'OTHER'; Src.Kind := skXtream; Src.Url := 'http://o';
-    Src.StripPrefixes := ['NL:'];
-    Src2 := Store.SaveSource(Src);
+    lSrc.Name := 'OTHER';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://o';
+    lSrc.StripPrefixes := ['NL:'];
+    lSrc2 := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '1', 'NL | NPO 1 ' + RAW_SC, '', 'npo1.nl', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '2', 'NL | NPO 1 4K+', '', 'npo1.nl', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '3', 'NL | NPO 1 HD', '', 'npo1.nl', 'http://p/3.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '4', 'NL | NPO 1 UHD', '', '', 'http://p/4.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '5', 'NL | NPO 1 EXTRA ' + RAW_SC, '', 'npo1extra.nl', 'http://p/5.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '6', 'NL | NPO 2 HD', '', 'npo2.nl', 'http://p/6.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '7', 'NL | NPO1 FHD', '', 'npo1.nl', 'http://p/7.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Snap := TSourceSnapshot.Create(Src2);
-  Snap.Streams.Add(MakeStream(Src2, ctLive, '1', 'NL: NPO 1 HD', '', '', 'http://o/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '1', 'NL | NPO 1 ' + RAW_SC, '', 'npo1.nl', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '2', 'NL | NPO 1 4K+', '', 'npo1.nl', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '3', 'NL | NPO 1 HD', '', 'npo1.nl', 'http://p/3.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '4', 'NL | NPO 1 UHD', '', '', 'http://p/4.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '5', 'NL | NPO 1 EXTRA ' + RAW_SC, '', 'npo1extra.nl', 'http://p/5.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '6', 'NL | NPO 2 HD', '', 'npo2.nl', 'http://p/6.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '7', 'NL | NPO1 FHD', '', 'npo1.nl', 'http://p/7.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lSnap := TSourceSnapshot.Create(lSrc2);
+  lSnap.Streams.Add(MakeStream(lSrc2, ctLive, '1', 'NL: NPO 1 HD', '', '', 'http://o/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Ids := TDictionary<string, Integer>.Create;
+  lIds := TDictionary<string, Integer>.Create;
   try
-    F := Default(TCatalogFilter);
-    F.SourceId := SrcId;
-    var Streams := Store.LoadStreams(F);
+    lF := Default(TCatalogFilter);
+    lF.SourceId := lSrcId;
+    lStreams := lStore.LoadStreams(lF);
     try
-      for var I := 0 to Streams.Count - 1 do
-        Ids.Add(Streams[I].UpstreamId, Streams[I].Id);
+      for i := 0 to lStreams.Count - 1 do
+        lIds.Add(lStreams[i].UpstreamId, lStreams[i].Id);
     finally
-      Streams.Free;
+      FreeAndNil(lStreams);
     end;
 
     // started from the RAW channel, own source only
-    V := Store.FindStreamVariants(Ids['1'], False, 0);
-    Names := '';
-    for X in V do
-      Names := Names + X.Quality + '/' + X.MatchedBy + ' ';
-    Assert.AreEqual('4K+/name UHD/name FHD/tvg RAW/self HD/name ', Names, 'own-source variants');
+    lV := lStore.FindStreamVariants(lIds['1'], False, 0);
+    lNames := '';
+    for lX in lV do
+      lNames := lNames + lX.Quality + '/' + lX.MatchedBy + ' ';
+    Assert.AreEqual('4K+/name UHD/name FHD/tvg RAW/self HD/name ', lNames, 'own-source variants');
 
     // all sources: the other provider's NPO 1 HD comes last
-    V := Store.FindStreamVariants(Ids['4'], True, 0);
-    Assert.AreEqual(6, Length(V), 'all sources');
-    Assert.AreEqual(Src2, V[High(V)].SourceId, 'other source last');
-    Assert.AreEqual('UHD', V[1].Quality, 'self (UHD) in the ladder');
-    Assert.IsTrue(V[1].IsSelf);
+    lV := lStore.FindStreamVariants(lIds['4'], True, 0);
+    Assert.AreEqual(6, Length(lV), 'all sources');
+    Assert.AreEqual(lSrc2, lV[High(lV)].SourceId, 'other source last');
+    Assert.AreEqual('UHD', lV[1].Quality, 'self (UHD) in the ladder');
+    Assert.IsTrue(lV[1].IsSelf);
   finally
-    Ids.Free;
+    FreeAndNil(lIds);
   end;
 end;
 
@@ -1658,129 +1977,141 @@ procedure TStorageTests.RawGroupReplacedInPlaceBy4KPlus;
 const
   RAW_SC = #$0280#$1D00#$1D21;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  SrcId, ListId, GroupId: Integer;
-  Ids: TDictionary<string, Integer>;
-  F: TCatalogFilter;
-  Reps: TArray<TItemStreamReplace>;
-  R: TItemStreamReplace;
-  Npo1Item: Integer;
-  Items: TCustomItemList;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lSrcId, lListId, lGroupId: Integer;
+  lIds: TDictionary<string, Integer>;
+  lF: TCatalogFilter;
+  lReps: TArray<TItemStreamReplace>;
+  lR: TItemStreamReplace;
+  lNpo1Item: Integer;
+  lItems: TCustomItemList;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lMatches: TArray<TVariantMatch>;
+  lM: TVariantMatch;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'ProviderB'; Src.Kind := skXtream; Src.Url := 'http://h';
-    Src.StripPrefixes := ['NL |'];
-    SrcId := Store.SaveSource(Src);
+    lSrc.Name := 'ProviderB';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrc.StripPrefixes := ['NL |'];
+    lSrcId := lStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '1', 'NL | NPO 1 ' + RAW_SC, '', 'npo1', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '2', 'NL | NPO 1 4K+', '', 'npo1', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '3', 'NL | HISTORY ' + RAW_SC + ' (S)', '', '', 'http://p/3.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '4', 'NL | HISTORY 4K+', '', '', 'http://p/4.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '5', 'NL | BBC NL ' + RAW_SC, '', '', 'http://p/5.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '6', 'NL | NPO 1 EXTRA ' + RAW_SC, '', '', 'http://p/6.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '7', 'NL | NPO 1 UHD', '', '', 'http://p/7.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '1', 'NL | NPO 1 ' + RAW_SC, '', 'npo1', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '2', 'NL | NPO 1 4K+', '', 'npo1', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '3', 'NL | HISTORY ' + RAW_SC + ' (S)', '', '', 'http://p/3.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '4', 'NL | HISTORY 4K+', '', '', 'http://p/4.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '5', 'NL | BBC NL ' + RAW_SC, '', '', 'http://p/5.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '6', 'NL | NPO 1 EXTRA ' + RAW_SC, '', '', 'http://p/6.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '7', 'NL | NPO 1 UHD', '', '', 'http://p/7.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  Grp := TCustomGroup.Create;
+  lLst := TCustomList.Create;
   try
-    Grp.ListId := ListId; Grp.Name := 'Standaard';
-    GroupId := Store.SaveGroup(Grp);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Grp.Free;
+    FreeAndNil(lLst);
+  end;
+  lGrp := TCustomGroup.Create;
+  try
+    lGrp.ListId := lListId;
+    lGrp.Name := 'Standaard';
+    lGroupId := lStore.SaveGroup(lGrp);
+  finally
+    FreeAndNil(lGrp);
   end;
 
-  Ids := TDictionary<string, Integer>.Create;
+  lIds := TDictionary<string, Integer>.Create;
   try
-    F := Default(TCatalogFilter);
-    var Streams := Store.LoadStreams(F);
+    lF := Default(TCatalogFilter);
+    lStreams := lStore.LoadStreams(lF);
     try
-      for var I := 0 to Streams.Count - 1 do
-        Ids.Add(Streams[I].UpstreamId, Streams[I].Id);
+      for i := 0 to lStreams.Count - 1 do
+        lIds.Add(lStreams[i].UpstreamId, lStreams[i].Id);
     finally
-      Streams.Free;
+      FreeAndNil(lStreams);
     end;
-    Store.AddItems(ListId, GroupId, [Ids['1'], Ids['3'], Ids['5'], Ids['6']]);
+    lStore.AddItems(lListId, lGroupId, [lIds['1'], lIds['3'], lIds['5'], lIds['6']]);
 
     // give NPO 1 a channel number + tvg-id override that must survive the swap
-    Npo1Item := 0;
-    Items := Store.LoadItems(ListId);
+    lNpo1Item := 0;
+    lItems := lStore.LoadItems(lListId);
     try
-      for var I := 0 to Items.Count - 1 do
-        if Items[I].StreamItemId = Ids['1'] then
+      for i := 0 to lItems.Count - 1 do
+        if lItems[i].StreamItemId = lIds['1'] then
         begin
-          Assert.AreEqual('NPO 1 ' + RAW_SC, Items[I].DisplayName, 'prefix stripped on the list');
-          Npo1Item := Items[I].Id;
-          Items[I].ChannelNumber := 5;
-          Items[I].TvgIdOverride := 'npo1.nl';
-          Store.SaveItem(Items[I]);
+          Assert.AreEqual('NPO 1 ' + RAW_SC, lItems[i].DisplayName, 'prefix stripped on the list');
+          lNpo1Item := lItems[i].Id;
+          lItems[i].ChannelNumber := 5;
+          lItems[i].TvgIdOverride := 'npo1.nl';
+          lStore.SaveItem(lItems[i]);
         end;
     finally
-      Items.Free;
+      FreeAndNil(lItems);
     end;
 
-    var Matches := Store.FindQualityVariants(ListId, GroupId, '4K+');
-    Assert.AreEqual<Integer>(4, Length(Matches));
-    Reps := [];
-    for var M in Matches do
+    lMatches := lStore.FindQualityVariants(lListId, lGroupId, '4K+');
+    Assert.AreEqual<Integer>(4, Length(lMatches));
+    lReps := [];
+    for lM in lMatches do
     begin
-      if M.StreamId = Ids['1'] then
+      if lM.StreamId = lIds['1'] then
       begin
-        Assert.AreEqual(Ids['2'], M.CandidateStreamId, 'NPO 1 RAW -> NPO 1 4K+ despite the stripped prefix');
-        Assert.AreEqual('RAW', M.Quality);
+        Assert.AreEqual(lIds['2'], lM.CandidateStreamId, 'NPO 1 RAW -> NPO 1 4K+ despite the stripped prefix');
+        Assert.AreEqual('RAW', lM.Quality);
       end
-      else if M.StreamId = Ids['3'] then
-        Assert.AreEqual(Ids['4'], M.CandidateStreamId, 'HISTORY RAW (S) -> HISTORY 4K+ (tag after quality)')
-      else if M.StreamId = Ids['5'] then
-        Assert.AreEqual(0, M.CandidateStreamId, 'BBC NL has no 4K+')
-      else if M.StreamId = Ids['6'] then
-        Assert.AreEqual(0, M.CandidateStreamId, 'NPO 1 EXTRA is not NPO 1');
-      if M.CandidateStreamId > 0 then
+      else if lM.StreamId = lIds['3'] then
+        Assert.AreEqual(lIds['4'], lM.CandidateStreamId, 'HISTORY RAW (S) -> HISTORY 4K+ (tag after quality)')
+      else if lM.StreamId = lIds['5'] then
+        Assert.AreEqual(0, lM.CandidateStreamId, 'BBC NL has no 4K+')
+      else if lM.StreamId = lIds['6'] then
+        Assert.AreEqual(0, lM.CandidateStreamId, 'NPO 1 EXTRA is not NPO 1');
+      if lM.CandidateStreamId > 0 then
       begin
-        R.ItemId := M.ItemId;
-        R.StreamId := M.CandidateStreamId;
-        Reps := Reps + [R];
+        lR.ItemId := lM.ItemId;
+        lR.StreamId := lM.CandidateStreamId;
+        lReps := lReps + [lR];
       end;
     end;
 
-    Assert.AreEqual<Integer>(2, Store.ReplaceItemStreams(ListId, Reps), 'two channels swapped');
+    Assert.AreEqual<Integer>(2, lStore.ReplaceItemStreams(lListId, lReps), 'two channels swapped');
     // replacing again is a no-op (the 4K+ streams are on the list now)
-    Assert.AreEqual<Integer>(0, Store.ReplaceItemStreams(ListId, Reps), 'already on the list -> skipped');
+    Assert.AreEqual<Integer>(0, lStore.ReplaceItemStreams(lListId, lReps), 'already on the list -> skipped');
 
-    Items := Store.LoadItems(ListId);
+    lItems := lStore.LoadItems(lListId);
     try
-      Assert.AreEqual<Integer>(4, Items.Count, 'replaced in place, nothing added');
-      for var I := 0 to Items.Count - 1 do
+      Assert.AreEqual<Integer>(4, lItems.Count, 'replaced in place, nothing added');
+      for i := 0 to lItems.Count - 1 do
       begin
-        Assert.AreEqual(GroupId, Items[I].CustomGroupId, 'stays in its group');
-        if Items[I].Id = Npo1Item then
+        Assert.AreEqual(lGroupId, lItems[i].CustomGroupId, 'stays in its group');
+        if lItems[i].Id = lNpo1Item then
         begin
-          Assert.AreEqual(Ids['2'], Items[I].StreamItemId);
-          Assert.AreEqual(5, Items[I].ChannelNumber, 'channel number kept');
-          Assert.AreEqual('npo1.nl', Items[I].TvgIdOverride, 'tvg-id override kept');
-          Assert.AreEqual('NPO 1 4K+', Items[I].DisplayName, 'auto name follows the new channel');
-          Assert.AreEqual('NL | NPO 1 4K+', Items[I].StreamName);
+          Assert.AreEqual(lIds['2'], lItems[i].StreamItemId);
+          Assert.AreEqual(5, lItems[i].ChannelNumber, 'channel number kept');
+          Assert.AreEqual('npo1.nl', lItems[i].TvgIdOverride, 'tvg-id override kept');
+          Assert.AreEqual('NPO 1 4K+', lItems[i].DisplayName, 'auto name follows the new channel');
+          Assert.AreEqual('NL | NPO 1 4K+', lItems[i].StreamName);
         end
-        else if Items[I].StreamItemId = Ids['4'] then
-          Assert.AreEqual('HISTORY 4K+', Items[I].DisplayName);
+        else if lItems[i].StreamItemId = lIds['4'] then
+          Assert.AreEqual('HISTORY 4K+', lItems[i].DisplayName);
       end;
     finally
-      Items.Free;
+      FreeAndNil(lItems);
     end;
   finally
-    Ids.Free;
+    FreeAndNil(lIds);
   end;
 end;
 
@@ -1790,267 +2121,379 @@ end;
 // untouched; a result equal to the upstream name is stored as ''.
 procedure TStorageTests.RestripGroupItemsCleansExistingGroup;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  SrcId, ListId, GroupId: Integer;
-  F: TCatalogFilter;
-  Ids: TArray<Integer>;
-  Changes: TArray<TNameChange>;
-  Items: TCustomItemList;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lSrcId, lListId, lGroupId: Integer;
+  lF: TCatalogFilter;
+  lIds: TArray<Integer>;
+  lChanges: TArray<TNameChange>;
+  lItems: TCustomItemList;
+  lStreams: TStreamItemList;
+  i: Integer;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://h';
-    SrcId := Store.SaveSource(Src); // no strip rules yet
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://h';
+    lSrcId := lStore.SaveSource(lSrc); // no strip rules yet
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '1', 'NL | HISTORY HD (S)', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '2', 'NL | NPO 1 HD', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '3', 'NL | SPORT', '', '', 'http://p/3.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'G'; GroupId := Store.SaveGroup(Grp); finally Grp.Free; end;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '1', 'NL | HISTORY HD (S)', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '2', 'NL | NPO 1 HD', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '3', 'NL | SPORT', '', '', 'http://p/3.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lLst := TCustomList.Create;
+  try
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+  lGrp := TCustomGroup.Create;
+  try
+    lGrp.ListId := lListId;
+    lGrp.Name := 'G';
+    lGroupId := lStore.SaveGroup(lGrp);
+  finally
+    FreeAndNil(lGrp);
+  end;
 
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    Ids := [];
-    for var I := 0 to Streams.Count - 1 do
-      Ids := Ids + [Streams[I].Id];
+    lIds := [];
+    for i := 0 to lStreams.Count - 1 do
+      lIds := lIds + [lStreams[i].Id];
   finally
-    Streams.Free;
+    FreeAndNil(lStreams);
   end;
-  Store.AddItems(ListId, GroupId, Ids); // added unstripped (no rules at the time)
+  lStore.AddItems(lListId, lGroupId, lIds); // added unstripped (no rules at the time)
 
   // a manual rename without any of the tokens must survive
-  Items := Store.LoadItems(ListId);
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamName = 'NL | SPORT' then
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamName = 'NL | SPORT' then
       begin
-        Items[I].DisplayName := 'Mijn Sport';
-        Store.SaveItem(Items[I]);
+        lItems[i].DisplayName := 'Mijn Sport';
+        lStore.SaveItem(lItems[i]);
       end;
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 
   // preview with one-off tokens: nothing written yet
-  Changes := Store.RestripGroupItems(ListId, GroupId, ['NL |'], ['(S)'], True);
-  Assert.AreEqual<Integer>(2, Length(Changes), 'HISTORY + NPO 1 change, Mijn Sport not');
-  Items := Store.LoadItems(ListId);
+  lChanges := lStore.RestripGroupItems(lListId, lGroupId, ['NL |'], ['(S)'], True);
+  Assert.AreEqual<Integer>(2, Length(lChanges), 'HISTORY + NPO 1 change, Mijn Sport not');
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamName <> 'NL | SPORT' then
-        Assert.AreEqual('', Items[I].DisplayName, 'dry run writes nothing');
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamName <> 'NL | SPORT' then
+        Assert.AreEqual('', lItems[i].DisplayName, 'dry run writes nothing');
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 
   // apply
-  Changes := Store.RestripGroupItems(ListId, GroupId, ['NL |'], ['(S)'], False);
-  Assert.AreEqual<Integer>(2, Length(Changes));
-  Items := Store.LoadItems(ListId);
+  lChanges := lStore.RestripGroupItems(lListId, lGroupId, ['NL |'], ['(S)'], False);
+  Assert.AreEqual<Integer>(2, Length(lChanges));
+  lItems := lStore.LoadItems(lListId);
   try
-    for var I := 0 to Items.Count - 1 do
-      if Items[I].StreamName = 'NL | HISTORY HD (S)' then
-        Assert.AreEqual('HISTORY HD', Items[I].DisplayName)
-      else if Items[I].StreamName = 'NL | NPO 1 HD' then
-        Assert.AreEqual('NPO 1 HD', Items[I].DisplayName)
+    for i := 0 to lItems.Count - 1 do
+      if lItems[i].StreamName = 'NL | HISTORY HD (S)' then
+        Assert.AreEqual('HISTORY HD', lItems[i].DisplayName)
+      else if lItems[i].StreamName = 'NL | NPO 1 HD' then
+        Assert.AreEqual('NPO 1 HD', lItems[i].DisplayName)
       else
-        Assert.AreEqual('Mijn Sport', Items[I].DisplayName, 'manual rename kept');
+        Assert.AreEqual('Mijn Sport', lItems[i].DisplayName, 'manual rename kept');
   finally
-    Items.Free;
+    FreeAndNil(lItems);
   end;
 
   // running again changes nothing (idempotent)
-  Assert.AreEqual<Integer>(0, Length(Store.RestripGroupItems(ListId, GroupId, ['NL |'], ['(S)'], False)));
+  Assert.AreEqual<Integer>(0, Length(lStore.RestripGroupItems(lListId, lGroupId, ['NL |'], ['(S)'], False)));
 end;
 
 procedure TStorageTests.ClearGroupItemsRemovesOnlyThatGroup;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId, GroupId, Removed: Integer;
-  Ids: TArray<Integer>;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lListId, lGroupId, lRemoved: Integer;
+  lIds: TArray<Integer>;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'b', 'B', '', '', 'http://p/b.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'c', 'C', '', '', 'http://p/c.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'b', 'B', '', '', 'http://p/b.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'c', 'C', '', '', 'http://p/c.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'G'; GroupId := Store.SaveGroup(Grp); finally Grp.Free; end;
-
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try Ids := [Streams[0].Id, Streams[1].Id, Streams[2].Id]; finally Streams.Free; end;
-
-  Store.AddItems(ListId, GroupId, [Ids[0], Ids[1]]); // two into the custom group
-  Store.AddItems(ListId, 0, [Ids[2]]);               // one into the upstream group
-
-  Removed := Store.ClearGroupItems(ListId, GroupId);
-  Assert.AreEqual<Integer>(2, Removed, 'only the two in the group are removed');
-
-  var Items := Store.LoadItems(ListId);
+  lLst := TCustomList.Create;
   try
-    Assert.AreEqual<Integer>(1, Items.Count, 'the upstream-group item survives');
-    Assert.AreEqual<Integer>(0, Items[0].CustomGroupId);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Items.Free;
+    FreeAndNil(lLst);
+  end;
+  lGrp := TCustomGroup.Create;
+  try
+    lGrp.ListId := lListId;
+    lGrp.Name := 'G';
+    lGroupId := lStore.SaveGroup(lGrp);
+  finally
+    FreeAndNil(lGrp);
+  end;
+
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    lIds := [lStreams[0].Id, lStreams[1].Id, lStreams[2].Id];
+  finally
+    FreeAndNil(lStreams);
+  end;
+
+  lStore.AddItems(lListId, lGroupId, [lIds[0], lIds[1]]); // two into the custom group
+  lStore.AddItems(lListId, 0, [lIds[2]]);               // one into the upstream group
+
+  lRemoved := lStore.ClearGroupItems(lListId, lGroupId);
+  Assert.AreEqual<Integer>(2, lRemoved, 'only the two in the group are removed');
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lItems.Count, 'the upstream-group item survives');
+    Assert.AreEqual<Integer>(0, lItems[0].CustomGroupId);
+  finally
+    FreeAndNil(lItems);
   end;
 end;
 
 procedure TStorageTests.DeleteListCascades;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lListId: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lLists: TObjectList<TCustomList>;
+  lGroups: TCustomGroupList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'A', '', '', 'http://p/a.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'Doomed'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'G'; Store.SaveGroup(Grp); finally Grp.Free; end;
+  lLst := TCustomList.Create;
+  try
+    lLst.Name := 'Doomed';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+  lGrp := TCustomGroup.Create;
+  try
+    lGrp.ListId := lListId;
+    lGrp.Name := 'G';
+    lStore.SaveGroup(lGrp);
+  finally
+    FreeAndNil(lGrp);
+  end;
 
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try Store.AddItems(ListId, 0, [Streams[0].Id]); finally Streams.Free; end;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    lStore.AddItems(lListId, 0, [lStreams[0].Id]);
+  finally
+    FreeAndNil(lStreams);
+  end;
 
-  Store.DeleteList(ListId);
+  lStore.DeleteList(lListId);
 
-  var Lists := Store.LoadLists;
-  try Assert.AreEqual<Integer>(0, Lists.Count, 'list gone'); finally Lists.Free; end;
-  var Groups := Store.LoadGroups(ListId);
-  try Assert.AreEqual<Integer>(0, Groups.Count, 'groups gone'); finally Groups.Free; end;
-  var Items := Store.LoadItems(ListId);
-  try Assert.AreEqual<Integer>(0, Items.Count, 'items gone'); finally Items.Free; end;
+  lLists := lStore.LoadLists;
+  try
+    Assert.AreEqual<Integer>(0, lLists.Count, 'list gone');
+  finally
+    FreeAndNil(lLists);
+  end;
+  lGroups := lStore.LoadGroups(lListId);
+  try
+    Assert.AreEqual<Integer>(0, lGroups.Count, 'groups gone');
+  finally
+    FreeAndNil(lGroups);
+  end;
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(0, lItems.Count, 'items gone');
+  finally
+    FreeAndNil(lItems);
+  end;
 end;
 
 procedure TStorageTests.NameFilterHidesStreamsAndCategories;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lS1: TStreamItemList;
+  lC1: TCategoryList;
+  lS2: TStreamItemList;
+  lS3: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', 'NL| Two', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'UK| Three', '', '', 'http://p/3.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'nl'; Cat.Name := 'NL| General';
-  Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'uk'; Cat.Name := 'UK| Sport';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', 'NL| Two', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'UK| Three', '', '', 'http://p/3.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'nl';
+  lCat.Name := 'NL| General';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'uk';
+  lCat.Name := 'UK| Sport';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
   // exclude NL| -> only UK remains, in streams AND categories
-  F := Default(TCatalogFilter);
-  F.ExcludeFilters := ['NL|'];
-  var S1 := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.ExcludeFilters := ['NL|'];
+  lS1 := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, S1.Count, 'exclude hides the two NL streams');
-    Assert.AreEqual('UK| Three', S1[0].Name);
-  finally S1.Free; end;
-  var C1 := Store.LoadCategories(F);
-  try Assert.AreEqual<Integer>(1, C1.Count, 'exclude hides the NL group'); finally C1.Free; end;
+    Assert.AreEqual<Integer>(1, lS1.Count, 'exclude hides the two NL streams');
+    Assert.AreEqual('UK| Three', lS1[0].Name);
+  finally
+    FreeAndNil(lS1);
+  end;
+  lC1 := lStore.LoadCategories(lF);
+  try
+    Assert.AreEqual<Integer>(1, lC1.Count, 'exclude hides the NL group');
+  finally
+    FreeAndNil(lC1);
+  end;
 
   // include NL| -> only the two NL streams
-  F := Default(TCatalogFilter);
-  F.IncludeFilters := ['NL|'];
-  var S2 := Store.LoadStreams(F);
-  try Assert.AreEqual<Integer>(2, S2.Count, 'include keeps only NL'); finally S2.Free; end;
+  lF := Default(TCatalogFilter);
+  lF.IncludeFilters := ['NL|'];
+  lS2 := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(2, lS2.Count, 'include keeps only NL');
+  finally
+    FreeAndNil(lS2);
+  end;
 
   // nothing filtered -> all still present (filters never delete)
-  F := Default(TCatalogFilter);
-  var S3 := Store.LoadStreams(F);
-  try Assert.AreEqual<Integer>(3, S3.Count, 'no filter => everything still there'); finally S3.Free; end;
+  lF := Default(TCatalogFilter);
+  lS3 := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(3, lS3.Count, 'no filter => everything still there');
+  finally
+    FreeAndNil(lS3);
+  end;
 end;
 
 procedure TStorageTests.HiddenFlagFollowsSourceFilters;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
-  Src: TSourceConfig;
-  SrcId: Integer;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lSrc: TSourceConfig;
+  lSrcId: Integer;
+  lSources: TObjectList<TSourceConfig>;
+  lS: TStreamItemList;
+
   function CountCats: Integer;
-  var L: TCategoryList;
+  var
+    lL: TCategoryList;
   begin
-    L := Store.LoadCategories(F);
-    try Result := L.Count; finally L.Free; end;
+    lL := lStore.LoadCategories(lF);
+    try
+      Result := lL.Count;
+    finally
+      FreeAndNil(lL);
+    end;
   end;
+
 begin
   // The catalog uses the precomputed `hidden` flag; it must match the source's
   // filters after ingest AND after the filters are edited (and back).
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'P'; Src.Url := 'http://x'; Src.ExcludeFilters := ['NL|'];
-    SrcId := Store.SaveSource(Src);
-  finally Src.Free; end;
-  Snap := TSourceSnapshot.Create(SrcId);
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(SrcId, ctLive, '2', 'UK| Two', '', '', 'http://p/2.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'nl'; Cat.Name := 'NL| General';
-  Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'uk'; Cat.Name := 'UK| Sport';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+    lSrc.Name := 'P';
+    lSrc.Url := 'http://x';
+    lSrc.ExcludeFilters := ['NL|'];
+    lSrcId := lStore.SaveSource(lSrc);
+  finally
+    FreeAndNil(lSrc);
+  end;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '2', 'UK| Two', '', '', 'http://p/2.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'nl';
+  lCat.Name := 'NL| General';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'uk';
+  lCat.Name := 'UK| Sport';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  F.UseHiddenFlag := True;
-  Assert.AreEqual<Integer>(1, Store.CountStreams(F), 'ingest applies the exclude filter');
+  lF := Default(TCatalogFilter);
+  lF.UseHiddenFlag := True;
+  Assert.AreEqual<Integer>(1, lStore.CountStreams(lF), 'ingest applies the exclude filter');
   Assert.AreEqual<Integer>(1, CountCats, 'group hidden too');
 
   // edit the filters: exclude UK instead (plus a pasted giant item, ignored)
-  var L := Store.LoadSources;
+  lSources := lStore.LoadSources;
   try
-    L[0].ExcludeFilters := ['UK|', StringOfChar('X', 60000)];
-    Store.SaveSource(L[0]);
-  finally L.Free; end;
-  var S := Store.LoadStreams(F);
+    lSources[0].ExcludeFilters := ['UK|', StringOfChar('X', 60000)];
+    lStore.SaveSource(lSources[0]);
+  finally
+    FreeAndNil(lSources);
+  end;
+  lS := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, S.Count, 'filter change recomputes the flag');
-    Assert.AreEqual('NL| One', S[0].Name);
-  finally S.Free; end;
+    Assert.AreEqual<Integer>(1, lS.Count, 'filter change recomputes the flag');
+    Assert.AreEqual('NL| One', lS[0].Name);
+  finally
+    FreeAndNil(lS);
+  end;
 
   // clear the filters: everything visible again; includeHidden ignores the flag
-  L := Store.LoadSources;
+  lSources := lStore.LoadSources;
   try
-    L[0].ExcludeFilters := [];
-    Store.SaveSource(L[0]);
-  finally L.Free; end;
-  Assert.AreEqual<Integer>(2, Store.CountStreams(F), 'no filter => nothing hidden');
+    lSources[0].ExcludeFilters := [];
+    lStore.SaveSource(lSources[0]);
+  finally
+    FreeAndNil(lSources);
+  end;
+  Assert.AreEqual<Integer>(2, lStore.CountStreams(lF), 'no filter => nothing hidden');
   Assert.AreEqual<Integer>(2, CountCats);
 end;
 
@@ -2058,148 +2501,221 @@ end;
 // visible although its NAME doesn't match — unless an exclude token names it.
 procedure TStorageTests.GroupWithVisibleChannelStaysVisible;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
-  Src: TSourceConfig;
-  SrcId: Integer;
-  St: TStreamItem;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lSrc: TSourceConfig;
+  lSrcId: Integer;
+  lSt: TStreamItem;
+  lSources: TObjectList<TSourceConfig>;
+
   function CatNames: string;
   var
-    L: TCategoryList;
-    C: TCategory;
+    lL: TCategoryList;
+    lC: TCategory;
   begin
     Result := '';
-    L := Store.LoadCategories(F);
+    lL := lStore.LoadCategories(lF);
     try
-      for C in L do Result := Result + C.Name + ';';
-    finally L.Free; end;
+      for lC in lL do
+        Result := Result + lC.Name + ';';
+    finally
+      FreeAndNil(lL);
+    end;
   end;
-begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
-  try
-    Src.Name := 'P'; Src.Url := 'http://x'; Src.IncludeFilters := ['NL |', 'UFC'];
-    SrcId := Store.SaveSource(Src);
-  finally Src.Free; end;
-  Snap := TSourceSnapshot.Create(SrcId);
-  St := MakeStream(SrcId, ctLive, '1', 'NL | NPO 1', '', '', 'http://p/1.ts'); St.CategoryUpstreamId := 'nl'; Snap.Streams.Add(St);
-  St := MakeStream(SrcId, ctLive, '2', 'UFC 1', '', '', 'http://p/2.ts'); St.CategoryUpstreamId := 'ws'; Snap.Streams.Add(St);
-  St := MakeStream(SrcId, ctLive, '3', 'NBA 1', '', '', 'http://p/3.ts'); St.CategoryUpstreamId := 'ws'; Snap.Streams.Add(St);
-  St := MakeStream(SrcId, ctLive, '4', 'DE | ARD', '', '', 'http://p/4.ts'); St.CategoryUpstreamId := 'de'; Snap.Streams.Add(St);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'nl'; Cat.Name := 'NL | NEDERLAND'; Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'ws'; Cat.Name := 'WORLD SPORTS'; Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'de'; Cat.Name := 'DE | GERMANY'; Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
 
-  F := Default(TCatalogFilter);
-  F.UseHiddenFlag := True;
-  Assert.AreEqual<Integer>(2, Store.CountStreams(F), 'NPO 1 + UFC 1');
+begin
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
+  try
+    lSrc.Name := 'P';
+    lSrc.Url := 'http://x';
+    lSrc.IncludeFilters := ['NL |', 'UFC'];
+    lSrcId := lStore.SaveSource(lSrc);
+  finally
+    FreeAndNil(lSrc);
+  end;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  lSt := MakeStream(lSrcId, ctLive, '1', 'NL | NPO 1', '', '', 'http://p/1.ts');
+  lSt.CategoryUpstreamId := 'nl';
+  lSnap.Streams.Add(lSt);
+  lSt := MakeStream(lSrcId, ctLive, '2', 'UFC 1', '', '', 'http://p/2.ts');
+  lSt.CategoryUpstreamId := 'ws';
+  lSnap.Streams.Add(lSt);
+  lSt := MakeStream(lSrcId, ctLive, '3', 'NBA 1', '', '', 'http://p/3.ts');
+  lSt.CategoryUpstreamId := 'ws';
+  lSnap.Streams.Add(lSt);
+  lSt := MakeStream(lSrcId, ctLive, '4', 'DE | ARD', '', '', 'http://p/4.ts');
+  lSt.CategoryUpstreamId := 'de';
+  lSnap.Streams.Add(lSt);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'nl';
+  lCat.Name := 'NL | NEDERLAND';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'ws';
+  lCat.Name := 'WORLD SPORTS';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'de';
+  lCat.Name := 'DE | GERMANY';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+
+  lF := Default(TCatalogFilter);
+  lF.UseHiddenFlag := True;
+  Assert.AreEqual<Integer>(2, lStore.CountStreams(lF), 'NPO 1 + UFC 1');
   Assert.AreEqual('NL | NEDERLAND;WORLD SPORTS;', CatNames, 'group of a visible channel stays');
 
   // an exclude token naming the group hides it even with visible channels
-  var L := Store.LoadSources;
+  lSources := lStore.LoadSources;
   try
-    L[0].ExcludeFilters := ['WORLD SPORTS'];
-    Store.SaveSource(L[0]);
-  finally L.Free; end;
+    lSources[0].ExcludeFilters := ['WORLD SPORTS'];
+    lStore.SaveSource(lSources[0]);
+  finally
+    FreeAndNil(lSources);
+  end;
   Assert.AreEqual('NL | NEDERLAND;', CatNames, 'excluded group name wins');
 end;
 
 procedure TStorageTests.OversizedFilterTokenIsIgnored;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
-  SF: TSourceFilter;
-  Huge: string;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lSF: TSourceFilter;
+  lHuge: string;
+  lS1: TStreamItemList;
+  lC1: TCategoryList;
+  lC2: TCategoryList;
+  lS2: TStreamItemList;
+  lC3: TCategoryList;
 begin
   // a whole list pasted as ONE filter item (60k chars) used to become a single
   // LIKE pattern -> SQLite "LIKE or GLOB pattern too complex" on every catalog
   // query. It must be ignored; the normal and line-split tokens still work.
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', 'UK| Two', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'DE| Three', '', '', 'http://p/3.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'nl'; Cat.Name := 'NL| General';
-  Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'uk'; Cat.Name := 'UK| Sport';
-  Snap.Categories.Add(Cat);
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'de'; Cat.Name := 'DE| Film';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', 'UK| Two', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'DE| Three', '', '', 'http://p/3.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'nl';
+  lCat.Name := 'NL| General';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'uk';
+  lCat.Name := 'UK| Sport';
+  lSnap.Categories.Add(lCat);
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'de';
+  lCat.Name := 'DE| Film';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Huge := StringOfChar('X', 60000);
+  lHuge := StringOfChar('X', 60000);
   // exclude: the huge token is dropped, 'UK|' and the second line 'DE|' apply
-  F := Default(TCatalogFilter);
-  F.ExcludeFilters := [Huge, 'UK|'#10'DE|'];
-  var S1 := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.ExcludeFilters := [lHuge, 'UK|'#10'DE|'];
+  lS1 := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, S1.Count, 'only NL survives; no SQLite pattern error');
-    Assert.AreEqual('NL| One', S1[0].Name);
-  finally S1.Free; end;
-  var C1 := Store.LoadCategories(F);
+    Assert.AreEqual<Integer>(1, lS1.Count, 'only NL survives; no SQLite pattern error');
+    Assert.AreEqual('NL| One', lS1[0].Name);
+  finally
+    FreeAndNil(lS1);
+  end;
+  lC1 := lStore.LoadCategories(lF);
   try
-    Assert.AreEqual<Integer>(1, C1.Count, 'groups filtered in memory the same way');
-    Assert.AreEqual('NL| General', C1[0].Name);
-  finally C1.Free; end;
+    Assert.AreEqual<Integer>(1, lC1.Count, 'groups filtered in memory the same way');
+    Assert.AreEqual('NL| General', lC1[0].Name);
+  finally
+    FreeAndNil(lC1);
+  end;
 
   // per-source ("all sources" view): include NL| next to the huge token
-  F := Default(TCatalogFilter);
-  SF.SourceId := 1; SF.IncludeFilters := [Huge, 'NL|']; SF.ExcludeFilters := [];
-  F.SourceFilters := [SF];
-  var C2 := Store.LoadCategories(F);
-  try Assert.AreEqual<Integer>(1, C2.Count, 'per-source include keeps only the NL group'); finally C2.Free; end;
-  var S2 := Store.LoadStreams(F);
-  try Assert.AreEqual<Integer>(1, S2.Count, 'per-source include keeps only the NL stream'); finally S2.Free; end;
+  lF := Default(TCatalogFilter);
+  lSF.SourceId := 1;
+  lSF.IncludeFilters := [lHuge, 'NL|'];
+  lSF.ExcludeFilters := [];
+  lF.SourceFilters := [lSF];
+  lC2 := lStore.LoadCategories(lF);
+  try
+    Assert.AreEqual<Integer>(1, lC2.Count, 'per-source include keeps only the NL group');
+  finally
+    FreeAndNil(lC2);
+  end;
+  lS2 := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(1, lS2.Count, 'per-source include keeps only the NL stream');
+  finally
+    FreeAndNil(lS2);
+  end;
 
   // only a huge token as include => no usable include => nothing hidden
-  F := Default(TCatalogFilter);
-  F.IncludeFilters := [Huge];
-  var C3 := Store.LoadCategories(F);
-  try Assert.AreEqual<Integer>(3, C3.Count, 'unusable include filter hides nothing'); finally C3.Free; end;
+  lF := Default(TCatalogFilter);
+  lF.IncludeFilters := [lHuge];
+  lC3 := lStore.LoadCategories(lF);
+  try
+    Assert.AreEqual<Integer>(3, lC3.Count, 'unusable include filter hides nothing');
+  finally
+    FreeAndNil(lC3);
+  end;
 end;
 
 procedure TStorageTests.NameFilterIsSeparatorAware;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lS1: TStreamItemList;
+  lIt: TStreamItem;
+  lS2: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
   // leading separators/spaces around the country tag — the case that used to slip
   // through a raw 'NL%' LIKE because the name starts with " | " not "NL"
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', ' | NL | NPO 1', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', '|NL| NPO 2', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'NL - NPO 3', '', '', 'http://p/3.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '4', 'BBC One | NL', '', '', 'http://p/4.ts')); // tag as suffix
-  Snap.Streams.Add(MakeStream(1, ctLive, '5', 'Netherlands 1', '', '', 'http://p/5.ts')); // must NOT match
-  Snap.Streams.Add(MakeStream(1, ctLive, '6', 'NLD Sport', '', '', 'http://p/6.ts'));      // must NOT match
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', ' | NL | NPO 1', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', '|NL| NPO 2', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'NL - NPO 3', '', '', 'http://p/3.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '4', 'BBC One | NL', '', '', 'http://p/4.ts')); // tag as suffix
+  lSnap.Streams.Add(MakeStream(1, ctLive, '5', 'Netherlands 1', '', '', 'http://p/5.ts')); // must NOT match
+  lSnap.Streams.Add(MakeStream(1, ctLive, '6', 'NLD Sport', '', '', 'http://p/6.ts'));      // must NOT match
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
   // bare token "NL" (no punctuation) must catch every separator variant, prefix
   // OR suffix, but never "Netherlands"/"NLD"
-  F := Default(TCatalogFilter);
-  F.ExcludeFilters := ['NL'];
-  var S1 := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.ExcludeFilters := ['NL'];
+  lS1 := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(2, S1.Count, 'only the two non-NL names survive');
-    for var It in S1 do
-      Assert.IsTrue((It.Name = 'Netherlands 1') or (It.Name = 'NLD Sport'), 'survivor: ' + It.Name);
-  finally S1.Free; end;
+    Assert.AreEqual<Integer>(2, lS1.Count, 'only the two non-NL names survive');
+    for lIt in lS1 do
+      Assert.IsTrue((lIt.Name = 'Netherlands 1') or (lIt.Name = 'NLD Sport'), 'survivor: ' + lIt.Name);
+  finally
+    FreeAndNil(lS1);
+  end;
 
   // include "NL" keeps exactly the four tagged channels
-  F := Default(TCatalogFilter);
-  F.IncludeFilters := ['NL'];
-  var S2 := Store.LoadStreams(F);
-  try Assert.AreEqual<Integer>(4, S2.Count, 'include keeps the four NL-tagged channels'); finally S2.Free; end;
+  lF := Default(TCatalogFilter);
+  lF.IncludeFilters := ['NL'];
+  lS2 := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(4, lS2.Count, 'include keeps the four NL-tagged channels');
+  finally
+    FreeAndNil(lS2);
+  end;
 end;
 
 // Providers decorate names with Unicode vertical bars (┃ U+2503), not the ASCII
@@ -2208,32 +2724,40 @@ procedure TStorageTests.NameFilterHandlesUnicodeBars;
 const
   HB = #$2503; // ┃ heavy vertical bar
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lS1: TStreamItemList;
+  lS2: TStreamItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, '1', HB + 'F1 TV' + HB + ' Race 1', '', '', 'http://p/1.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '2', HB + 'F1 TV' + HB + ' Race 2', '', '', 'http://p/2.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, '3', 'NPO 1', '', '', 'http://p/3.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, '1', HB + 'F1 TV' + HB + ' Race 1', '', '', 'http://p/1.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '2', HB + 'F1 TV' + HB + ' Race 2', '', '', 'http://p/2.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, '3', 'NPO 1', '', '', 'http://p/3.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
   // exclude the "F1 TV" tag (wrapped in ┃) -> only NPO 1 remains
-  F := Default(TCatalogFilter);
-  F.ExcludeFilters := ['F1 TV'];
-  var S1 := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.ExcludeFilters := ['F1 TV'];
+  lS1 := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, S1.Count, 'the two ┃F1 TV┃ channels are excluded');
-    Assert.AreEqual('NPO 1', S1[0].Name);
-  finally S1.Free; end;
+    Assert.AreEqual<Integer>(1, lS1.Count, 'the two ┃F1 TV┃ channels are excluded');
+    Assert.AreEqual('NPO 1', lS1[0].Name);
+  finally
+    FreeAndNil(lS1);
+  end;
 
   // include "F1 TV" -> only the two tagged channels
-  F := Default(TCatalogFilter);
-  F.IncludeFilters := ['F1 TV'];
-  var S2 := Store.LoadStreams(F);
-  try Assert.AreEqual<Integer>(2, S2.Count, 'include keeps the ┃F1 TV┃ channels'); finally S2.Free; end;
+  lF := Default(TCatalogFilter);
+  lF.IncludeFilters := ['F1 TV'];
+  lS2 := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(2, lS2.Count, 'include keeps the ┃F1 TV┃ channels');
+  finally
+    FreeAndNil(lS2);
+  end;
 end;
 
 // TLockingStore uses TWO connections (writer + reader, WAL) on the same DB.
@@ -2241,35 +2765,48 @@ end;
 // connection — proves the read/write split is wired and stays consistent.
 procedure TStorageTests.LockingStoreSeparateReadWriteConnections;
 var
-  Store: IStore;
-  Lst: TCustomList;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lLst: TCustomList;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lLists: TObjectList<TCustomList>;
+  lStreams: TStreamItemList;
 begin
   // writer created first (makes the file), then reader on the same path — both in
   // WAL mode (the opt-in separate-read-connection setup; temp file is a real FS)
-  Store := TLockingStore.Create(
+  lStore := TLockingStore.Create(
     TSQLiteStore.Create(FDbPath, True),
     TSQLiteStore.Create(FDbPath, True));
-  Store.Init;
+  lStore.Init;
 
   // write through the writer connection
-  Lst := TCustomList.Create;
-  try Lst.Name := 'Box'; Store.SaveList(Lst); finally Lst.Free; end;
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 's1', 'NPO 1', '', '', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lLst := TCustomList.Create;
+  try
+    lLst.Name := 'Box';
+    lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 's1', 'NPO 1', '', '', 'http://p/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
   // read through the reader connection — must see the just-committed writes
-  var Lists := Store.LoadLists;
-  try Assert.AreEqual<Integer>(1, Lists.Count, 'reader sees the list written by the writer'); finally Lists.Free; end;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLists := lStore.LoadLists;
   try
-    Assert.AreEqual<Integer>(1, Streams.Count, 'reader sees the merged stream');
-    Assert.AreEqual('NPO 1', Streams[0].Name);
-  finally Streams.Free; end;
+    Assert.AreEqual<Integer>(1, lLists.Count, 'reader sees the list written by the writer');
+  finally
+    FreeAndNil(lLists);
+  end;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(1, lStreams.Count, 'reader sees the merged stream');
+    Assert.AreEqual('NPO 1', lStreams[0].Name);
+  finally
+    FreeAndNil(lStreams);
+  end;
 end;
 
 // When WAL isn't available (Unraid FUSE share) the composition root passes the
@@ -2278,29 +2815,37 @@ end;
 // or double-free. Read-after-write still works through the one connection.
 procedure TStorageTests.LockingStoreSingleConnectionFallback;
 var
-  Store: IStore;
-  Inner: IStore;
-  Lst: TCustomList;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lInner: IStore;
+  lLst: TCustomList;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
 begin
-  Inner := TSQLiteStore.Create(FDbPath);
-  Store := TLockingStore.Create(Inner, Inner); // same connection for read + write
-  Store.Init;
+  lInner := TSQLiteStore.Create(FDbPath);
+  lStore := TLockingStore.Create(lInner, lInner); // same connection for read + write
+  lStore.Init;
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'Box'; Store.SaveList(Lst); finally Lst.Free; end;
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 's1', 'NPO 1', '', '', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    Assert.AreEqual<Integer>(1, Streams.Count, 'single-connection read sees the write');
-    Assert.AreEqual('NPO 1', Streams[0].Name);
-  finally Streams.Free; end;
+    lLst.Name := 'Box';
+    lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 's1', 'NPO 1', '', '', 'http://p/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    Assert.AreEqual<Integer>(1, lStreams.Count, 'single-connection read sees the write');
+    Assert.AreEqual('NPO 1', lStreams[0].Name);
+  finally
+    FreeAndNil(lStreams);
+  end;
 end;
 
 // Old StrArrayToCsv quoted an item containing '"' and doubled its quotes on every
@@ -2308,106 +2853,152 @@ end;
 // stable now, and Init must strip quotes already stored.
 procedure TStorageTests.FilterTokensWithQuotesDoNotGrowAndAreRepaired;
 var
-  Store: IStore;
-  Src: TSourceConfig;
-  I: Integer;
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  i: Integer;
+  lL: TObjectList<TSourceConfig>;
+  lL1: TObjectList<TSourceConfig>;
+  lL2: TObjectList<TSourceConfig>;
 begin
-  Store := NewStore(FDbPath);
-  Src := TSourceConfig.Create;
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'Q'; Src.Kind := skM3U; Src.Url := 'http://q';
-    Src.ExcludeFilters := ['Sonay @ Oct 18 12:"', 'Plain'];
-    Store.SaveSource(Src);
-  finally Src.Free; end;
-  for I := 1 to 5 do // load -> save round trips
-  begin
-    var L := Store.LoadSources;
-    try Store.SaveSource(L[0]); finally L.Free; end;
+    lSrc.Name := 'Q';
+    lSrc.Kind := skM3U;
+    lSrc.Url := 'http://q';
+    lSrc.ExcludeFilters := ['Sonay @ Oct 18 12:"', 'Plain'];
+    lStore.SaveSource(lSrc);
+  finally
+    FreeAndNil(lSrc);
   end;
-  var L1 := Store.LoadSources;
+  for i := 1 to 5 do // load -> save round trips
+  begin
+    lL := lStore.LoadSources;
+    try
+      lStore.SaveSource(lL[0]);
+    finally
+      FreeAndNil(lL);
+    end;
+  end;
+  lL1 := lStore.LoadSources;
   try
-    Assert.AreEqual<Integer>(2, Length(L1[0].ExcludeFilters));
-    Assert.IsTrue(Length(L1[0].ExcludeFilters[0]) < 30, 'token must not grow on save');
-  finally L1.Free; end;
+    Assert.AreEqual<Integer>(2, Length(lL1[0].ExcludeFilters));
+    Assert.IsTrue(Length(lL1[0].ExcludeFilters[0]) < 30, 'token must not grow on save');
+  finally
+    FreeAndNil(lL1);
+  end;
 
-  Store := nil;
-  Store := NewStore(FDbPath); // Init runs RepairSourceTokens
-  var L2 := Store.LoadSources;
+  lStore := nil;
+  lStore := NewStore(FDbPath); // Init runs RepairSourceTokens
+  lL2 := lStore.LoadSources;
   try
-    Assert.AreEqual('Sonay @ Oct 18 12:', L2[0].ExcludeFilters[0], 'stored quotes stripped on Init');
-    Assert.AreEqual('Plain', L2[0].ExcludeFilters[1]);
-  finally L2.Free; end;
+    Assert.AreEqual('Sonay @ Oct 18 12:', lL2[0].ExcludeFilters[0], 'stored quotes stripped on Init');
+    Assert.AreEqual('Plain', lL2[0].ExcludeFilters[1]);
+  finally
+    FreeAndNil(lL2);
+  end;
 end;
 
 // Sources are served from memory by TLockingStore; every write path must
 // invalidate, and callers get their own copy (freeing/mutating it is safe).
 procedure TStorageTests.LockingStoreCachesSourcesAndInvalidatesOnWrite;
 var
-  Store: IStore;
-  Inner: IStore;
-  Src: TSourceConfig;
-  Id: Integer;
+  lStore: IStore;
+  lInner: IStore;
+  lSrc: TSourceConfig;
+  lId: Integer;
+  lL1: TObjectList<TSourceConfig>;
+  lL2: TObjectList<TSourceConfig>;
+  lL3: TObjectList<TSourceConfig>;
+  lL4: TObjectList<TSourceConfig>;
 begin
-  Inner := TSQLiteStore.Create(FDbPath);
-  Store := TLockingStore.Create(Inner, Inner);
-  Store.Init;
-  Src := TSourceConfig.Create;
+  lInner := TSQLiteStore.Create(FDbPath);
+  lStore := TLockingStore.Create(lInner, lInner);
+  lStore.Init;
+  lSrc := TSourceConfig.Create;
   try
-    Src.Name := 'A'; Src.Kind := skM3U; Src.Url := 'http://a';
-    Id := Store.SaveSource(Src);
-  finally Src.Free; end;
+    lSrc.Name := 'A';
+    lSrc.Kind := skM3U;
+    lSrc.Url := 'http://a';
+    lId := lStore.SaveSource(lSrc);
+  finally
+    FreeAndNil(lSrc);
+  end;
 
-  var L1 := Store.LoadSources; // fills the cache
+  lL1 := lStore.LoadSources; // fills the cache
   try
-    Assert.AreEqual<Integer>(1, L1.Count);
-    L1[0].Name := 'mutated copy'; // must not leak into the cache
-  finally L1.Free; end;
+    Assert.AreEqual<Integer>(1, lL1.Count);
+    lL1[0].Name := 'mutated copy'; // must not leak into the cache
+  finally
+    FreeAndNil(lL1);
+  end;
 
-  var L2 := Store.LoadSources;
+  lL2 := lStore.LoadSources;
   try
-    Assert.AreEqual('A', L2[0].Name, 'cache hands out copies');
-    L2[0].Name := 'B';
-    Store.SaveSource(L2[0]); // write -> invalidate
-  finally L2.Free; end;
+    Assert.AreEqual('A', lL2[0].Name, 'cache hands out copies');
+    lL2[0].Name := 'B';
+    lStore.SaveSource(lL2[0]); // write -> invalidate
+  finally
+    FreeAndNil(lL2);
+  end;
 
-  var L3 := Store.LoadSources;
-  try Assert.AreEqual('B', L3[0].Name, 'save invalidates the cache'); finally L3.Free; end;
+  lL3 := lStore.LoadSources;
+  try
+    Assert.AreEqual('B', lL3[0].Name, 'save invalidates the cache');
+  finally
+    FreeAndNil(lL3);
+  end;
 
-  Store.DeleteSource(Id);
-  var L4 := Store.LoadSources;
-  try Assert.AreEqual<Integer>(0, L4.Count, 'delete invalidates the cache'); finally L4.Free; end;
+  lStore.DeleteSource(lId);
+  lL4 := lStore.LoadSources;
+  try
+    Assert.AreEqual<Integer>(0, lL4.Count, 'delete invalidates the cache');
+  finally
+    FreeAndNil(lL4);
+  end;
 end;
 
 procedure TStorageTests.LoadItemsExposesUpstreamName;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId: Integer;
-  F: TCatalogFilter;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId: Integer;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'x', 'NPO 1 HD', '', 'npo1', 'http://p/x.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'x', 'NPO 1 HD', '', 'npo1', 'http://p/x.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try Store.AddItems(ListId, 0, [Streams[0].Id]); finally Streams.Free; end;
-
-  var Items := Store.LoadItems(ListId);
+  lLst := TCustomList.Create;
   try
-    Assert.AreEqual<Integer>(1, Items.Count);
-    Assert.AreEqual('', Items[0].DisplayName, 'no override set');
-    Assert.AreEqual('NPO 1 HD', Items[0].StreamName, 'upstream name resolved for the UI');
-    Assert.AreEqual('npo1', Items[0].StreamTvgId);
-    Assert.AreEqual<Integer>(1, Items[0].StreamSourceId, 'source of the upstream stream exposed');
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Items.Free;
+    FreeAndNil(lLst);
+  end;
+
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    lStore.AddItems(lListId, 0, [lStreams[0].Id]);
+  finally
+    FreeAndNil(lStreams);
+  end;
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lItems.Count);
+    Assert.AreEqual('', lItems[0].DisplayName, 'no override set');
+    Assert.AreEqual('NPO 1 HD', lItems[0].StreamName, 'upstream name resolved for the UI');
+    Assert.AreEqual('npo1', lItems[0].StreamTvgId);
+    Assert.AreEqual<Integer>(1, lItems[0].StreamSourceId, 'source of the upstream stream exposed');
+  finally
+    FreeAndNil(lItems);
   end;
 end;
 
@@ -2415,42 +3006,47 @@ procedure TStorageTests.ManyExcludeTokensDoNotBreakQuery;
 // Regression: a source with hundreds of filter tokens must not blow SQLite's
 // expression-tree depth limit (the balanced-OR builder keeps depth at O(log n)).
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Cat: TCategory;
-  F: TCatalogFilter;
-  I: Integer;
-  Tokens: TArray<string>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  i: Integer;
+  lTokens: TArray<string>;
+  lS: TStreamItemList;
+  lC: TCategoryList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'k', 'KEEP Me', '', '', 'http://p/k.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'd', 'AAA0 Drop', '', '', 'http://p/d.ts'));
-  Cat := TCategory.Create; Cat.ContentType := ctLive; Cat.UpstreamId := 'c'; Cat.Name := 'KEEP Cat';
-  Snap.Categories.Add(Cat);
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'k', 'KEEP Me', '', '', 'http://p/k.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'd', 'AAA0 Drop', '', '', 'http://p/d.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'c';
+  lCat.Name := 'KEEP Cat';
+  lSnap.Categories.Add(lCat);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
   // 800 distinct exclude tokens (more than SQLite's 1000 expr-depth at 2 LIKEs each)
-  SetLength(Tokens, 800);
-  for I := 0 to High(Tokens) do
-    Tokens[I] := Format('AAA%d', [I]);
+  SetLength(lTokens, 800);
+  for i := 0 to High(lTokens) do
+    lTokens[i] := Format('AAA%d', [i]);
 
-  F := Default(TCatalogFilter);
-  F.ExcludeFilters := Tokens;
+  lF := Default(TCatalogFilter);
+  lF.ExcludeFilters := lTokens;
   // must execute without raising, and still hide the 'AAA0 Drop' stream
-  var S := Store.LoadStreams(F);
+  lS := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, S.Count, 'only KEEP Me survives 800 exclude tokens');
-    Assert.AreEqual('KEEP Me', S[0].Name);
+    Assert.AreEqual<Integer>(1, lS.Count, 'only KEEP Me survives 800 exclude tokens');
+    Assert.AreEqual('KEEP Me', lS[0].Name);
   finally
-    S.Free;
+    FreeAndNil(lS);
   end;
-  var C := Store.LoadCategories(F);
+  lC := lStore.LoadCategories(lF);
   try
-    Assert.AreEqual<Integer>(1, C.Count, 'category query also survives many tokens');
+    Assert.AreEqual<Integer>(1, lC.Count, 'category query also survives many tokens');
   finally
-    C.Free;
+    FreeAndNil(lC);
   end;
 end;
 
@@ -2458,38 +3054,42 @@ procedure TStorageTests.PerSourceFiltersApplyInAllSourcesView;
 // In the "all sources" view each row is judged against ITS source's filters:
 // source 1 excludes 'NL|', source 2 has no filter, so only source 1's NL row hides.
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
-  SFs: TArray<TSourceFilter>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lSFs: TArray<TSourceFilter>;
+  lS: TStreamItemList;
+  lNames: string;
+  i: Integer;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'NL| A', '', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'b', 'UK| B', '', '', 'http://p/b.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Snap := TSourceSnapshot.Create(2);
-  Snap.Streams.Add(MakeStream(2, ctLive, 'c', 'NL| C', '', '', 'http://p/c.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'NL| A', '', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'b', 'UK| B', '', '', 'http://p/b.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lSnap := TSourceSnapshot.Create(2);
+  lSnap.Streams.Add(MakeStream(2, ctLive, 'c', 'NL| C', '', '', 'http://p/c.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  SetLength(SFs, 1);
-  SFs[0].SourceId := 1;
-  SFs[0].ExcludeFilters := ['NL|'];
+  SetLength(lSFs, 1);
+  lSFs[0].SourceId := 1;
+  lSFs[0].ExcludeFilters := ['NL|'];
 
-  F := Default(TCatalogFilter);
-  F.SourceFilters := SFs; // SourceId stays 0 => all sources
-  var S := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lF.SourceFilters := lSFs; // SourceId stays 0 => all sources
+  lS := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(2, S.Count, 'only source 1''s NL row is hidden');
-    var Names := '';
-    for var I := 0 to S.Count - 1 do Names := Names + S[I].Name + ';';
-    Assert.IsFalse(Names.Contains('NL| A'), 'source 1 NL hidden');
-    Assert.IsTrue(Names.Contains('NL| C'), 'source 2 NL kept (no filter on src 2)');
-    Assert.IsTrue(Names.Contains('UK| B'), 'source 1 UK kept');
+    Assert.AreEqual<Integer>(2, lS.Count, 'only source 1''s NL row is hidden');
+    lNames := '';
+    for i := 0 to lS.Count - 1 do
+      lNames := lNames + lS[i].Name + ';';
+    Assert.IsFalse(lNames.Contains('NL| A'), 'source 1 NL hidden');
+    Assert.IsTrue(lNames.Contains('NL| C'), 'source 2 NL kept (no filter on src 2)');
+    Assert.IsTrue(lNames.Contains('UK| B'), 'source 1 UK kept');
   finally
-    S.Free;
+    FreeAndNil(lS);
   end;
 end;
 
@@ -2497,148 +3097,202 @@ procedure TStorageTests.DedupeListItemsByUrl;
 // Two catalog entries with the SAME upstream URL (different names/ids) are
 // duplicates: dedupe keeps one, plus the genuinely different channel.
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId, Removed: Integer;
-  F: TCatalogFilter;
-  Ids: TArray<Integer>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId, lRemoved: Integer;
+  lF: TCatalogFilter;
+  lIds: TArray<Integer>;
+  lStreams: TStreamItemList;
+  i: Integer;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'Chan A', '', '', 'http://p/same.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'b', 'Chan B (dup url)', '', '', 'http://p/same.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'c', 'Chan C', '', '', 'http://p/other.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'Chan A', '', '', 'http://p/same.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'b', 'Chan B (dup url)', '', '', 'http://p/same.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'c', 'Chan C', '', '', 'http://p/other.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    SetLength(Ids, Streams.Count);
-    for var I := 0 to Streams.Count - 1 do Ids[I] := Streams[I].Id;
-  finally Streams.Free; end;
-  Store.AddItems(ListId, 0, Ids); // all three on the list
-
-  Removed := Store.DedupeListItems(ListId);
-  Assert.AreEqual<Integer>(1, Removed, 'one duplicate URL removed');
-
-  var Items := Store.LoadItems(ListId);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(2, Items.Count, 'distinct-URL channels remain');
-  finally Items.Free; end;
+    SetLength(lIds, lStreams.Count);
+    for i := 0 to lStreams.Count - 1 do
+      lIds[i] := lStreams[i].Id;
+  finally
+    FreeAndNil(lStreams);
+  end;
+  lStore.AddItems(lListId, 0, lIds); // all three on the list
+
+  lRemoved := lStore.DedupeListItems(lListId);
+  Assert.AreEqual<Integer>(1, lRemoved, 'one duplicate URL removed');
+
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(2, lItems.Count, 'distinct-URL channels remain');
+  finally
+    FreeAndNil(lItems);
+  end;
 
   // running again is a no-op
-  Assert.AreEqual<Integer>(0, Store.DedupeListItems(ListId), 'idempotent');
+  Assert.AreEqual<Integer>(0, lStore.DedupeListItems(lListId), 'idempotent');
 end;
 
 procedure TStorageTests.SortGroupAlphabeticallyNumbersByName;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId, GroupId: Integer;
-  F: TCatalogFilter;
-  It: TCustomItem;
-  Nums: TDictionary<string, Integer>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lListId, lGroupId: Integer;
+  lF: TCatalogFilter;
+  lIt: TCustomItem;
+  lNums: TDictionary<string, Integer>;
+  lStreams: TStreamItemList;
+  lIds: TArray<Integer>;
+  i: Integer;
+  lItems: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'z', 'Zebra', '', '', 'http://p/z.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'Apple', '', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'm', 'Mango', '', '', 'http://p/m.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'z', 'Zebra', '', '', 'http://p/z.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'Apple', '', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'm', 'Mango', '', '', 'http://p/m.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'G'; GroupId := Store.SaveGroup(Grp); finally Grp.Free; end;
-
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    var Ids: TArray<Integer>;
-    SetLength(Ids, Streams.Count);
-    for var I := 0 to Streams.Count - 1 do Ids[I] := Streams[I].Id;
-    Store.AddItems(ListId, GroupId, Ids);
-  finally Streams.Free; end;
-
-  Assert.AreEqual<Integer>(3, Store.SortGroupAlphabetically(ListId, GroupId));
-
-  Nums := TDictionary<string, Integer>.Create;
-  var Items := Store.LoadItems(ListId);
-  try
-    for It in Items do Nums.AddOrSetValue(It.StreamName, It.ChannelNumber);
-    Assert.AreEqual<Integer>(1, Nums['Apple'], 'Apple first');
-    Assert.AreEqual<Integer>(2, Nums['Mango'], 'Mango second');
-    Assert.AreEqual<Integer>(3, Nums['Zebra'], 'Zebra third');
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Items.Free;
-    Nums.Free;
+    FreeAndNil(lLst);
+  end;
+  lGrp := TCustomGroup.Create;
+  try
+    lGrp.ListId := lListId;
+    lGrp.Name := 'G';
+    lGroupId := lStore.SaveGroup(lGrp);
+  finally
+    FreeAndNil(lGrp);
+  end;
+
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    SetLength(lIds, lStreams.Count);
+    for i := 0 to lStreams.Count - 1 do
+      lIds[i] := lStreams[i].Id;
+    lStore.AddItems(lListId, lGroupId, lIds);
+  finally
+    FreeAndNil(lStreams);
+  end;
+
+  Assert.AreEqual<Integer>(3, lStore.SortGroupAlphabetically(lListId, lGroupId));
+
+  lNums := TDictionary<string, Integer>.Create;
+  lItems := lStore.LoadItems(lListId);
+  try
+    for lIt in lItems do
+      lNums.AddOrSetValue(lIt.StreamName, lIt.ChannelNumber);
+    Assert.AreEqual<Integer>(1, lNums['Apple'], 'Apple first');
+    Assert.AreEqual<Integer>(2, lNums['Mango'], 'Mango second');
+    Assert.AreEqual<Integer>(3, lNums['Zebra'], 'Zebra third');
+  finally
+    FreeAndNil(lItems);
+    FreeAndNil(lNums);
   end;
 end;
 
 procedure TStorageTests.ReorderGroupItemsNumbersByGivenOrder;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId, GroupId, Numbered: Integer;
-  ByName, Nums: TDictionary<string, Integer>;
-  Order: TArray<Integer>;
-  It: TCustomItem;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lListId, lGroupId, lNumbered: Integer;
+  lByName, lNums: TDictionary<string, Integer>;
+  lOrder: TArray<Integer>;
+  lIt: TCustomItem;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lIds: TArray<Integer>;
+  i: Integer;
+  lItemsA: TCustomItemList;
+  lItemsB: TCustomItemList;
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'z', 'Zebra', '', '', 'http://p/z.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'Apple', '', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'm', 'Mango', '', '', 'http://p/m.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'z', 'Zebra', '', '', 'http://p/z.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'Apple', '', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'm', 'Mango', '', '', 'http://p/m.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'G'; GroupId := Store.SaveGroup(Grp); finally Grp.Free; end;
-
-  var F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lLst := TCustomList.Create;
   try
-    var Ids: TArray<Integer>;
-    SetLength(Ids, Streams.Count);
-    for var I := 0 to Streams.Count - 1 do Ids[I] := Streams[I].Id;
-    Store.AddItems(ListId, GroupId, Ids);
-  finally Streams.Free; end;
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+  lGrp := TCustomGroup.Create;
+  try
+    lGrp.ListId := lListId;
+    lGrp.Name := 'G';
+    lGroupId := lStore.SaveGroup(lGrp);
+  finally
+    FreeAndNil(lGrp);
+  end;
+
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    SetLength(lIds, lStreams.Count);
+    for i := 0 to lStreams.Count - 1 do
+      lIds[i] := lStreams[i].Id;
+    lStore.AddItems(lListId, lGroupId, lIds);
+  finally
+    FreeAndNil(lStreams);
+  end;
 
   // map upstream stream name -> list_item id
-  ByName := TDictionary<string, Integer>.Create;
-  var ItemsA := Store.LoadItems(ListId);
+  lByName := TDictionary<string, Integer>.Create;
+  lItemsA := lStore.LoadItems(lListId);
   try
-    for It in ItemsA do ByName.AddOrSetValue(It.StreamName, It.Id);
-  finally ItemsA.Free; end;
+    for lIt in lItemsA do
+      lByName.AddOrSetValue(lIt.StreamName, lIt.Id);
+  finally
+    FreeAndNil(lItemsA);
+  end;
 
   // explicit display order Zebra, Apple, Mango; the trailing bogus id must be ignored
-  Order := [ByName['Zebra'], ByName['Apple'], ByName['Mango'], 999999];
-  Numbered := Store.ReorderGroupItems(ListId, GroupId, Order);
-  Assert.AreEqual<Integer>(3, Numbered, 'only the 3 real items are numbered (bogus id skipped)');
+  lOrder := [lByName['Zebra'], lByName['Apple'], lByName['Mango'], 999999];
+  lNumbered := lStore.ReorderGroupItems(lListId, lGroupId, lOrder);
+  Assert.AreEqual<Integer>(3, lNumbered, 'only the 3 real items are numbered (bogus id skipped)');
 
-  Nums := TDictionary<string, Integer>.Create;
-  var ItemsB := Store.LoadItems(ListId);
+  lNums := TDictionary<string, Integer>.Create;
+  lItemsB := lStore.LoadItems(lListId);
   try
-    for It in ItemsB do Nums.AddOrSetValue(It.StreamName, It.ChannelNumber);
-    Assert.AreEqual<Integer>(1, Nums['Zebra'], 'Zebra first');
-    Assert.AreEqual<Integer>(2, Nums['Apple'], 'Apple second');
-    Assert.AreEqual<Integer>(3, Nums['Mango'], 'Mango third');
+    for lIt in lItemsB do
+      lNums.AddOrSetValue(lIt.StreamName, lIt.ChannelNumber);
+    Assert.AreEqual<Integer>(1, lNums['Zebra'], 'Zebra first');
+    Assert.AreEqual<Integer>(2, lNums['Apple'], 'Apple second');
+    Assert.AreEqual<Integer>(3, lNums['Mango'], 'Mango third');
   finally
-    ItemsB.Free;
-    Nums.Free;
+    FreeAndNil(lItemsB);
+    FreeAndNil(lNums);
   end;
-  ByName.Free;
+  FreeAndNil(lByName);
 end;
 
 // Bouquet-wide renumber: explicit numbers for many items in one call (foreign ids
@@ -2646,14 +3300,19 @@ end;
 // (starts at the group's lowest number, not back at 1).
 procedure TStorageTests.BouquetRenumberSurvivesGroupReorder;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  Grp: TCustomGroup;
-  ListId, GroupId: Integer;
-  ByName, Nums: TDictionary<string, Integer>;
-  It: TCustomItem;
-  Plan: TArray<TItemNumber>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lGrp: TCustomGroup;
+  lListId, lGroupId: Integer;
+  lByName, lNums: TDictionary<string, Integer>;
+  lIt: TCustomItem;
+  lPlan: TArray<TItemNumber>;
+  lF: TCatalogFilter;
+  lStreams: TStreamItemList;
+  lIds: TArray<Integer>;
+  i: Integer;
+  lItems: TCustomItemList;
 
   function Num(AItem, ANumber: Integer): TItemNumber;
   begin
@@ -2662,215 +3321,258 @@ var
   end;
 
   procedure ReadNums;
+  var
+    lItems: TCustomItemList;
+    lX: TCustomItem;
   begin
-    Nums.Clear;
-    var Items := Store.LoadItems(ListId);
+    lNums.Clear;
+    lItems := lStore.LoadItems(lListId);
     try
-      for var X in Items do Nums.AddOrSetValue(X.StreamName, X.ChannelNumber);
-    finally Items.Free; end;
+      for lX in lItems do
+        lNums.AddOrSetValue(lX.StreamName, lX.ChannelNumber);
+    finally
+      FreeAndNil(lItems);
+    end;
   end;
 
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'z', 'Zebra', '', '', 'http://p/z.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'a', 'Apple', '', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 'm', 'Mango', '', '', 'http://p/m.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-  Grp := TCustomGroup.Create;
-  try Grp.ListId := ListId; Grp.Name := 'G'; GroupId := Store.SaveGroup(Grp); finally Grp.Free; end;
-  var F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'z', 'Zebra', '', '', 'http://p/z.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'a', 'Apple', '', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'm', 'Mango', '', '', 'http://p/m.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lLst := TCustomList.Create;
   try
-    var Ids: TArray<Integer>;
-    SetLength(Ids, Streams.Count);
-    for var I := 0 to Streams.Count - 1 do Ids[I] := Streams[I].Id;
-    Store.AddItems(ListId, GroupId, Ids);
-  finally Streams.Free; end;
-  ByName := TDictionary<string, Integer>.Create;
-  Nums := TDictionary<string, Integer>.Create;
-  try
-    var Items := Store.LoadItems(ListId);
-    try
-      for It in Items do ByName.AddOrSetValue(It.StreamName, It.Id);
-    finally Items.Free; end;
-
-    Plan := [Num(ByName['Zebra'], 101), Num(ByName['Apple'], 102), Num(ByName['Mango'], 103),
-             Num(999999, 1)];
-    Assert.AreEqual<Integer>(3, Store.SetItemNumbers(ListId, Plan), 'foreign id skipped');
-    Assert.AreEqual<Integer>(0, Store.SetItemNumbers(ListId + 1, Plan), 'other list untouched');
-    ReadNums;
-    Assert.AreEqual<Integer>(101, Nums['Zebra']);
-    Assert.AreEqual<Integer>(103, Nums['Mango']);
-
-    Store.ReorderGroupItems(ListId, GroupId, [ByName['Mango'], ByName['Zebra'], ByName['Apple']]);
-    ReadNums;
-    Assert.AreEqual<Integer>(101, Nums['Mango'], 'drag keeps the block start');
-    Assert.AreEqual<Integer>(103, Nums['Apple']);
-
-    Store.SortGroupAlphabetically(ListId, GroupId);
-    ReadNums;
-    Assert.AreEqual<Integer>(101, Nums['Apple'], 'A-Z keeps the block start');
-    Assert.AreEqual<Integer>(103, Nums['Zebra']);
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Nums.Free;
-    ByName.Free;
+    FreeAndNil(lLst);
+  end;
+  lGrp := TCustomGroup.Create;
+  try
+    lGrp.ListId := lListId;
+    lGrp.Name := 'G';
+    lGroupId := lStore.SaveGroup(lGrp);
+  finally
+    FreeAndNil(lGrp);
+  end;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    SetLength(lIds, lStreams.Count);
+    for i := 0 to lStreams.Count - 1 do
+      lIds[i] := lStreams[i].Id;
+    lStore.AddItems(lListId, lGroupId, lIds);
+  finally
+    FreeAndNil(lStreams);
+  end;
+  lByName := TDictionary<string, Integer>.Create;
+  lNums := TDictionary<string, Integer>.Create;
+  try
+    lItems := lStore.LoadItems(lListId);
+    try
+      for lIt in lItems do
+        lByName.AddOrSetValue(lIt.StreamName, lIt.Id);
+    finally
+      FreeAndNil(lItems);
+    end;
+
+    lPlan := [Num(lByName['Zebra'], 101), Num(lByName['Apple'], 102), Num(lByName['Mango'], 103),
+             Num(999999, 1)];
+    Assert.AreEqual<Integer>(3, lStore.SetItemNumbers(lListId, lPlan), 'foreign id skipped');
+    Assert.AreEqual<Integer>(0, lStore.SetItemNumbers(lListId + 1, lPlan), 'other list untouched');
+    ReadNums;
+    Assert.AreEqual<Integer>(101, lNums['Zebra']);
+    Assert.AreEqual<Integer>(103, lNums['Mango']);
+
+    lStore.ReorderGroupItems(lListId, lGroupId, [lByName['Mango'], lByName['Zebra'], lByName['Apple']]);
+    ReadNums;
+    Assert.AreEqual<Integer>(101, lNums['Mango'], 'drag keeps the block start');
+    Assert.AreEqual<Integer>(103, lNums['Apple']);
+
+    lStore.SortGroupAlphabetically(lListId, lGroupId);
+    ReadNums;
+    Assert.AreEqual<Integer>(101, lNums['Apple'], 'A-Z keeps the block start');
+    Assert.AreEqual<Integer>(103, lNums['Zebra']);
+  finally
+    FreeAndNil(lNums);
+    FreeAndNil(lByName);
   end;
 end;
 
 procedure TStorageTests.StoresUnicodeNamesIntact;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
-  UniName: string;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lUniName: string;
+  lL: TStreamItemList;
 begin
-  UniName := 'A' + #$26BD + 'B'; // A⚽B (U+26BD)
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', UniName, '', '', 'http://p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lUniName := 'A' + #$26BD + 'B'; // A⚽B (U+26BD)
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', lUniName, '', '', 'http://p/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  var L := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lL := lStore.LoadStreams(lF);
   try
-    Assert.AreEqual<Integer>(1, L.Count);
-    Assert.AreEqual<Integer>(3, Length(L[0].Name), 'length intact');
+    Assert.AreEqual<Integer>(1, lL.Count);
+    Assert.AreEqual<Integer>(3, Length(lL[0].Name), 'length intact');
     // Full UTF-8 round-trip on every platform (incl. static-SQLite Win32): the
     // store binds text via AsWideString with no ANSI<->Wide MapRules, so the
     // emoji is preserved on write and decoded back on read. See the constructor.
-    Assert.AreEqual<Integer>($26BD, Ord(L[0].Name[2]), 'emoji survives store+reload');
+    Assert.AreEqual<Integer>($26BD, Ord(lL[0].Name[2]), 'emoji survives store+reload');
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 procedure TStorageTests.FindListByCredentials_DefaultAndNamed;
 var
-  Store: IStore;
-  Lst: TCustomList;
-  Found: TCustomList;
+  lStore: IStore;
+  lLst: TCustomList;
+  lFound: TCustomList;
 begin
-  Store := NewStore(FDbPath);
-  Lst := TCustomList.Create;
+  lStore := NewStore(FDbPath);
+  lLst := TCustomList.Create;
   try
-    Lst.Name := 'Default';
-    Lst.OutputUsername := 'box1';
-    Lst.OutputPassword := 'secret';
-    Store.SaveList(Lst);
+    lLst.Name := 'Default';
+    lLst.OutputUsername := 'box1';
+    lLst.OutputPassword := 'secret';
+    lStore.SaveList(lLst);
   finally
-    Lst.Free;
+    FreeAndNil(lLst);
   end;
 
   // SECURITY: empty credentials must NOT open a bouquet that has a login
-  Found := Store.FindListByCredentials('', '');
-  Assert.IsNull(Found, 'empty login never reaches a protected bouquet');
-  Found := Store.FindListByCredentials('', 'secret');
-  Assert.IsNull(Found, 'not with only the password either');
+  lFound := lStore.FindListByCredentials('', '');
+  Assert.IsNull(lFound, 'empty login never reaches a protected bouquet');
+  lFound := lStore.FindListByCredentials('', 'secret');
+  Assert.IsNull(lFound, 'not with only the password either');
 
   // ...but a bouquet WITHOUT a login is the default for boxes without one
-  Lst := TCustomList.Create;
+  lLst := TCustomList.Create;
   try
-    Lst.Name := 'Open'; Lst.Enabled := True;
-    Store.SaveList(Lst);
+    lLst.Name := 'Open';
+    lLst.Enabled := True;
+    lStore.SaveList(lLst);
   finally
-    Lst.Free;
+    FreeAndNil(lLst);
   end;
-  Found := Store.FindListByCredentials('', '');
+  lFound := lStore.FindListByCredentials('', '');
   try
-    Assert.IsNotNull(Found);
-    Assert.AreEqual('Open', Found.Name, 'the login-free bouquet, not the protected one');
+    Assert.IsNotNull(lFound);
+    Assert.AreEqual('Open', lFound.Name, 'the login-free bouquet, not the protected one');
   finally
-    Found.Free;
+    FreeAndNil(lFound);
   end;
 
   // named credentials match
-  Found := Store.FindListByCredentials('box1', 'secret');
+  lFound := lStore.FindListByCredentials('box1', 'secret');
   try
-    Assert.IsNotNull(Found);
+    Assert.IsNotNull(lFound);
   finally
-    Found.Free;
+    FreeAndNil(lFound);
   end;
 
   // wrong password -> nil
-  Found := Store.FindListByCredentials('box1', 'wrong');
-  Assert.IsNull(Found);
+  lFound := lStore.FindListByCredentials('box1', 'wrong');
+  Assert.IsNull(lFound);
 end;
 
 procedure TStorageTests.OutputChannelsOrderAndOverrides;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  FavGrp, NormGrp: TCustomGroup;
-  ListId: Integer;
-  F: TCatalogFilter;
-  StreamIds: TArray<Integer>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lFavGrp, lNormGrp: TCustomGroup;
+  lListId: Integer;
+  lF: TCatalogFilter;
+  lStreamIds: TArray<Integer>;
+  lStreams: TStreamItemList;
+  lNormId: Integer;
+  lFavId: Integer;
+  lOut: TOutputChannelList;
 
   procedure AddItem(AStreamId, AGroupId: Integer; const ADisplay: string);
   var
-    It: TCustomItem;
+    lIt: TCustomItem;
   begin
-    It := TCustomItem.Create;
+    lIt := TCustomItem.Create;
     try
-      It.ListId := ListId;
-      It.StreamItemId := AStreamId;
-      It.CustomGroupId := AGroupId;
-      It.ContentType := ctLive;
-      It.DisplayName := ADisplay;
-      Store.SaveItem(It);
+      lIt.ListId := lListId;
+      lIt.StreamItemId := AStreamId;
+      lIt.CustomGroupId := AGroupId;
+      lIt.ContentType := ctLive;
+      lIt.DisplayName := ADisplay;
+      lStore.SaveItem(lIt);
     finally
-      It.Free;
+      FreeAndNil(lIt);
     end;
   end;
 
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 's1', 'Zebra', 'X', '', 'http://p/z.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 's2', 'Apple', 'X', '', 'http://p/a.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 's1', 'Zebra', 'X', '', 'http://p/z.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 's2', 'Apple', 'X', '', 'http://p/a.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
   try
     // LoadStreams is ordered by name: [0]=Apple(s2), [1]=Zebra(s1)
-    StreamIds := [Streams[0].Id, Streams[1].Id];
+    lStreamIds := [lStreams[0].Id, lStreams[1].Id];
   finally
-    Streams.Free;
+    FreeAndNil(lStreams);
   end;
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
-
-  NormGrp := TCustomGroup.Create;
-  try NormGrp.ListId := ListId; NormGrp.Name := 'News'; var NormId := Store.SaveGroup(NormGrp);
-    FavGrp := TCustomGroup.Create;
-    try FavGrp.ListId := ListId; FavGrp.Name := 'Sports'; FavGrp.IsFavorite := True;
-      var FavId := Store.SaveGroup(FavGrp);
-      // put "Apple" in News (normal), "Zebra" renamed to "AAA" in Sports (favorite)
-      AddItem(StreamIds[0], NormId, '');       // Apple -> News
-      AddItem(StreamIds[1], FavId, 'AAA Top'); // Zebra -> Sports(fav), renamed
-    finally FavGrp.Free; end;
-  finally NormGrp.Free; end;
-
-  var Out := Store.LoadOutputChannels(ListId);
+  lLst := TCustomList.Create;
   try
-    Assert.AreEqual<Integer>(2, Out.Count);
-    // favorite group first regardless of alphabetical group name (Sports > News)
-    Assert.IsTrue(Out[0].IsFavoriteGroup, 'favorite group must sort first');
-    Assert.AreEqual('Sports', Out[0].GroupName);
-    Assert.AreEqual('AAA Top', Out[0].Name, 'display-name override applied');
-    Assert.AreEqual('http://p/z.ts', Out[0].UpstreamUrl, 'raw upstream url preserved');
-    Assert.AreEqual('News', Out[1].GroupName);
-    Assert.AreEqual('Apple', Out[1].Name, 'empty override falls back to upstream name');
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
   finally
-    Out.Free;
+    FreeAndNil(lLst);
+  end;
+
+  lNormGrp := TCustomGroup.Create;
+  try
+    lNormGrp.ListId := lListId;
+    lNormGrp.Name := 'News';
+    lNormId := lStore.SaveGroup(lNormGrp);
+    lFavGrp := TCustomGroup.Create;
+    try
+      lFavGrp.ListId := lListId;
+      lFavGrp.Name := 'Sports';
+      lFavGrp.IsFavorite := True;
+      lFavId := lStore.SaveGroup(lFavGrp);
+      // put "Apple" in News (normal), "Zebra" renamed to "AAA" in Sports (favorite)
+      AddItem(lStreamIds[0], lNormId, '');       // Apple -> News
+      AddItem(lStreamIds[1], lFavId, 'AAA Top'); // Zebra -> Sports(fav), renamed
+    finally
+      FreeAndNil(lFavGrp);
+    end;
+  finally
+    FreeAndNil(lNormGrp);
+  end;
+
+  lOut := lStore.LoadOutputChannels(lListId);
+  try
+    Assert.AreEqual<Integer>(2, lOut.Count);
+    // favorite group first regardless of alphabetical group name (Sports > News)
+    Assert.IsTrue(lOut[0].IsFavoriteGroup, 'favorite group must sort first');
+    Assert.AreEqual('Sports', lOut[0].GroupName);
+    Assert.AreEqual('AAA Top', lOut[0].Name, 'display-name override applied');
+    Assert.AreEqual('http://p/z.ts', lOut[0].UpstreamUrl, 'raw upstream url preserved');
+    Assert.AreEqual('News', lOut[1].GroupName);
+    Assert.AreEqual('Apple', lOut[1].Name, 'empty override falls back to upstream name');
+  finally
+    FreeAndNil(lOut);
   end;
 end;
 
@@ -2878,181 +3580,227 @@ end;
 // still sort first.
 procedure TStorageTests.GroupReorderControlsOutputOrder;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst: TCustomList;
-  ListId, AId, BId: Integer;
-  F: TCatalogFilter;
-  StreamIds: TArray<Integer>;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst: TCustomList;
+  lListId, lAId, lBId: Integer;
+  lF: TCatalogFilter;
+  lStreamIds: TArray<Integer>;
+  lStreams: TStreamItemList;
+  lGA: TCustomGroup;
+  lGB: TCustomGroup;
+  lOut1: TOutputChannelList;
+  lOut2: TOutputChannelList;
 
   procedure AddItem(AStreamId, AGroupId: Integer);
-  var It: TCustomItem;
+  var
+    lIt: TCustomItem;
   begin
-    It := TCustomItem.Create;
+    lIt := TCustomItem.Create;
     try
-      It.ListId := ListId; It.StreamItemId := AStreamId;
-      It.CustomGroupId := AGroupId; It.ContentType := ctLive;
-      Store.SaveItem(It);
-    finally It.Free; end;
+      lIt.ListId := lListId;
+      lIt.StreamItemId := AStreamId;
+      lIt.CustomGroupId := AGroupId;
+      lIt.ContentType := ctLive;
+      lStore.SaveItem(lIt);
+    finally
+      FreeAndNil(lIt);
+    end;
   end;
 
 begin
-  Store := NewStore(FDbPath);
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 's1', 'ChA', 'X', '', 'http://p/a.ts'));
-  Snap.Streams.Add(MakeStream(1, ctLive, 's2', 'ChB', 'X', '', 'http://p/b.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 's1', 'ChA', 'X', '', 'http://p/a.ts'));
+  lSnap.Streams.Add(MakeStream(1, ctLive, 's2', 'ChB', 'X', '', 'http://p/b.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
 
-  F := Default(TCatalogFilter);
-  var Streams := Store.LoadStreams(F);
-  try StreamIds := [Streams[0].Id, Streams[1].Id]; finally Streams.Free; end;
+  lF := Default(TCatalogFilter);
+  lStreams := lStore.LoadStreams(lF);
+  try
+    lStreamIds := [lStreams[0].Id, lStreams[1].Id];
+  finally
+    FreeAndNil(lStreams);
+  end;
 
-  Lst := TCustomList.Create;
-  try Lst.Name := 'L'; ListId := Store.SaveList(Lst); finally Lst.Free; end;
+  lLst := TCustomList.Create;
+  try
+    lLst.Name := 'L';
+    lListId := lStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
 
   // two non-favorite groups "Alpha" and "Beta" (A→Z would put Alpha first)
-  var GA := TCustomGroup.Create;
-  try GA.ListId := ListId; GA.Name := 'Alpha'; AId := Store.SaveGroup(GA); finally GA.Free; end;
-  var GB := TCustomGroup.Create;
-  try GB.ListId := ListId; GB.Name := 'Beta'; BId := Store.SaveGroup(GB); finally GB.Free; end;
-  AddItem(StreamIds[0], AId);
-  AddItem(StreamIds[1], BId);
+  lGA := TCustomGroup.Create;
+  try
+    lGA.ListId := lListId;
+    lGA.Name := 'Alpha';
+    lAId := lStore.SaveGroup(lGA);
+  finally
+    FreeAndNil(lGA);
+  end;
+  lGB := TCustomGroup.Create;
+  try
+    lGB.ListId := lListId;
+    lGB.Name := 'Beta';
+    lBId := lStore.SaveGroup(lGB);
+  finally
+    FreeAndNil(lGB);
+  end;
+  AddItem(lStreamIds[0], lAId);
+  AddItem(lStreamIds[1], lBId);
 
   // default order: Alpha before Beta (A→Z)
-  var Out1 := Store.LoadOutputChannels(ListId);
-  try Assert.AreEqual('Alpha', Out1[0].GroupName, 'default A→Z puts Alpha first'); finally Out1.Free; end;
+  lOut1 := lStore.LoadOutputChannels(lListId);
+  try
+    Assert.AreEqual('Alpha', lOut1[0].GroupName, 'default A→Z puts Alpha first');
+  finally
+    FreeAndNil(lOut1);
+  end;
 
   // drag Beta before Alpha
-  Store.ReorderGroups(ListId, [BId, AId]);
-  var Out2 := Store.LoadOutputChannels(ListId);
+  lStore.ReorderGroups(lListId, [lBId, lAId]);
+  lOut2 := lStore.LoadOutputChannels(lListId);
   try
-    Assert.AreEqual('Beta', Out2[0].GroupName, 'manual order puts Beta first');
-    Assert.AreEqual('Alpha', Out2[1].GroupName);
-  finally Out2.Free; end;
+    Assert.AreEqual('Beta', lOut2[0].GroupName, 'manual order puts Beta first');
+    Assert.AreEqual('Alpha', lOut2[1].GroupName);
+  finally
+    FreeAndNil(lOut2);
+  end;
 end;
 
 procedure TStorageTests.EpgReplaceAndLoadByTvgId;
 var
-  Store: IStore;
-  Progs: TEpgProgrammeList;
-  P: TEpgProgramme;
+  lStore: IStore;
+  lProgs: TEpgProgrammeList;
+  lP: TEpgProgramme;
+  lL: TEpgProgrammeList;
+  lMany: TArray<string>;
+  i: Integer;
 begin
-  Store := NewStore(FDbPath);
-  Progs := TEpgProgrammeList.Create(True);
+  lStore := NewStore(FDbPath);
+  lProgs := TEpgProgrammeList.Create(True);
   try
-    P := TEpgProgramme.Create;
-    P.ChannelTvgId := 'nl1';
-    P.StartUtc := EncodeDateTime(2026, 6, 14, 18, 0, 0, 0);
-    P.StopUtc := EncodeDateTime(2026, 6, 14, 19, 0, 0, 0);
-    P.Title := 'News';
-    Progs.Add(P);
-    Store.ReplaceEpg(1, Progs);
+    lP := TEpgProgramme.Create;
+    lP.ChannelTvgId := 'nl1';
+    lP.StartUtc := EncodeDateTime(2026, 6, 14, 18, 0, 0, 0);
+    lP.StopUtc := EncodeDateTime(2026, 6, 14, 19, 0, 0, 0);
+    lP.Title := 'News';
+    lProgs.Add(lP);
+    lStore.ReplaceEpg(1, lProgs);
   finally
-    Progs.Free;
+    FreeAndNil(lProgs);
   end;
 
-  var L := Store.LoadEpgForTvgIds(['nl1']);
+  lL := lStore.LoadEpgForTvgIds(['nl1']);
   try
-    Assert.AreEqual<Integer>(1, L.Count);
-    Assert.AreEqual('News', L[0].Title);
+    Assert.AreEqual<Integer>(1, lL.Count);
+    Assert.AreEqual('News', lL[0].Title);
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 
   // empty id set returns empty (no SQL error)
-  L := Store.LoadEpgForTvgIds([]);
+  lL := lStore.LoadEpgForTvgIds([]);
   try
-    Assert.AreEqual<Integer>(0, L.Count);
+    Assert.AreEqual<Integer>(0, lL.Count);
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 
   // chunk-boundary: a huge id list (well over the 800-per-batch chunk AND over the
   // historical 999 bound-parameter limit) must still find the programme — proves
   // the chunk loop accumulates across batches and doesn't blow the param limit.
-  var Many: TArray<string>;
-  SetLength(Many, 1700);
-  for var I := 0 to High(Many) do Many[I] := Format('x%d', [I]);
-  Many[1500] := 'nl1'; // place the real id beyond the first chunk
-  L := Store.LoadEpgForTvgIds(Many);
+  SetLength(lMany, 1700);
+  for i := 0 to High(lMany) do
+    lMany[i] := Format('x%d', [i]);
+  lMany[1500] := 'nl1'; // place the real id beyond the first chunk
+  lL := lStore.LoadEpgForTvgIds(lMany);
   try
-    Assert.AreEqual<Integer>(1, L.Count, 'programme found across chunk boundary');
-    Assert.AreEqual('News', L[0].Title);
+    Assert.AreEqual<Integer>(1, lL.Count, 'programme found across chunk boundary');
+    Assert.AreEqual('News', lL[0].Title);
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 // The AMaxDays cap drops programmes starting beyond now + N days; 0 = no cap.
 procedure TStorageTests.EpgMaxDaysCapsFutureProgrammes;
 var
-  Store: IStore;
-  Progs: TEpgProgrammeList;
+  lStore: IStore;
+  lProgs: TEpgProgrammeList;
+  lL: TEpgProgrammeList;
 
   procedure AddProg(ADaysAhead: Integer; const ATitle: string);
-  var P: TEpgProgramme;
+  var
+    lP: TEpgProgramme;
   begin
-    P := TEpgProgramme.Create;
-    P.ChannelTvgId := 'nl1';
-    P.StartUtc := IncDay(NowUtc, ADaysAhead);
-    P.StopUtc := IncHour(P.StartUtc, 1);
-    P.Title := ATitle;
-    Progs.Add(P);
+    lP := TEpgProgramme.Create;
+    lP.ChannelTvgId := 'nl1';
+    lP.StartUtc := IncDay(NowUtc, ADaysAhead);
+    lP.StopUtc := IncHour(lP.StartUtc, 1);
+    lP.Title := ATitle;
+    lProgs.Add(lP);
   end;
 
 begin
-  Store := NewStore(FDbPath);
-  Progs := TEpgProgrammeList.Create(True);
+  lStore := NewStore(FDbPath);
+  lProgs := TEpgProgrammeList.Create(True);
   try
     AddProg(1, 'Tomorrow');
     AddProg(5, 'In 5 days');
     AddProg(10, 'In 10 days');
-    Store.ReplaceEpg(1, Progs);
+    lStore.ReplaceEpg(1, lProgs);
   finally
-    Progs.Free;
+    FreeAndNil(lProgs);
   end;
 
   // cap to 7 days -> the 10-day one is dropped
-  var L := Store.LoadEpgForTvgIds(['nl1'], 7);
+  lL := lStore.LoadEpgForTvgIds(['nl1'], 7);
   try
-    Assert.AreEqual<Integer>(2, L.Count, '7-day cap keeps only programmes within a week');
-  finally L.Free; end;
+    Assert.AreEqual<Integer>(2, lL.Count, '7-day cap keeps only programmes within a week');
+  finally
+    FreeAndNil(lL);
+  end;
 
   // no cap -> all three
-  L := Store.LoadEpgForTvgIds(['nl1'], 0);
+  lL := lStore.LoadEpgForTvgIds(['nl1'], 0);
   try
-    Assert.AreEqual<Integer>(3, L.Count, '0 = no cap, everything returned');
-  finally L.Free; end;
+    Assert.AreEqual<Integer>(3, lL.Count, '0 = no cap, everything returned');
+  finally
+    FreeAndNil(lL);
+  end;
 end;
 
 procedure TStorageTests.IngestStatusRecordsUnknownSource;
 // Exercises the ingest status lifecycle without any network: refreshing a
 // non-existent source must record a finished status with an error.
 var
-  Store: IStore;
-  Ingest: TIngestService;
-  Statuses: TArray<TIngestStatus>;
-  S: TIngestStatus;
-  Found: Boolean;
+  lStore: IStore;
+  lIngest: TIngestService;
+  lStatuses: TArray<TIngestStatus>;
+  lS: TIngestStatus;
+  lFound: Boolean;
 begin
-  Store := NewStore(FDbPath);
-  Ingest := TIngestService.Create(Store);
+  lStore := NewStore(FDbPath);
+  lIngest := TIngestService.Create(lStore);
   try
-    Assert.AreEqual<Integer>(0, Length(Ingest.GetStatus), 'no status before any refresh');
-    Ingest.RefreshSource(999); // unknown id → resolves immediately with an error
-    Statuses := Ingest.GetStatus;
-    Found := False;
-    for S in Statuses do
-      if S.SourceId = 999 then
+    Assert.AreEqual<Integer>(0, Length(lIngest.GetStatus), 'no status before any refresh');
+    lIngest.RefreshSource(999); // unknown id → resolves immediately with an error
+    lStatuses := lIngest.GetStatus;
+    lFound := False;
+    for lS in lStatuses do
+      if lS.SourceId = 999 then
       begin
-        Found := True;
-        Assert.IsFalse(S.Running, 'finished');
-        Assert.AreEqual('source not found', S.Error);
+        lFound := True;
+        Assert.IsFalse(lS.Running, 'finished');
+        Assert.AreEqual('source not found', lS.Error);
       end;
-    Assert.IsTrue(Found, 'status recorded for the requested source');
+    Assert.IsTrue(lFound, 'status recorded for the requested source');
   finally
-    Ingest.Free;
+    FreeAndNil(lIngest);
   end;
 end;
 
@@ -3060,154 +3808,165 @@ end;
 // from memory, and forgets it after any write that can change the answer.
 procedure TStorageTests.ZapCacheServesAndInvalidates;
 var
-  Inner, Store: IStore;
-  Snap: TSourceSnapshot;
-  Lst, Found: TCustomList;
-  It: TCustomItem;
-  S: TStreamItem;
-  ListId, StreamId, ItemId: Integer;
+  lInner, lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lLst, lFound: TCustomList;
+  lIt: TCustomItem;
+  lS: TStreamItem;
+  lListId, lStreamId, lItemId: Integer;
+  lL: TStreamItemList;
+  lRound: Integer;
 begin
-  Inner := NewStore(FDbPath);
-  Store := TLockingStore.Create(Inner, Inner); // single connection, as on Unraid
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', 'NL', 'npo1.nl', 'http://p/live/u/p/1.ts'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  var L := Store.LoadStreams(Default(TCatalogFilter));
-  try StreamId := L[0].Id; finally L.Free; end;
-
-  Lst := TCustomList.Create;
+  lInner := NewStore(FDbPath);
+  lStore := TLockingStore.Create(lInner, lInner); // single connection, as on Unraid
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', 'NL', 'npo1.nl', 'http://p/live/u/p/1.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lL := lStore.LoadStreams(Default(TCatalogFilter));
   try
-    Lst.Name := 'Box'; Lst.OutputUsername := 'box'; Lst.OutputPassword := 'pw'; Lst.Enabled := True;
-    ListId := Store.SaveList(Lst);
+    lStreamId := lL[0].Id;
   finally
-    Lst.Free;
+    FreeAndNil(lL);
   end;
-  It := TCustomItem.Create;
+
+  lLst := TCustomList.Create;
   try
-    It.ListId := ListId; It.StreamItemId := StreamId; It.ContentType := ctLive;
-    ItemId := Store.SaveItem(It);
+    lLst.Name := 'Box';
+    lLst.OutputUsername := 'box';
+    lLst.OutputPassword := 'pw';
+    lLst.Enabled := True;
+    lListId := lStore.SaveList(lLst);
   finally
-    It.Free;
+    FreeAndNil(lLst);
+  end;
+  lIt := TCustomItem.Create;
+  try
+    lIt.ListId := lListId;
+    lIt.StreamItemId := lStreamId;
+    lIt.ContentType := ctLive;
+    lItemId := lStore.SaveItem(lIt);
+  finally
+    FreeAndNil(lIt);
   end;
 
   // first call fills the cache, second is served from it (both owned copies)
-  for var Round := 1 to 2 do
+  for lRound := 1 to 2 do
   begin
-    Found := Store.FindListByCredentials('box', 'pw');
+    lFound := lStore.FindListByCredentials('box', 'pw');
     try
-      Assert.IsNotNull(Found);
-      Assert.AreEqual(ListId, Found.Id);
+      Assert.IsNotNull(lFound);
+      Assert.AreEqual(lListId, lFound.Id);
     finally
-      Found.Free;
+      FreeAndNil(lFound);
     end;
-    S := Store.LoadListStreamById(ListId, StreamId);
+    lS := lStore.LoadListStreamById(lListId, lStreamId);
     try
-      Assert.IsNotNull(S);
-      Assert.AreEqual('http://p/live/u/p/1.ts', S.UpstreamUrl);
+      Assert.IsNotNull(lS);
+      Assert.AreEqual('http://p/live/u/p/1.ts', lS.UpstreamUrl);
     finally
-      S.Free;
+      FreeAndNil(lS);
     end;
   end;
 
   // the provider URL changes on a refresh -> the next zap sees the new one
-  Snap := TSourceSnapshot.Create(1);
-  Snap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', 'NL', 'npo1.nl', 'http://p/live/u/p/1.m3u8'));
-  Store.MergeSnapshot(Snap);
-  Snap.Free;
-  S := Store.LoadListStreamById(ListId, StreamId);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(1, ctLive, 'u1', 'NPO 1', 'NL', 'npo1.nl', 'http://p/live/u/p/1.m3u8'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lS := lStore.LoadListStreamById(lListId, lStreamId);
   try
-    Assert.AreEqual('http://p/live/u/p/1.m3u8', S.UpstreamUrl, 'refresh invalidates');
+    Assert.AreEqual('http://p/live/u/p/1.m3u8', lS.UpstreamUrl, 'refresh invalidates');
   finally
-    S.Free;
+    FreeAndNil(lS);
   end;
 
   // removed from the list -> no longer playable with this login
-  Store.DeleteItem(ItemId);
-  S := Store.LoadListStreamById(ListId, StreamId);
-  Assert.IsNull(S, 'item removed');
+  lStore.DeleteItem(lItemId);
+  lS := lStore.LoadListStreamById(lListId, lStreamId);
+  Assert.IsNull(lS, 'item removed');
 
   // login changed -> old credentials no longer resolve
-  Found := Store.FindListByCredentials('box', 'pw');
+  lFound := lStore.FindListByCredentials('box', 'pw');
   try
-    Found.OutputPassword := 'new';
-    Store.SaveList(Found);
+    lFound.OutputPassword := 'new';
+    lStore.SaveList(lFound);
   finally
-    Found.Free;
+    FreeAndNil(lFound);
   end;
-  Found := Store.FindListByCredentials('box', 'pw');
-  Assert.IsNull(Found, 'old password rejected');
-  Found := Store.FindListByCredentials('box', 'new');
+  lFound := lStore.FindListByCredentials('box', 'pw');
+  Assert.IsNull(lFound, 'old password rejected');
+  lFound := lStore.FindListByCredentials('box', 'new');
   try
-    Assert.IsNotNull(Found, 'new password accepted');
+    Assert.IsNotNull(lFound, 'new password accepted');
   finally
-    Found.Free;
+    FreeAndNil(lFound);
   end;
 end;
 
 function SaveTestSource(const AStore: IStore; ATypes: TContentTypes; AEnabled: Boolean;
   AId: Integer = 0): Integer;
 var
-  Src: TSourceConfig;
+  lSrc: TSourceConfig;
 begin
-  Src := TSourceConfig.Create;
+  lSrc := TSourceConfig.Create;
   try
-    Src.Id := AId;
-    Src.Name := 'P';
-    Src.Kind := skXtream;
-    Src.Url := 'http://prov:8080/';
-    Src.Username := 'u';
-    Src.Password := 'p';
-    Src.Enabled := AEnabled;
-    Src.ContentTypes := ATypes;
-    Result := AStore.SaveSource(Src);
+    lSrc.Id := AId;
+    lSrc.Name := 'P';
+    lSrc.Kind := skXtream;
+    lSrc.Url := 'http://prov:8080/';
+    lSrc.Username := 'u';
+    lSrc.Password := 'p';
+    lSrc.Enabled := AEnabled;
+    lSrc.ContentTypes := ATypes;
+    Result := AStore.SaveSource(lSrc);
   finally
-    Src.Free;
+    FreeAndNil(lSrc);
   end;
 end;
 
 function AddTestItem(const AStore: IStore; AListId, AStreamId: Integer; ACt: TContentType): Integer;
 var
-  It: TCustomItem;
+  lIt: TCustomItem;
 begin
-  It := TCustomItem.Create;
+  lIt := TCustomItem.Create;
   try
-    It.ListId := AListId;
-    It.StreamItemId := AStreamId;
-    It.ContentType := ACt;
-    Result := AStore.SaveItem(It);
+    lIt.ListId := AListId;
+    lIt.StreamItemId := AStreamId;
+    lIt.ContentType := ACt;
+    Result := AStore.SaveItem(lIt);
   finally
-    It.Free;
+    FreeAndNil(lIt);
   end;
 end;
 
 function StreamIdByUpstream(const AStore: IStore; const AUpstreamId: string): Integer;
 var
-  L: TStreamItemList;
-  S: TStreamItem;
+  lL: TStreamItemList;
+  lS: TStreamItem;
 begin
   Result := 0;
-  L := AStore.LoadStreams(Default(TCatalogFilter));
+  lL := AStore.LoadStreams(Default(TCatalogFilter));
   try
-    for S in L do
-      if S.UpstreamId = AUpstreamId then
-        Exit(S.Id);
+    for lS in lL do
+      if lS.UpstreamId = AUpstreamId then
+        Exit(lS.Id);
   finally
-    L.Free;
+    FreeAndNil(lL);
   end;
 end;
 
 function NewTestList(const AStore: IStore; const AName: string): Integer;
 var
-  Lst: TCustomList;
+  lLst: TCustomList;
 begin
-  Lst := TCustomList.Create;
+  lLst := TCustomList.Create;
   try
-    Lst.Name := AName;
-    Lst.Enabled := True;
-    Result := AStore.SaveList(Lst);
+    lLst.Name := AName;
+    lLst.Enabled := True;
+    Result := AStore.SaveList(lLst);
   finally
-    Lst.Free;
+    FreeAndNil(lLst);
   end;
 end;
 
@@ -3215,133 +3974,147 @@ end;
 // offered to a box (output list, redirect lookup) - its items stay on the list
 procedure TStorageTests.DisabledSourceOrTypeIsNotOffered;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  SrcId, ListId, LiveId, MovieId: Integer;
-  Out: TOutputChannelList;
-  S: TStreamItem;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lSrcId, lListId, lLiveId, lMovieId: Integer;
+  lOut: TOutputChannelList;
+  lS: TStreamItem;
 begin
-  Store := NewStore(FDbPath);
-  SrcId := SaveTestSource(Store, [ctLive, ctMovie], True);
-  Snap := TSourceSnapshot.Create(SrcId);
+  lStore := NewStore(FDbPath);
+  lSrcId := SaveTestSource(lStore, [ctLive, ctMovie], True);
+  lSnap := TSourceSnapshot.Create(lSrcId);
   try
-    Snap.Streams.Add(MakeStream(SrcId, ctLive, 'l1', 'Live One', 'G', '', 'http://prov/live/u/p/l1.ts'));
-    Snap.Streams.Add(MakeStream(SrcId, ctMovie, 'm1', 'Movie One', 'G', '', 'http://prov/movie/u/p/m1.mkv'));
-    Store.MergeSnapshot(Snap);
+    lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'l1', 'Live One', 'G', '', 'http://prov/live/u/p/l1.ts'));
+    lSnap.Streams.Add(MakeStream(lSrcId, ctMovie, 'm1', 'Movie One', 'G', '', 'http://prov/movie/u/p/m1.mkv'));
+    lStore.MergeSnapshot(lSnap);
   finally
-    Snap.Free;
+    FreeAndNil(lSnap);
   end;
-  LiveId := StreamIdByUpstream(Store, 'l1');
-  MovieId := StreamIdByUpstream(Store, 'm1');
-  ListId := NewTestList(Store, 'L');
-  AddTestItem(Store, ListId, LiveId, ctLive);
-  AddTestItem(Store, ListId, MovieId, ctMovie);
+  lLiveId := StreamIdByUpstream(lStore, 'l1');
+  lMovieId := StreamIdByUpstream(lStore, 'm1');
+  lListId := NewTestList(lStore, 'L');
+  AddTestItem(lStore, lListId, lLiveId, ctLive);
+  AddTestItem(lStore, lListId, lMovieId, ctMovie);
 
-  Out := Store.LoadOutputChannels(ListId);
-  try Assert.AreEqual<Integer>(2, Out.Count, 'both offered'); finally Out.Free; end;
+  lOut := lStore.LoadOutputChannels(lListId);
+  try
+    Assert.AreEqual<Integer>(2, lOut.Count, 'both offered');
+  finally
+    FreeAndNil(lOut);
+  end;
 
   // movies switched off on the source
-  SaveTestSource(Store, [ctLive], True, SrcId);
-  Out := Store.LoadOutputChannels(ListId);
+  SaveTestSource(lStore, [ctLive], True, lSrcId);
+  lOut := lStore.LoadOutputChannels(lListId);
   try
-    Assert.AreEqual<Integer>(1, Out.Count, 'movie no longer offered');
-    Assert.AreEqual('Live One', Out[0].Name);
+    Assert.AreEqual<Integer>(1, lOut.Count, 'movie no longer offered');
+    Assert.AreEqual('Live One', lOut[0].Name);
   finally
-    Out.Free;
+    FreeAndNil(lOut);
   end;
-  Assert.IsNull(Store.LoadListStreamById(ListId, MovieId), 'no redirect to a switched-off type');
-  S := Store.LoadListStreamById(ListId, LiveId);
-  try Assert.IsNotNull(S); finally S.Free; end;
+  Assert.IsNull(lStore.LoadListStreamById(lListId, lMovieId), 'no redirect to a switched-off type');
+  lS := lStore.LoadListStreamById(lListId, lLiveId);
+  try
+    Assert.IsNotNull(lS);
+  finally
+    FreeAndNil(lS);
+  end;
 
   // whole source switched off
-  SaveTestSource(Store, [ctLive], False, SrcId);
-  Out := Store.LoadOutputChannels(ListId);
-  try Assert.AreEqual<Integer>(0, Out.Count, 'disabled source offers nothing'); finally Out.Free; end;
-  Assert.IsNull(Store.LoadListStreamById(ListId, LiveId));
+  SaveTestSource(lStore, [ctLive], False, lSrcId);
+  lOut := lStore.LoadOutputChannels(lListId);
+  try
+    Assert.AreEqual<Integer>(0, lOut.Count, 'disabled source offers nothing');
+  finally
+    FreeAndNil(lOut);
+  end;
+  Assert.IsNull(lStore.LoadListStreamById(lListId, lLiveId));
 end;
 
 // Xtream series episodes get stable ids of our own; they resolve to the provider
 // episode URL, but only via a list that carries the series
 procedure TStorageTests.SeriesEpisodesResolveOnlyOnTheirList;
 var
-  Store: IStore;
-  Snap: TSourceSnapshot;
-  SrcId, ListA, ListB, SerId: Integer;
-  Ids, Again: TArray<Integer>;
-  S: TStreamItem;
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lSrcId, lListA, lListB, lSerId: Integer;
+  lIds, lAgain: TArray<Integer>;
+  lS: TStreamItem;
 begin
-  Store := NewStore(FDbPath);
-  SrcId := SaveTestSource(Store, [ctSeries], True);
-  Snap := TSourceSnapshot.Create(SrcId);
+  lStore := NewStore(FDbPath);
+  lSrcId := SaveTestSource(lStore, [ctSeries], True);
+  lSnap := TSourceSnapshot.Create(lSrcId);
   try
-    Snap.Streams.Add(MakeStream(SrcId, ctSeries, 'ser1', 'Some Show', 'G', '', 'http://prov/series/u/p/ser1.ts'));
-    Store.MergeSnapshot(Snap);
+    lSnap.Streams.Add(MakeStream(lSrcId, ctSeries, 'ser1', 'Some Show', 'G', '', 'http://prov/series/u/p/ser1.ts'));
+    lStore.MergeSnapshot(lSnap);
   finally
-    Snap.Free;
+    FreeAndNil(lSnap);
   end;
-  SerId := StreamIdByUpstream(Store, 'ser1');
-  ListA := NewTestList(Store, 'A');
-  ListB := NewTestList(Store, 'B');
-  AddTestItem(Store, ListA, SerId, ctSeries);
+  lSerId := StreamIdByUpstream(lStore, 'ser1');
+  lListA := NewTestList(lStore, 'A');
+  lListB := NewTestList(lStore, 'B');
+  AddTestItem(lStore, lListA, lSerId, ctSeries);
 
-  Ids := Store.EnsureEpisodeIds(SerId, ['901', '902'], ['mkv', '']);
-  Assert.AreEqual<Integer>(2, Length(Ids));
-  Assert.IsTrue(Ids[0] >= cEpisodeIdBase, 'outside the catalog id range');
-  Assert.AreNotEqual(Ids[0], Ids[1]);
-  Again := Store.EnsureEpisodeIds(SerId, ['902', '901'], ['', 'mkv']);
-  Assert.AreEqual(Ids[0], Again[1], 'stable per upstream episode');
-  Assert.AreEqual(Ids[1], Again[0]);
+  lIds := lStore.EnsureEpisodeIds(lSerId, ['901', '902'], ['mkv', '']);
+  Assert.AreEqual<Integer>(2, Length(lIds));
+  Assert.IsTrue(lIds[0] >= cEpisodeIdBase, 'outside the catalog id range');
+  Assert.AreNotEqual(lIds[0], lIds[1]);
+  lAgain := lStore.EnsureEpisodeIds(lSerId, ['902', '901'], ['', 'mkv']);
+  Assert.AreEqual(lIds[0], lAgain[1], 'stable per upstream episode');
+  Assert.AreEqual(lIds[1], lAgain[0]);
 
-  S := Store.LoadListStreamById(ListA, Ids[0]);
+  lS := lStore.LoadListStreamById(lListA, lIds[0]);
   try
-    Assert.IsNotNull(S);
-    Assert.AreEqual('http://prov:8080/series/u/p/901.mkv', S.UpstreamUrl);
-    Assert.AreEqual(SrcId, S.SourceId);
+    Assert.IsNotNull(lS);
+    Assert.AreEqual('http://prov:8080/series/u/p/901.mkv', lS.UpstreamUrl);
+    Assert.AreEqual(lSrcId, lS.SourceId);
   finally
-    S.Free;
+    FreeAndNil(lS);
   end;
-  S := Store.LoadListStreamById(ListA, Ids[1]);
+  lS := lStore.LoadListStreamById(lListA, lIds[1]);
   try
-    Assert.AreEqual('http://prov:8080/series/u/p/902.mp4', S.UpstreamUrl, 'no extension -> mp4');
+    Assert.AreEqual('http://prov:8080/series/u/p/902.mp4', lS.UpstreamUrl, 'no extension -> mp4');
   finally
-    S.Free;
+    FreeAndNil(lS);
   end;
-  Assert.IsNull(Store.LoadListStreamById(ListB, Ids[0]), 'not via a list without the series');
+  Assert.IsNull(lStore.LoadListStreamById(lListB, lIds[0]), 'not via a list without the series');
 end;
 
 procedure TStorageTests.PathCredentials_DashAndEncoding;
 var
-  Store: IStore;
-  Lst: TCustomList;
-  Found: TCustomList;
+  lStore: IStore;
+  lLst: TCustomList;
+  lFound: TCustomList;
 begin
   Assert.AreEqual('-', PathCred(''));
   Assert.AreEqual('a%2Fb%20c%3F', PathCred('a/b c?'));
   Assert.AreEqual('box_1.x~', PathCred('box_1.x~'));
 
-  Store := NewStore(FDbPath);
-  NewTestList(Store, 'Open'); // no login
-  Lst := TCustomList.Create;
+  lStore := NewStore(FDbPath);
+  NewTestList(lStore, 'Open'); // no login
+  lLst := TCustomList.Create;
   try
-    Lst.Name := 'Locked'; Lst.Enabled := True;
-    Lst.OutputUsername := 'me'; Lst.OutputPassword := 'p/w d';
-    Store.SaveList(Lst);
+    lLst.Name := 'Locked';
+    lLst.Enabled := True;
+    lLst.OutputUsername := 'me';
+    lLst.OutputPassword := 'p/w d';
+    lStore.SaveList(lLst);
   finally
-    Lst.Free;
+    FreeAndNil(lLst);
   end;
-  Found := FindListForPath(Store, '-', '-');
+  lFound := FindListForPath(lStore, '-', '-');
   try
-    Assert.IsNotNull(Found, '"-" is the empty login');
-    Assert.AreEqual('Open', Found.Name);
+    Assert.IsNotNull(lFound, '"-" is the empty login');
+    Assert.AreEqual('Open', lFound.Name);
   finally
-    Found.Free;
+    FreeAndNil(lFound);
   end;
-  Found := FindListForPath(Store, 'me', PathCred('p/w d'));
+  lFound := FindListForPath(lStore, 'me', PathCred('p/w d'));
   try
-    Assert.IsNotNull(Found, 'percent-encoded password from our own URL');
-    Assert.AreEqual('Locked', Found.Name);
+    Assert.IsNotNull(lFound, 'percent-encoded password from our own URL');
+    Assert.AreEqual('Locked', lFound.Name);
   finally
-    Found.Free;
+    FreeAndNil(lFound);
   end;
 end;
 

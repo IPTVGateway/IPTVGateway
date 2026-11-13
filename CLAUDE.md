@@ -269,6 +269,14 @@ on a bare `dcc64`/`msbuild` CLI run — pass `/p:ProductVersion=37.0` for CLI bu
 
 - **SQL / long literals:** Delphi multiline strings (`'''` … `'''`), not chains of
   `'...' +` lines; a dynamic fragment (e.g. `cSqlSourceActive`) is appended with `+`.
+- **Code style:** the omonien DelphiStandards guide combined with Embarcadero's Object
+  Pascal Style Guide, with two house rules: local variables get a **lowercase `l`**
+  prefix (`lQuery`; loop counters `i`/`j`/`k` plain) and **no inline variables**.
+  Fields `F`, parameters `A`, constants `c` (ALL_CAPS only for build/system values like
+  `APP_VERSION`), `FreeAndNil` for owned objects, `begin`/`end` on their own lines, max
+  120 chars. **uses: one unit per line**, grouped `// RTL` / `// third-party` / `// own units`.
+  No magic numbers/strings/booleans: named constants (shared HTTP status codes live in
+  `IPTV.Api.Serializers`, config.json keys in `IPTV.App.Config`).
 - **Unit naming:** dotted namespaces `IPTV.<Layer>.<Name>` for core; hosts use
   `Form.*` / `Svc.*`. One responsibility per unit.
 - **Times are UTC** throughout storage and EPG; convert only at the edges.

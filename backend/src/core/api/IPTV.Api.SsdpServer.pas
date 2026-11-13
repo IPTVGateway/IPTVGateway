@@ -11,11 +11,16 @@ unit IPTV.Api.SsdpServer;
 interface
 
 uses
-  IdGlobal, IdUDPServer, IdSocketHandle;
+  // Indy
+  IdGlobal,
+  IdUDPServer,
+  IdSocketHandle;
 
 type
+  /// Log callback (one line per call).
   TLogProc = reference to procedure(const AMsg: string);
 
+  /// SSDP responder that advertises our emulated HDHomeRun tuner to Plex.
   TSsdpServer = class
   private
     FServer: TIdUDPServer;
@@ -24,16 +29,21 @@ type
     procedure DoRead(AThread: TIdUDPListenerThread; const AData: TIdBytes;
       ABinding: TIdSocketHandle);
   public
+    /// Creates the responder (not yet listening).
     // ALocation = absolute URL of our discover.json (e.g. http://host:7777/discover.json)
     constructor Create(const ALocation: string; const ALog: TLogProc = nil);
+    /// Stops the responder and frees it.
     destructor Destroy; override;
+    /// Binds UDP 1900 and starts answering M-SEARCH probes; logs and stays off on failure.
     procedure Start;
+    /// Stops listening (no-op when not running).
     procedure Stop;
   end;
 
 implementation
 
 uses
+  // RTL
   System.SysUtils;
 
 const
@@ -61,14 +71,14 @@ end;
 procedure TSsdpServer.DoRead(AThread: TIdUDPListenerThread; const AData: TIdBytes;
   ABinding: TIdSocketHandle);
 var
-  Msg, Resp: string;
+  lMsg, lResp: string;
 begin
-  Msg := UpperCase(IndyTextEncoding_ASCII.GetString(AData));
+  lMsg := UpperCase(IndyTextEncoding_ASCII.GetString(AData));
   // only answer discovery probes (M-SEARCH ... Man: "ssdp:discover")
-  if (Pos(cProbeMSearch, Msg) = 0) or (Pos(cProbeSsdpDiscover, Msg) = 0) then
+  if (Pos(cProbeMSearch, lMsg) = 0) or (Pos(cProbeSsdpDiscover, lMsg) = 0) then
     Exit;
   // unicast reply straight back to the prober with our discover.json LOCATION
-  Resp :=
+  lResp :=
     'HTTP/1.1 200 OK'#13#10 +
     'CACHE-CONTROL: max-age=1800'#13#10 +
     'EXT:'#13#10 +
@@ -79,7 +89,7 @@ begin
     #13#10;
   try
     ABinding.SendTo(ABinding.PeerIP, ABinding.PeerPort,
-      ToBytes(Resp, IndyTextEncoding_ASCII), ABinding.IPVersion);
+      ToBytes(lResp, IndyTextEncoding_ASCII), ABinding.IPVersion);
   except
     // ignore send failures (prober gone, etc.)
   end;
@@ -87,35 +97,35 @@ end;
 
 procedure TSsdpServer.Start;
 var
-  Srv: TIdUDPServer;
-  B: TIdSocketHandle;
+  lSrv: TIdUDPServer;
+  lBinding: TIdSocketHandle;
 begin
   if FServer <> nil then
     Exit;
-  Srv := TIdUDPServer.Create(nil);
+  lSrv := TIdUDPServer.Create(nil);
   try
-    Srv.ThreadedEvent := True;
-    Srv.OnUDPRead := DoRead;
-    Srv.DefaultPort := cSsdpPort;
-    Srv.Bindings.Clear;
-    B := Srv.Bindings.Add;
-    B.IPVersion := Id_IPv4;
-    B.IP := cBindAnyIPv4;
-    B.Port := cSsdpPort;
-    B.ReuseSocket := rsTrue; // share 1900 with any other UPnP users on the host
-    Srv.Active := True;
+    lSrv.ThreadedEvent := True;
+    lSrv.OnUDPRead := DoRead;
+    lSrv.DefaultPort := cSsdpPort;
+    lSrv.Bindings.Clear;
+    lBinding := lSrv.Bindings.Add;
+    lBinding.IPVersion := Id_IPv4;
+    lBinding.IP := cBindAnyIPv4;
+    lBinding.Port := cSsdpPort;
+    lBinding.ReuseSocket := rsTrue; // share 1900 with any other UPnP users on the host
+    lSrv.Active := True;
     try
-      B.AddMulticastMembership(cSsdpGroup); // also see multicast M-SEARCH
+      lBinding.AddMulticastMembership(cSsdpGroup); // also see multicast M-SEARCH
     except
       // some stacks reject this; unicast replies still work for many setups
     end;
-    FServer := Srv;
+    FServer := lSrv;
     if Assigned(FLog) then
       FLog(Format('SSDP responder on UDP %d -> %s', [cSsdpPort, FLocation]));
   except
     on E: Exception do
     begin
-      Srv.Free;
+      FreeAndNil(lSrv);
       if Assigned(FLog) then
         FLog('SSDP responder not started: ' + E.Message);
     end;
@@ -129,6 +139,7 @@ begin
   try
     FServer.Active := False;
   except
+    // shutting down: a failing socket close must not keep us from freeing it
   end;
   FreeAndNil(FServer);
 end;

@@ -189,6 +189,8 @@ Second bug hunt (five separate runs):
 - The quality probe also finds variants whose names use decorative letters.
 - The daemon's stop signal handler only sets a flag. The main loop does the rest,
   because a signal handler must not take locks.
+- Internal: the code base now follows one coding style (named constants instead of
+  magic values; uniform naming, `uses` and formatting). No functional change.
 
 ## [1.2.35] - 2026-11-13
 

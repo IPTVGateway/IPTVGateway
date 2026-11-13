@@ -12,10 +12,13 @@ unit IPTV.Model.Catalog;
 interface
 
 uses
+  // RTL
   System.Generics.Collections,
+  // Own units
   IPTV.Model.Types;
 
 type
+  /// An ingested upstream category (group) of one content type of one source.
   TCategory = class
   private
     FId: Integer;
@@ -75,7 +78,9 @@ type
     property LastSeenUtc: TDateTime read FLastSeenUtc write FLastSeenUtc;
   end;
 
+  /// Owning list of categories.
   TCategoryList = class(TObjectList<TCategory>);
+  /// Owning list of stream items.
   TStreamItemList = class(TObjectList<TStreamItem>);
 
   /// Result of reading one source: the raw set of categories + streams.
@@ -109,6 +114,10 @@ type
 
 implementation
 
+uses
+  // RTL
+  System.SysUtils;
+
 constructor TSourceSnapshot.Create(ASourceId: Integer);
 begin
   inherited Create;
@@ -119,8 +128,8 @@ end;
 
 destructor TSourceSnapshot.Destroy;
 begin
-  FStreams.Free;
-  FCategories.Free;
+  FreeAndNil(FStreams);
+  FreeAndNil(FCategories);
   inherited;
 end;
 

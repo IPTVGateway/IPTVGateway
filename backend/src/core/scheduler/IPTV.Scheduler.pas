@@ -10,9 +10,13 @@ unit IPTV.Scheduler;
 interface
 
 uses
-  System.Classes, System.SysUtils, System.SyncObjs;
+  // RTL
+  System.Classes,
+  System.SysUtils,
+  System.SyncObjs;
 
 type
+  /// Background thread that calls OnFire once a day at Hour:Minute (local time).
   TDailyScheduler = class(TThread)
   private
     FHour: Word;
@@ -25,6 +29,7 @@ type
     procedure Execute; override;
     procedure TerminatedSet; override;
   public
+    /// Starts the thread right away; AOnFire runs on the scheduler thread.
     constructor Create(AHour, AMinute: Word; const AOnFire: TThreadProcedure);
     destructor Destroy; override;
     property Hour: Word read FHour write FHour;
@@ -34,6 +39,7 @@ type
 implementation
 
 uses
+  // RTL
   System.DateUtils;
 
 const
@@ -58,7 +64,7 @@ end;
 destructor TDailyScheduler.Destroy;
 begin
   inherited; // ensure the thread has finished before freeing the event it waits on
-  FWake.Free;
+  FreeAndNil(FWake);
 end;
 
 // called by Terminate (possibly from another thread) — wake the sleep immediately
@@ -81,7 +87,8 @@ begin
   // refresh (holding the store lock, hanging the UI) on every container restart.
   // A window, not "hour = FHour": on the spring DST day 02:30 local never exists,
   // and the clock jumps to 03:00 - still inside the window, so the run happens.
-  Result := (DateOf(lNow) <> FLastRunDate) and (lNow >= lTarget) and (lNow < lTarget + cFireWindow);
+  Result := (DateOf(lNow) <> FLastRunDate) and (lNow >= lTarget) and
+    (lNow < lTarget + cFireWindow);
 end;
 
 procedure TDailyScheduler.Execute;

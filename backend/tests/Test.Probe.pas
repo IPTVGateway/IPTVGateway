@@ -8,42 +8,51 @@ unit Test.Probe;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Quality-probe tests (TS analyzer, H.264/HEVC SPS) on synthetic data.</summary>
   [TestFixture]
   TProbeTests = class
   public
+    /// <summary>A 1080p25 H.264 High 4.0 SPS is parsed.</summary>
     [Test] procedure H264Sps1080p;
+    /// <summary>A 1080i H.264 SPS is parsed as interlaced.</summary>
     [Test] procedure H264Sps1080i;
+    /// <summary>A 2160p HEVC Main 10 5.1 SPS is parsed.</summary>
     [Test] procedure HevcSps2160pMain10;
+    /// <summary>A chunked synthetic TS feed resolves codecs, fps, bitrate and audio.</summary>
     [Test] procedure TsStreamResolvedFromChunkedFeed;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.Math,
+  // RTL
+  System.SysUtils,
+  System.Math,
+  // own units
   IPTV.Source.Probe;
 
 type
   TBitWriter = record
     Bytes: TBytes;
     Bits: Integer;
-    procedure U(AValue: Cardinal; N: Integer);
+    procedure U(AValue: Cardinal; ABitCount: Integer);
     procedure UE(AValue: Cardinal);
     procedure Trail; // rbsp stop bit + byte align
   end;
 
-procedure TBitWriter.U(AValue: Cardinal; N: Integer);
+procedure TBitWriter.U(AValue: Cardinal; ABitCount: Integer);
 var
-  I: Integer;
+  i: Integer;
 begin
-  for I := N - 1 downto 0 do
+  for i := ABitCount - 1 downto 0 do
   begin
     if (Bits and 7) = 0 then
       Bytes := Bytes + [0];
-    if ((AValue shr I) and 1) <> 0 then
+    if ((AValue shr i) and 1) <> 0 then
       Bytes[High(Bytes)] := Bytes[High(Bytes)] or (1 shl (7 - (Bits and 7)));
     Inc(Bits);
   end;
@@ -51,15 +60,15 @@ end;
 
 procedure TBitWriter.UE(AValue: Cardinal);
 var
-  V: Cardinal;
-  N: Integer;
+  lValue: Cardinal;
+  lBits: Integer;
 begin
-  V := AValue + 1;
-  N := 0;
-  while (V shr N) > 1 do
-    Inc(N);
-  U(0, N);
-  U(V, N + 1);
+  lValue := AValue + 1;
+  lBits := 0;
+  while (lValue shr lBits) > 1 do
+    Inc(lBits);
+  U(0, lBits);
+  U(lValue, lBits + 1);
 end;
 
 procedure TBitWriter.Trail;
@@ -70,133 +79,141 @@ begin
 end;
 
 // insert emulation-prevention bytes as an encoder would
-function Escape(const B: TBytes): TBytes;
+function Escape(const ABytes: TBytes): TBytes;
 var
-  I, Zeros: Integer;
+  i: Integer;
+  lZeros: Integer;
 begin
   Result := [];
-  Zeros := 0;
-  for I := 0 to High(B) do
+  lZeros := 0;
+  for i := 0 to High(ABytes) do
   begin
-    if (Zeros >= 2) and (B[I] <= 3) then
+    if (lZeros >= 2) and (ABytes[i] <= 3) then
     begin
       Result := Result + [3];
-      Zeros := 0;
+      lZeros := 0;
     end;
-    Result := Result + [B[I]];
-    if B[I] = 0 then
-      Inc(Zeros)
+    Result := Result + [ABytes[i]];
+    if ABytes[i] = 0 then
+      Inc(lZeros)
     else
-      Zeros := 0;
+      lZeros := 0;
   end;
 end;
 
 function H264Sps(AInterlaced: Boolean): TBytes;
 var
-  W: TBitWriter;
+  lWriter: TBitWriter;
 begin
-  W := Default(TBitWriter);
-  W.U($67, 8);        // NAL header: SPS
-  W.U(100, 8);        // High
-  W.U(0, 8);          // constraint flags
-  W.U(40, 8);         // level 4.0
-  W.UE(0);            // sps id
-  W.UE(1);            // chroma 4:2:0
-  W.UE(0); W.UE(0);   // bit depth 8/8
-  W.U(0, 1);          // qpprime
-  W.U(0, 1);          // no scaling matrix
-  W.UE(0);            // log2_max_frame_num_minus4
-  W.UE(0);            // poc type 0
-  W.UE(2);            // log2_max_poc_lsb_minus4
-  W.UE(4);            // max ref frames
-  W.U(0, 1);          // gaps
-  W.UE(119);          // 120 MBs = 1920
+  lWriter := Default(TBitWriter);
+  lWriter.U($67, 8);        // NAL header: SPS
+  lWriter.U(100, 8);        // High
+  lWriter.U(0, 8);          // constraint flags
+  lWriter.U(40, 8);         // level 4.0
+  lWriter.UE(0);            // sps id
+  lWriter.UE(1);            // chroma 4:2:0
+  lWriter.UE(0);
+  lWriter.UE(0);            // bit depth 8/8
+  lWriter.U(0, 1);          // qpprime
+  lWriter.U(0, 1);          // no scaling matrix
+  lWriter.UE(0);            // log2_max_frame_num_minus4
+  lWriter.UE(0);            // poc type 0
+  lWriter.UE(2);            // log2_max_poc_lsb_minus4
+  lWriter.UE(4);            // max ref frames
+  lWriter.U(0, 1);          // gaps
+  lWriter.UE(119);          // 120 MBs = 1920
   if AInterlaced then
   begin
-    W.UE(33);         // 34 map units x 2 fields = 1088
-    W.U(0, 1);        // frame_mbs_only = 0
-    W.U(1, 1);        // mb_adaptive_frame_field
+    lWriter.UE(33);         // 34 map units x 2 fields = 1088
+    lWriter.U(0, 1);        // frame_mbs_only = 0
+    lWriter.U(1, 1);        // mb_adaptive_frame_field
   end
   else
   begin
-    W.UE(67);         // 68 MBs = 1088
-    W.U(1, 1);        // frame_mbs_only
+    lWriter.UE(67);         // 68 MBs = 1088
+    lWriter.U(1, 1);        // frame_mbs_only
   end;
-  W.U(1, 1);          // direct_8x8
-  W.U(1, 1);          // cropping
-  W.UE(0); W.UE(0); W.UE(0);
+  lWriter.U(1, 1);          // direct_8x8
+  lWriter.U(1, 1);          // cropping
+  lWriter.UE(0);
+  lWriter.UE(0);
+  lWriter.UE(0);
   if AInterlaced then
-    W.UE(2)           // 2 x CropY(4) = 8 -> 1080
+    lWriter.UE(2)           // 2 x CropY(4) = 8 -> 1080
   else
-    W.UE(4);          // 4 x CropY(2) = 8 -> 1080
-  W.U(0, 1);          // no VUI
-  W.Trail;
-  Result := W.Bytes;
+    lWriter.UE(4);          // 4 x CropY(2) = 8 -> 1080
+  lWriter.U(0, 1);          // no VUI
+  lWriter.Trail;
+  Result := lWriter.Bytes;
 end;
 
 function HevcSps: TBytes;
 var
-  W: TBitWriter;
+  lWriter: TBitWriter;
 begin
-  W := Default(TBitWriter);
-  W.U($42, 8); W.U($01, 8); // NAL header: SPS (type 33)
-  W.U(0, 4);          // vps id
-  W.U(0, 3);          // max_sub_layers_minus1
-  W.U(1, 1);          // temporal_id_nesting
-  W.U(0, 2); W.U(0, 1); // profile space, tier
-  W.U(2, 5);          // Main 10
-  W.U($20000000, 32); // compatibility
-  W.U(1, 1);          // progressive_source
-  W.U(0, 1);          // interlaced_source
-  W.U(0, 1); W.U(1, 1); // non_packed, frame_only
-  W.U(0, 32); W.U(0, 12); // 44 reserved bits
-  W.U(153, 8);        // level 5.1
-  W.UE(0);            // sps id
-  W.UE(1);            // 4:2:0
-  W.UE(3840);
-  W.UE(2160);
-  W.U(0, 1);          // no conformance window
-  W.UE(2);            // bit depth luma 10
-  W.UE(2);            // bit depth chroma 10
-  W.Trail;
-  Result := W.Bytes;
+  lWriter := Default(TBitWriter);
+  lWriter.U($42, 8);
+  lWriter.U($01, 8);        // NAL header: SPS (type 33)
+  lWriter.U(0, 4);          // vps id
+  lWriter.U(0, 3);          // max_sub_layers_minus1
+  lWriter.U(1, 1);          // temporal_id_nesting
+  lWriter.U(0, 2);
+  lWriter.U(0, 1);          // profile space, tier
+  lWriter.U(2, 5);          // Main 10
+  lWriter.U($20000000, 32); // compatibility
+  lWriter.U(1, 1);          // progressive_source
+  lWriter.U(0, 1);          // interlaced_source
+  lWriter.U(0, 1);
+  lWriter.U(1, 1);          // non_packed, frame_only
+  lWriter.U(0, 32);
+  lWriter.U(0, 12);         // 44 reserved bits
+  lWriter.U(153, 8);        // level 5.1
+  lWriter.UE(0);            // sps id
+  lWriter.UE(1);            // 4:2:0
+  lWriter.UE(3840);
+  lWriter.UE(2160);
+  lWriter.U(0, 1);          // no conformance window
+  lWriter.UE(2);            // bit depth luma 10
+  lWriter.UE(2);            // bit depth chroma 10
+  lWriter.Trail;
+  Result := lWriter.Bytes;
 end;
 
 procedure TProbeTests.H264Sps1080p;
 var
-  R: TProbeResult;
+  lResult: TProbeResult;
 begin
-  R := Default(TProbeResult);
-  Assert.IsTrue(ParseH264Sps(H264Sps(False), R));
-  Assert.AreEqual(1920, R.Width);
-  Assert.AreEqual(1080, R.Height);
-  Assert.IsFalse(R.Interlaced);
-  Assert.AreEqual(8, R.BitDepth);
-  Assert.AreEqual('High 4.0', R.Profile);
+  lResult := Default(TProbeResult);
+  Assert.IsTrue(ParseH264Sps(H264Sps(False), lResult));
+  Assert.AreEqual(1920, lResult.Width);
+  Assert.AreEqual(1080, lResult.Height);
+  Assert.IsFalse(lResult.Interlaced);
+  Assert.AreEqual(8, lResult.BitDepth);
+  Assert.AreEqual('High 4.0', lResult.Profile);
 end;
 
 procedure TProbeTests.H264Sps1080i;
 var
-  R: TProbeResult;
+  lResult: TProbeResult;
 begin
-  R := Default(TProbeResult);
-  Assert.IsTrue(ParseH264Sps(H264Sps(True), R));
-  Assert.AreEqual(1920, R.Width);
-  Assert.AreEqual(1080, R.Height);
-  Assert.IsTrue(R.Interlaced);
+  lResult := Default(TProbeResult);
+  Assert.IsTrue(ParseH264Sps(H264Sps(True), lResult));
+  Assert.AreEqual(1920, lResult.Width);
+  Assert.AreEqual(1080, lResult.Height);
+  Assert.IsTrue(lResult.Interlaced);
 end;
 
 procedure TProbeTests.HevcSps2160pMain10;
 var
-  R: TProbeResult;
+  lResult: TProbeResult;
 begin
-  R := Default(TProbeResult);
-  Assert.IsTrue(ParseHevcSps(HevcSps, R));
-  Assert.AreEqual(3840, R.Width);
-  Assert.AreEqual(2160, R.Height);
-  Assert.AreEqual(10, R.BitDepth);
-  Assert.AreEqual('Main 10 5.1', R.Profile);
-  Assert.AreEqual('HEVC', R.VideoCodec);
+  lResult := Default(TProbeResult);
+  Assert.IsTrue(ParseHevcSps(HevcSps, lResult));
+  Assert.AreEqual(3840, lResult.Width);
+  Assert.AreEqual(2160, lResult.Height);
+  Assert.AreEqual(10, lResult.BitDepth);
+  Assert.AreEqual('Main 10 5.1', lResult.Profile);
+  Assert.AreEqual('HEVC', lResult.VideoCodec);
 end;
 
 { ── synthetic transport stream ── }
@@ -204,25 +221,26 @@ end;
 // one 188-byte packet; short payloads are padded with an adaptation field
 function Pkt(APid: Integer; AStart: Boolean; const APayload: TBytes; var ACc: Integer): TBytes;
 var
-  Stuff, I: Integer;
+  lStuff: Integer;
+  i: Integer;
 begin
   SetLength(Result, 188);
   Result[0] := $47;
   Result[1] := (Ord(AStart) shl 6) or ((APid shr 8) and $1F);
   Result[2] := APid and $FF;
-  Stuff := 184 - Length(APayload);
-  Assert.IsTrue(Stuff >= 0, 'payload fits');
-  if Stuff = 0 then
+  lStuff := 184 - Length(APayload);
+  Assert.IsTrue(lStuff >= 0, 'payload fits');
+  if lStuff = 0 then
     Result[3] := $10 or (ACc and $0F)
   else
   begin
     Result[3] := $30 or (ACc and $0F);
-    Result[4] := Stuff - 1;
-    if Stuff > 1 then
+    Result[4] := lStuff - 1;
+    if lStuff > 1 then
     begin
       Result[5] := 0; // no adaptation flags
-      for I := 6 to 4 + Stuff - 1 do
-        Result[I] := $FF;
+      for i := 6 to 4 + lStuff - 1 do
+        Result[i] := $FF;
     end;
   end;
   if Length(APayload) > 0 then
@@ -238,65 +256,68 @@ end;
 
 procedure TProbeTests.TsStreamResolvedFromChunkedFeed;
 var
-  Ts, Pat, Pmt, Pes, Sps: TBytes;
-  CcPat, CcPmt, CcVid, I, Off, N: Integer;
-  A: TTsAnalyzer;
-  R: TProbeResult;
+  lTs, lPat, lPmt, lPes, lSps: TBytes;
+  lCcPat, lCcPmt, lCcVid, lOffset, lCount: Integer;
+  i: Integer;
+  lAnalyzer: TTsAnalyzer;
+  lResult: TProbeResult;
 begin
-  CcPat := 0; CcPmt := 0; CcVid := 0;
+  lCcPat := 0;
+  lCcPmt := 0;
+  lCcVid := 0;
   // PAT: program 1 -> PMT pid 0x1000
-  Pat := [0, $00, $B0, 13, 0, 1, $C1, 0, 0, 0, 1, $F0, $00, 0, 0, 0, 0];
+  lPat := [0, $00, $B0, 13, 0, 1, $C1, 0, 0, 0, 1, $F0, $00, 0, 0, 0, 0];
   // PMT: PCR 0x100; H.264 0x100; AAC 0x101 'dut'; private 0x102 with AC-3 descriptor 'eng'
-  Pmt := [0, $02, $B0, 0, 0, 1, $C1, 0, 0, $E1, $00, $F0, $00,
+  lPmt := [0, $02, $B0, 0, 0, 1, $C1, 0, 0, $E1, $00, $F0, $00,
     $1B, $E1, $00, $F0, $00,
     $0F, $E1, $01, $F0, $06, $0A, $04, Ord('d'), Ord('u'), Ord('t'), 0,
     $06, $E1, $02, $F0, $09, $6A, $01, $00, $0A, $04, Ord('e'), Ord('n'), Ord('g'), 0,
     0, 0, 0, 0];
-  Pmt[3] := Length(Pmt) - 4; // section_length (after the pointer + 3 header bytes)
-  Sps := Escape(H264Sps(False));
+  lPmt[3] := Length(lPmt) - 4; // section_length (after the pointer + 3 header bytes)
+  lSps := Escape(H264Sps(False));
 
-  Ts := [$12, $34, $00, $47, $99]; // junk before the first sync byte
-  Ts := Ts + Pkt(0, True, Pat, CcPat) + Pkt($1000, True, Pmt, CcPmt);
+  lTs := [$12, $34, $00, $47, $99]; // junk before the first sync byte
+  lTs := lTs + Pkt(0, True, lPat, lCcPat) + Pkt($1000, True, lPmt, lCcPmt);
   // 51 video PES, 25 fps (3600 ticks), the first one carrying the SPS
-  for I := 0 to 50 do
+  for i := 0 to 50 do
   begin
-    Pes := [0, 0, 1, $E0, 0, 0, $80, $80, 5] + PtsBytes(900000 + I * 3600) +
+    lPes := [0, 0, 1, $E0, 0, 0, $80, $80, 5] + PtsBytes(900000 + i * 3600) +
       [0, 0, 0, 1, $09, $F0];
-    if I = 0 then
-      Pes := Pes + [0, 0, 0, 1] + Sps;
-    Pes := Pes + [0, 0, 0, 1, $65, $88, $84];
-    Ts := Ts + Pkt($100, True, Pes, CcVid);
-    if I mod 10 = 0 then
-      Ts := Ts + Pkt(0, True, Pat, CcPat) + Pkt($1000, True, Pmt, CcPmt);
+    if i = 0 then
+      lPes := lPes + [0, 0, 0, 1] + lSps;
+    lPes := lPes + [0, 0, 0, 1, $65, $88, $84];
+    lTs := lTs + Pkt($100, True, lPes, lCcVid);
+    if i mod 10 = 0 then
+      lTs := lTs + Pkt(0, True, lPat, lCcPat) + Pkt($1000, True, lPmt, lCcPmt);
   end;
 
-  A := TTsAnalyzer.Create;
+  lAnalyzer := TTsAnalyzer.Create;
   try
     // odd chunk sizes exercise the partial-packet carry
-    Off := 0;
-    while Off < Length(Ts) do
+    lOffset := 0;
+    while lOffset < Length(lTs) do
     begin
-      N := Min(97, Length(Ts) - Off);
-      A.Feed(Ts[Off], N);
-      Inc(Off, N);
+      lCount := Min(97, Length(lTs) - lOffset);
+      lAnalyzer.Feed(lTs[lOffset], lCount);
+      Inc(lOffset, lCount);
     end;
-    R := Default(TProbeResult);
-    A.Finish(R);
+    lResult := Default(TProbeResult);
+    lAnalyzer.Finish(lResult);
   finally
-    A.Free;
+    FreeAndNil(lAnalyzer);
   end;
 
-  Assert.AreEqual('H.264', R.VideoCodec);
-  Assert.AreEqual(1920, R.Width);
-  Assert.AreEqual(1080, R.Height);
-  Assert.AreEqual(25.0, R.Fps, 0.01, 'fps from PES timestamps');
-  Assert.AreEqual(2.0, R.MediaSeconds, 0.01);
-  Assert.IsTrue(R.BitrateKbps > 0, 'bitrate');
-  Assert.AreEqual(2, Length(R.Audio), 'two audio tracks');
-  Assert.AreEqual('AAC', R.Audio[0].Codec);
-  Assert.AreEqual('dut', R.Audio[0].Language);
-  Assert.AreEqual('AC-3', R.Audio[1].Codec);
-  Assert.AreEqual('eng', R.Audio[1].Language);
+  Assert.AreEqual('H.264', lResult.VideoCodec);
+  Assert.AreEqual(1920, lResult.Width);
+  Assert.AreEqual(1080, lResult.Height);
+  Assert.AreEqual(25.0, lResult.Fps, 0.01, 'fps from PES timestamps');
+  Assert.AreEqual(2.0, lResult.MediaSeconds, 0.01);
+  Assert.IsTrue(lResult.BitrateKbps > 0, 'bitrate');
+  Assert.AreEqual(2, Length(lResult.Audio), 'two audio tracks');
+  Assert.AreEqual('AAC', lResult.Audio[0].Codec);
+  Assert.AreEqual('dut', lResult.Audio[0].Language);
+  Assert.AreEqual('AC-3', lResult.Audio[1].Codec);
+  Assert.AreEqual('eng', lResult.Audio[1].Language);
 end;
 
 initialization

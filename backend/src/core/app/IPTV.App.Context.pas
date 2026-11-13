@@ -10,9 +10,15 @@ unit IPTV.App.Context;
 interface
 
 uses
+  // RTL
   System.SysUtils,
-  IPTV.App.Config, IPTV.Storage.Intf, IPTV.Ingest.Service, IPTV.Model.CustomList,
-  IPTV.Scheduler, IPTV.Api.Server;
+  // Own units
+  IPTV.App.Config,
+  IPTV.Storage.Intf,
+  IPTV.Ingest.Service,
+  IPTV.Model.CustomList,
+  IPTV.Scheduler,
+  IPTV.Api.Server;
 
 const
   /// Lines kept by the in-memory log ring (the web app's Log tab).
@@ -35,13 +41,16 @@ type
     FCount: Integer;
     FNextSeq: Int64;
   public
+    /// Creates a ring of ACapacity lines (at least cLogRingMinCapacity).
     constructor Create(ACapacity: Integer = cLogRingCapacity);
     destructor Destroy; override;
+    /// Appends a line (thread-safe), overwriting the oldest when full.
     procedure Add(const AText: string);
     /// Lines with Seq > ASince, oldest first (at most the buffer).
     function Since(ASince: Int64): TArray<TLogLine>;
   end;
 
+  /// Composition root: owns store, ingest, scheduler and HTTP server; published as App.
   TAppContext = class
   private
     FConfig: TAppConfig;
@@ -60,9 +69,12 @@ type
     constructor Create(const AConfig: TAppConfig; const ALog: TLogProc = nil;
       const AConfigPath: string = '');
     destructor Destroy; override;
+    /// Opens the store, starts ingest, the HTTP server and the scheduler, then sets App.
     procedure Start;
+    /// Stops scheduler and server, waits for background ops, clears App, releases the store.
     procedure Stop;
-    procedure Log(const AMsg: string); // route handlers can emit diagnostics
+    /// Route handlers can emit diagnostics.
+    procedure Log(const AMsg: string);
     /// Run AWork on a detached thread, tracked so Stop waits for it before tearing
     /// down App/store/ingest. Use for fire-and-forget admin actions (refreshes).
     procedure SpawnBackground(const AWork: TProc);
@@ -74,13 +86,14 @@ type
     /// Apply Plex tuner settings live (gates the endpoints; starts/stops SSDP).
     procedure UpdatePlexSettings(AM3uEnabled, AM3uProxy, AHdhrEnabled,
       AHdhrProxy: Boolean; ATunerCount: Integer; const AServerUrl, AToken: string);
-    /// Media-server config: the global group filter, the base URL boxes use, and the
-    /// dummy-EPG settings. Persisted; read live by the output builders (no restart).
     /// Extra (third-party) XMLTV guide URLs; persisted. Fetched on the next refresh.
     procedure UpdateExtraEpgUrls(const AUrls: TArray<string>);
+    /// Set the clients allowed on the Plex/HDHomeRun endpoints (blank entries dropped); persisted.
     procedure UpdateMediaAllowedClients(const AClients: TArray<string>);
     /// May this client IP use the Plex/HDHomeRun endpoints? (empty list = everyone)
     function IsMediaClientAllowed(const AClientIp: string): Boolean;
+    /// Media-server config: the global group filter, the base URL boxes use, and the
+    /// dummy-EPG settings. Persisted; read live by the output builders (no restart).
     procedure UpdateMediaConfig(const AVisibleGroups: TArray<string>;
       const ABaseUrl: string; ADummyEnabled: Boolean;
       ADummyBlockMinutes, ADummyHoursBack, ADummyHoursAhead: Integer;
@@ -101,8 +114,11 @@ type
     /// The bouquet the media-server surfaces serve: the chosen PlexListId when it
     /// exists and is enabled, else the first enabled bouquet. nil if none. Caller frees.
     function PlexList: TCustomList;
+    /// The current (runtime-updated) settings.
     property Config: TAppConfig read FConfig;
+    /// The shared, serialised store.
     property Store: IStore read FStore;
+    /// The ingest service (refreshes).
     property Ingest: TIngestService read FIngest;
   end;
 
@@ -117,8 +133,15 @@ var
 implementation
 
 uses
-  System.IOUtils, System.Classes, System.SyncObjs, System.Generics.Collections,
-  IPTV.Storage.SQLite, IPTV.Storage.Locking, IPTV.Core.Utils;
+  // RTL
+  System.IOUtils,
+  System.Classes,
+  System.SyncObjs,
+  System.Generics.Collections,
+  // Own units
+  IPTV.Storage.SQLite,
+  IPTV.Storage.Locking,
+  IPTV.Core.Utils;
 
 const
   // host part of the image's config.json template value (http://your-unraid-host:7777)
@@ -150,21 +173,21 @@ end;
 
 destructor TLogRing.Destroy;
 begin
-  FLock.Free;
+  FreeAndNil(FLock);
   inherited;
 end;
 
 procedure TLogRing.Add(const AText: string);
 var
-  L: TLogLine;
+  lLine: TLogLine;
 begin
   TMonitor.Enter(FLock);
   try
     Inc(FNextSeq);
-    L.Seq := FNextSeq;
-    L.TimeUtc := NowUtc;
-    L.Text := AText;
-    FLines[(FNextSeq - 1) mod Length(FLines)] := L;
+    lLine.Seq := FNextSeq;
+    lLine.TimeUtc := NowUtc;
+    lLine.Text := AText;
+    FLines[(FNextSeq - 1) mod Length(FLines)] := lLine;
     if FCount < Length(FLines) then
       Inc(FCount);
   finally
@@ -174,7 +197,7 @@ end;
 
 function TLogRing.Since(ASince: Int64): TArray<TLogLine>;
 var
-  First, Q: Int64;
+  lFirst, lSeq: Int64;
 begin
   Result := nil;
   TMonitor.Enter(FLock);
@@ -182,14 +205,14 @@ begin
     // a client ahead of us = we restarted (numbering began again): send everything
     if ASince > FNextSeq then
       ASince := 0;
-    First := FNextSeq - FCount + 1; // oldest seq still in the buffer
-    if ASince + 1 > First then
-      First := ASince + 1;
-    if First > FNextSeq then
+    lFirst := FNextSeq - FCount + 1; // oldest seq still in the buffer
+    if ASince + 1 > lFirst then
+      lFirst := ASince + 1;
+    if lFirst > FNextSeq then
       Exit;
-    SetLength(Result, FNextSeq - First + 1);
-    for Q := First to FNextSeq do
-      Result[Q - First] := FLines[(Q - 1) mod Length(FLines)];
+    SetLength(Result, FNextSeq - lFirst + 1);
+    for lSeq := lFirst to FNextSeq do
+      Result[lSeq - lFirst] := FLines[(lSeq - 1) mod Length(FLines)];
   finally
     TMonitor.Exit(FLock);
   end;
@@ -231,6 +254,8 @@ begin
 end;
 
 procedure TAppContext.Start;
+var
+  lStore: IStore;
 begin
   if FConfig.LoadWarning <> '' then
     Log(FConfig.LoadWarning);
@@ -260,8 +285,8 @@ begin
   begin
     Log('storage: single serialised connection (rollback journal) — robust on any ' +
         'filesystem. Set separateReadConnection=true for non-blocking reads on a real disk.');
-    var LStore: IStore := TSQLiteStore.Create(FConfig.DatabasePath); // no WAL
-    FStore := TLockingStore.Create(LStore, LStore); // same connection, shared lock
+    lStore := TSQLiteStore.Create(FConfig.DatabasePath); // no WAL
+    FStore := TLockingStore.Create(lStore, lStore); // same connection, shared lock
   end;
   FStore.Init;
 
@@ -271,7 +296,8 @@ begin
   // a stable HDHomeRun device id for Plex (generated once, persisted)
   if FConfig.PlexDeviceId = '' then
   begin
-    FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1, cPlexDeviceIdLength);
+    FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1,
+      cPlexDeviceIdLength);
     // not over a config.json that failed to load: we run on defaults then, and
     // saving would replace the operator's file (port, password, ...) with them
     if FConfig.LoadWarning = '' then
@@ -380,35 +406,35 @@ end;
 
 function TAppContext.PlexList: TCustomList;
 var
-  Lists: TObjectList<TCustomList>;
-  I: Integer;
+  lLists: TObjectList<TCustomList>;
+  i: Integer;
 begin
   Result := nil;
   if FConfig.PlexListId > 0 then
   begin
-    Lists := FStore.LoadLists;
+    lLists := FStore.LoadLists;
     try
-      for I := 0 to Lists.Count - 1 do
-        if (Lists[I].Id = FConfig.PlexListId) and Lists[I].Enabled then
+      for i := 0 to lLists.Count - 1 do
+        if (lLists[i].Id = FConfig.PlexListId) and lLists[i].Enabled then
         begin
-          Result := Lists.Extract(Lists[I]);
+          Result := lLists.Extract(lLists[i]);
           Exit;
         end;
     finally
-      Lists.Free;
+      FreeAndNil(lLists);
     end;
   end;
   // no explicit choice: the first enabled bouquet (by id)
-  Lists := FStore.LoadLists;
+  lLists := FStore.LoadLists;
   try
-    for I := 0 to Lists.Count - 1 do
-      if Lists[I].Enabled then
+    for i := 0 to lLists.Count - 1 do
+      if lLists[i].Enabled then
       begin
-        Result := Lists.Extract(Lists[I]);
+        Result := lLists.Extract(lLists[i]);
         Exit;
       end;
   finally
-    Lists.Free;
+    FreeAndNil(lLists);
   end;
   Result := nil;
 end;
@@ -460,24 +486,25 @@ end;
 
 procedure TAppContext.UpdateExtraEpgUrls(const AUrls: TArray<string>);
 var
-  L: TArray<string>;
-  U: string;
+  lUrls: TArray<string>;
+  lUrl: string;
 begin
-  L := nil;
-  for U in AUrls do
-    if U.Trim <> '' then
-      L := L + [U.Trim];
-  FConfig.ExtraEpgUrls := L;
+  lUrls := nil;
+  for lUrl in AUrls do
+    if lUrl.Trim <> '' then
+      lUrls := lUrls + [lUrl.Trim];
+  FConfig.ExtraEpgUrls := lUrls;
   if Assigned(FIngest) then
-    FIngest.SetExtraEpgUrls(L);
+    FIngest.SetExtraEpgUrls(lUrls);
   FConfig.Save(FConfigPath);
-  Log(Format('Extra EPG sources: %d (fetched with the next refresh / EPG update)', [Length(L)]));
+  Log(Format('Extra EPG sources: %d (fetched with the next refresh / EPG update)', [Length(lUrls)]));
 end;
 
 function TAppContext.ResetPlexDeviceId: string;
 begin
   // fresh 8-hex id (same shape as the one minted on first start) — a NEW device to Plex
-  FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1, cPlexDeviceIdLength);
+  FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1,
+    cPlexDeviceIdLength);
   if Assigned(FServer) then
     FServer.SyncPlex(FConfig); // refresh the server's config copy (discover.json reads App.Config live)
   FConfig.Save(FConfigPath);
@@ -499,17 +526,17 @@ end;
 
 function TAppContext.PlexSyncPending: Boolean;
 var
-  Changed, Rescan: string;
+  lChanged, lRescan: string;
 begin
   Result := False;
   if not Assigned(FStore) then
     Exit;
-  Changed := FStore.GetState(STATE_LINEUP_CHANGED);
-  if Changed = '' then
+  lChanged := FStore.GetState(STATE_LINEUP_CHANGED);
+  if lChanged = '' then
     Exit; // nothing changed yet
-  Rescan := FStore.GetState(STATE_PLEX_RESCAN);
+  lRescan := FStore.GetState(STATE_PLEX_RESCAN);
   // ISO-8601 UTC strings are fixed-width, so lexicographic compare = chronological
-  Result := (Rescan = '') or (Changed > Rescan);
+  Result := (lRescan = '') or (lChanged > lRescan);
 end;
 
 function TAppContext.PlexEnabled: Boolean;
@@ -518,6 +545,8 @@ begin
 end;
 
 procedure TAppContext.Stop;
+var
+  lWaited: Integer;
 begin
   // Order matters: stop the scheduler (no refresh fires mid-shutdown), then the
   // HTTP server (stops accepting + drains in-flight requests) BEFORE clearing the
@@ -541,11 +570,11 @@ begin
 
   // wait for detached admin refreshes to finish so they don't touch App/FIngest
   // after we free them. Bounded so a stuck network read can't hang shutdown forever.
-  var Waited := 0;
-  while (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) and (Waited < cBgOpsMaxWaitMs) do
+  lWaited := 0;
+  while (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) and (lWaited < cBgOpsMaxWaitMs) do
   begin
     Sleep(cBgOpsPollMs);
-    Inc(Waited, cBgOpsPollMs);
+    Inc(lWaited, cBgOpsPollMs);
   end;
 
   if App = Self then

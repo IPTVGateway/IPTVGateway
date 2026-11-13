@@ -5,126 +5,164 @@ unit Test.Serializers;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Model &lt;-&gt; JSON round-trip and partial-patch tests.</summary>
   [TestFixture]
   TSerializerTests = class
   public
+    /// <summary>A source config round-trips through JSON.</summary>
     [Test] procedure SourceRoundtrip;
+    /// <summary>A list round-trips through JSON.</summary>
     [Test] procedure ListRoundtrip;
+    /// <summary>A list item round-trips through JSON.</summary>
     [Test] procedure ItemRoundtrip;
+    /// <summary>IntArrayFromJson parses an id array (missing key = empty).</summary>
     [Test] procedure IntArrayFromJsonParses;
+    /// <summary>A partial favorite patch keeps the group name.</summary>
     [Test] procedure GroupPartialPatchKeepsName;
+    /// <summary>A partial rename keeps the favorite flag.</summary>
     [Test] procedure GroupPartialRenameKeepsFavorite;
+    /// <summary>A partial source patch keeps the other fields.</summary>
     [Test] procedure SourcePartialPatchKeepsFields;
+    /// <summary>A partial list patch keeps the other fields.</summary>
     [Test] procedure ListPartialPatchKeepsFields;
+    /// <summary>A partial item patch keeps the other fields.</summary>
     [Test] procedure ItemPartialPatchKeepsFields;
   end;
 
 implementation
 
 uses
+  // RTL
+  System.SysUtils,
   System.JSON,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.CustomList, IPTV.Api.Serializers;
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.CustomList,
+  IPTV.Api.Serializers;
 
 procedure TSerializerTests.SourceRoundtrip;
 var
-  A, B: TSourceConfig;
-  J: TJSONObject;
+  lOriginal: TSourceConfig;
+  lCopy: TSourceConfig;
+  lJson: TJSONObject;
 begin
-  A := TSourceConfig.Create;
-  B := TSourceConfig.Create;
+  lOriginal := nil;
+  lCopy := nil;
   try
-    A.Id := 7; A.Name := 'P'; A.Kind := skM3U; A.Url := 'http://x/p.m3u';
-    A.Enabled := False; A.ContentTypes := [ctLive, ctRadio];
-    A.StripPrefixes := ['NL', 'UK'];
-    A.ForceHls := True;
-    J := SourceToJson(A);
+    lOriginal := TSourceConfig.Create;
+    lCopy := TSourceConfig.Create;
+    lOriginal.Id := 7;
+    lOriginal.Name := 'P';
+    lOriginal.Kind := skM3U;
+    lOriginal.Url := 'http://x/p.m3u';
+    lOriginal.Enabled := False;
+    lOriginal.ContentTypes := [ctLive, ctRadio];
+    lOriginal.StripPrefixes := ['NL', 'UK'];
+    lOriginal.ForceHls := True;
+    lJson := SourceToJson(lOriginal);
     try
-      SourceFromJson(J, B);
+      SourceFromJson(lJson, lCopy);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual(7, B.Id);
-    Assert.AreEqual('P', B.Name);
-    Assert.AreEqual(skM3U, B.Kind);
-    Assert.IsFalse(B.Enabled);
-    Assert.IsTrue([ctLive, ctRadio] = B.ContentTypes);
-    Assert.AreEqual<Integer>(2, Length(B.StripPrefixes), 'stripPrefixes round-trip');
-    Assert.AreEqual('UK', B.StripPrefixes[1]);
-    Assert.IsTrue(B.ForceHls, 'forceHls round-trips');
+    Assert.AreEqual(7, lCopy.Id);
+    Assert.AreEqual('P', lCopy.Name);
+    Assert.AreEqual(skM3U, lCopy.Kind);
+    Assert.IsFalse(lCopy.Enabled);
+    Assert.IsTrue([ctLive, ctRadio] = lCopy.ContentTypes);
+    Assert.AreEqual<Integer>(2, Length(lCopy.StripPrefixes), 'stripPrefixes round-trip');
+    Assert.AreEqual('UK', lCopy.StripPrefixes[1]);
+    Assert.IsTrue(lCopy.ForceHls, 'forceHls round-trips');
   finally
-    A.Free;
-    B.Free;
+    FreeAndNil(lOriginal);
+    FreeAndNil(lCopy);
   end;
 end;
 
 procedure TSerializerTests.ListRoundtrip;
 var
-  A, B: TCustomList;
-  J: TJSONObject;
+  lOriginal: TCustomList;
+  lCopy: TCustomList;
+  lJson: TJSONObject;
 begin
-  A := TCustomList.Create;
-  B := TCustomList.Create;
+  lOriginal := nil;
+  lCopy := nil;
   try
-    A.Id := 3; A.Name := 'List'; A.OutputUsername := ''; A.OutputPassword := ''; A.Enabled := True;
-    J := ListToJson(A);
+    lOriginal := TCustomList.Create;
+    lCopy := TCustomList.Create;
+    lOriginal.Id := 3;
+    lOriginal.Name := 'List';
+    lOriginal.OutputUsername := '';
+    lOriginal.OutputPassword := '';
+    lOriginal.Enabled := True;
+    lJson := ListToJson(lOriginal);
     try
-      ListFromJson(J, B);
+      ListFromJson(lJson, lCopy);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual(3, B.Id);
-    Assert.AreEqual('List', B.Name);
-    Assert.AreEqual('', B.OutputUsername, 'optional credentials round-trip as empty');
-    Assert.IsTrue(B.Enabled);
+    Assert.AreEqual(3, lCopy.Id);
+    Assert.AreEqual('List', lCopy.Name);
+    Assert.AreEqual('', lCopy.OutputUsername, 'optional credentials round-trip as empty');
+    Assert.IsTrue(lCopy.Enabled);
   finally
-    A.Free;
-    B.Free;
+    FreeAndNil(lOriginal);
+    FreeAndNil(lCopy);
   end;
 end;
 
 procedure TSerializerTests.ItemRoundtrip;
 var
-  A, B: TCustomItem;
-  J: TJSONObject;
+  lOriginal: TCustomItem;
+  lCopy: TCustomItem;
+  lJson: TJSONObject;
 begin
-  A := TCustomItem.Create;
-  B := TCustomItem.Create;
+  lOriginal := nil;
+  lCopy := nil;
   try
-    A.Id := 1; A.ListId := 2; A.StreamItemId := 9; A.CustomGroupId := 4;
-    A.DisplayName := 'Renamed'; A.ChannelNumber := 42;
-    J := ItemToJson(A);
+    lOriginal := TCustomItem.Create;
+    lCopy := TCustomItem.Create;
+    lOriginal.Id := 1;
+    lOriginal.ListId := 2;
+    lOriginal.StreamItemId := 9;
+    lOriginal.CustomGroupId := 4;
+    lOriginal.DisplayName := 'Renamed';
+    lOriginal.ChannelNumber := 42;
+    lJson := ItemToJson(lOriginal);
     try
-      ItemFromJson(J, B);
+      ItemFromJson(lJson, lCopy);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual(9, B.StreamItemId);
-    Assert.AreEqual(4, B.CustomGroupId);
-    Assert.AreEqual('Renamed', B.DisplayName);
-    Assert.AreEqual(42, B.ChannelNumber);
+    Assert.AreEqual(9, lCopy.StreamItemId);
+    Assert.AreEqual(4, lCopy.CustomGroupId);
+    Assert.AreEqual('Renamed', lCopy.DisplayName);
+    Assert.AreEqual(42, lCopy.ChannelNumber);
   finally
-    A.Free;
-    B.Free;
+    FreeAndNil(lOriginal);
+    FreeAndNil(lCopy);
   end;
 end;
 
 procedure TSerializerTests.IntArrayFromJsonParses;
 var
-  J: TJSONObject;
-  Arr: TArray<Integer>;
+  lJson: TJSONObject;
+  lIds: TArray<Integer>;
 begin
-  J := TJSONObject(TJSONObject.ParseJSONValue('{"ids":[3,5,8]}'));
+  lJson := TJSONObject(TJSONObject.ParseJSONValue('{"ids":[3,5,8]}'));
   try
-    Arr := IntArrayFromJson(J, 'ids');
-    Assert.AreEqual<Integer>(3, Length(Arr));
-    Assert.AreEqual(8, Arr[2]);
+    lIds := IntArrayFromJson(lJson, 'ids');
+    Assert.AreEqual<Integer>(3, Length(lIds));
+    Assert.AreEqual(8, lIds[2]);
     // missing key -> empty array
-    Assert.AreEqual<Integer>(0, Length(IntArrayFromJson(J, 'missing')));
+    Assert.AreEqual<Integer>(0, Length(IntArrayFromJson(lJson, 'missing')));
   finally
-    J.Free;
+    FreeAndNil(lJson);
   end;
 end;
 
@@ -133,126 +171,142 @@ end;
 // keys actually present — never blank the others. (Bug: star wiped the name.)
 procedure TSerializerTests.GroupPartialPatchKeepsName;
 var
-  G: TCustomGroup;
-  J: TJSONObject;
+  lGroup: TCustomGroup;
+  lJson: TJSONObject;
 begin
-  G := TCustomGroup.Create;
+  lGroup := TCustomGroup.Create;
   try
-    G.Id := 10; G.Name := 'Sport'; G.ContentType := ctLive; G.IsFavorite := False;
-    J := TJSONObject.Create;
+    lGroup.Id := 10;
+    lGroup.Name := 'Sport';
+    lGroup.ContentType := ctLive;
+    lGroup.IsFavorite := False;
+    lJson := TJSONObject.Create;
     try
-      J.AddPair('id', TJSONNumber.Create(10));
-      J.AddPair('isFavorite', TJSONBool.Create(True)); // favorite star: only id + isFavorite
-      GroupFromJson(J, G);
+      lJson.AddPair('id', TJSONNumber.Create(10));
+      lJson.AddPair('isFavorite', TJSONBool.Create(True)); // favorite star: only id + isFavorite
+      GroupFromJson(lJson, lGroup);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual('Sport', G.Name, 'name preserved by a partial favorite toggle');
-    Assert.IsTrue(G.IsFavorite, 'favorite flag applied');
-    Assert.AreEqual(ctLive, G.ContentType, 'content type preserved');
+    Assert.AreEqual('Sport', lGroup.Name, 'name preserved by a partial favorite toggle');
+    Assert.IsTrue(lGroup.IsFavorite, 'favorite flag applied');
+    Assert.AreEqual(ctLive, lGroup.ContentType, 'content type preserved');
   finally
-    G.Free;
+    FreeAndNil(lGroup);
   end;
 end;
 
 procedure TSerializerTests.GroupPartialRenameKeepsFavorite;
 var
-  G: TCustomGroup;
-  J: TJSONObject;
+  lGroup: TCustomGroup;
+  lJson: TJSONObject;
 begin
-  G := TCustomGroup.Create;
+  lGroup := TCustomGroup.Create;
   try
-    G.Id := 10; G.Name := 'Sport'; G.IsFavorite := True;
-    J := TJSONObject.Create;
+    lGroup.Id := 10;
+    lGroup.Name := 'Sport';
+    lGroup.IsFavorite := True;
+    lJson := TJSONObject.Create;
     try
-      J.AddPair('id', TJSONNumber.Create(10));
-      J.AddPair('name', 'News'); // rename: only id + name
-      GroupFromJson(J, G);
+      lJson.AddPair('id', TJSONNumber.Create(10));
+      lJson.AddPair('name', 'News'); // rename: only id + name
+      GroupFromJson(lJson, lGroup);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual('News', G.Name);
-    Assert.IsTrue(G.IsFavorite, 'favorite preserved by a partial rename');
+    Assert.AreEqual('News', lGroup.Name);
+    Assert.IsTrue(lGroup.IsFavorite, 'favorite preserved by a partial rename');
   finally
-    G.Free;
+    FreeAndNil(lGroup);
   end;
 end;
 
 procedure TSerializerTests.SourcePartialPatchKeepsFields;
 var
-  S: TSourceConfig;
-  J: TJSONObject;
+  lSource: TSourceConfig;
+  lJson: TJSONObject;
 begin
-  S := TSourceConfig.Create;
+  lSource := TSourceConfig.Create;
   try
-    S.Id := 7; S.Name := 'P'; S.Url := 'http://x'; S.Username := 'u'; S.Password := 'pw';
-    J := TJSONObject.Create;
+    lSource.Id := 7;
+    lSource.Name := 'P';
+    lSource.Url := 'http://x';
+    lSource.Username := 'u';
+    lSource.Password := 'pw';
+    lJson := TJSONObject.Create;
     try
-      J.AddPair('id', TJSONNumber.Create(7));
-      J.AddPair('enabled', TJSONBool.Create(False)); // partial: only id + enabled
-      SourceFromJson(J, S);
+      lJson.AddPair('id', TJSONNumber.Create(7));
+      lJson.AddPair('enabled', TJSONBool.Create(False)); // partial: only id + enabled
+      SourceFromJson(lJson, lSource);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual('P', S.Name, 'name preserved by a partial patch');
-    Assert.AreEqual('http://x', S.Url, 'url preserved');
-    Assert.AreEqual('u', S.Username, 'username preserved');
-    Assert.IsFalse(S.Enabled, 'enabled applied');
+    Assert.AreEqual('P', lSource.Name, 'name preserved by a partial patch');
+    Assert.AreEqual('http://x', lSource.Url, 'url preserved');
+    Assert.AreEqual('u', lSource.Username, 'username preserved');
+    Assert.IsFalse(lSource.Enabled, 'enabled applied');
   finally
-    S.Free;
+    FreeAndNil(lSource);
   end;
 end;
 
 procedure TSerializerTests.ListPartialPatchKeepsFields;
 var
-  L: TCustomList;
-  J: TJSONObject;
+  lList: TCustomList;
+  lJson: TJSONObject;
 begin
-  L := TCustomList.Create;
+  lList := TCustomList.Create;
   try
-    L.Id := 3; L.Name := 'Box'; L.OutputUsername := 'bu'; L.OutputPassword := 'bp'; L.Enabled := True;
-    J := TJSONObject.Create;
+    lList.Id := 3;
+    lList.Name := 'Box';
+    lList.OutputUsername := 'bu';
+    lList.OutputPassword := 'bp';
+    lList.Enabled := True;
+    lJson := TJSONObject.Create;
     try
-      J.AddPair('id', TJSONNumber.Create(3));
-      J.AddPair('enabled', TJSONBool.Create(False));
-      ListFromJson(J, L);
+      lJson.AddPair('id', TJSONNumber.Create(3));
+      lJson.AddPair('enabled', TJSONBool.Create(False));
+      ListFromJson(lJson, lList);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual('Box', L.Name);
-    Assert.AreEqual('bu', L.OutputUsername, 'output credentials preserved by a partial patch');
-    Assert.AreEqual('bp', L.OutputPassword);
-    Assert.IsFalse(L.Enabled);
+    Assert.AreEqual('Box', lList.Name);
+    Assert.AreEqual('bu', lList.OutputUsername, 'output credentials preserved by a partial patch');
+    Assert.AreEqual('bp', lList.OutputPassword);
+    Assert.IsFalse(lList.Enabled);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 procedure TSerializerTests.ItemPartialPatchKeepsFields;
 var
-  I: TCustomItem;
-  J: TJSONObject;
+  lItem: TCustomItem;
+  lJson: TJSONObject;
 begin
-  I := TCustomItem.Create;
+  lItem := TCustomItem.Create;
   try
-    I.Id := 1; I.StreamItemId := 9; I.CustomGroupId := 4; I.ChannelNumber := 42; I.DisplayName := 'Old';
-    J := TJSONObject.Create;
+    lItem.Id := 1;
+    lItem.StreamItemId := 9;
+    lItem.CustomGroupId := 4;
+    lItem.ChannelNumber := 42;
+    lItem.DisplayName := 'Old';
+    lJson := TJSONObject.Create;
     try
-      J.AddPair('id', TJSONNumber.Create(1));
-      J.AddPair('displayName', 'New'); // partial: only id + displayName
-      ItemFromJson(J, I);
+      lJson.AddPair('id', TJSONNumber.Create(1));
+      lJson.AddPair('displayName', 'New'); // partial: only id + displayName
+      ItemFromJson(lJson, lItem);
     finally
-      J.Free;
+      FreeAndNil(lJson);
     end;
-    Assert.AreEqual('New', I.DisplayName);
-    Assert.AreEqual(9, I.StreamItemId, 'stream link preserved');
-    Assert.AreEqual(4, I.CustomGroupId, 'group preserved (not reset to upstream)');
-    Assert.AreEqual(42, I.ChannelNumber, 'channel number preserved (not reset to 0)');
+    Assert.AreEqual('New', lItem.DisplayName);
+    Assert.AreEqual(9, lItem.StreamItemId, 'stream link preserved');
+    Assert.AreEqual(4, lItem.CustomGroupId, 'group preserved (not reset to upstream)');
+    Assert.AreEqual(42, lItem.ChannelNumber, 'channel number preserved (not reset to 0)');
   finally
-    I.Free;
+    FreeAndNil(lItem);
   end;
 end;
-
 
 initialization
   TDUnitX.RegisterTestFixture(TSerializerTests);

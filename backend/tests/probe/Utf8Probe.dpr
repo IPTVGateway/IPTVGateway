@@ -7,11 +7,21 @@ program Utf8Probe;
   Delphi string codepoint for each strategy. Throwaway — not part of the suite. }
 
 uses
-  System.SysUtils, System.Classes, System.IOUtils,
-  FireDAC.Stan.Intf, FireDAC.Stan.Async, FireDAC.Comp.Client, FireDAC.Stan.Def, FireDAC.Stan.Param,
-  FireDAC.DApt, FireDAC.Phys.SQLite, FireDAC.Phys.SQLiteDef,
-  FireDAC.Phys.SQLiteWrapper.Stat,
-  Data.DB;
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.IOUtils,
+  Data.DB,
+  // third-party
+  FireDAC.Stan.Intf,
+  FireDAC.Stan.Async,
+  FireDAC.Comp.Client,
+  FireDAC.Stan.Def,
+  FireDAC.Stan.Param,
+  FireDAC.DApt,
+  FireDAC.Phys.SQLite,
+  FireDAC.Phys.SQLiteDef,
+  FireDAC.Phys.SQLiteWrapper.Stat;
 
 const
   UNI = 'A'#$26BD'B'; // A⚽B
@@ -22,70 +32,87 @@ var
 
 procedure Report(const ALabel: string);
 var
-  Q: TFDQuery;
+  lQuery: TFDQuery;
+  lHex: string;
+  lName: string;
+  lSqlLen: Integer;
+  lCp: Integer;
 begin
-  Q := TFDQuery.Create(nil);
+  lQuery := TFDQuery.Create(nil);
   try
-    Q.Connection := Conn;
-    Q.Open('SELECT hex(name) AS h, name AS n, length(name) AS sqllen FROM t ORDER BY rowid DESC LIMIT 1');
-    var H := Q.FieldByName('h').AsString;
-    var N := Q.FieldByName('n').AsString;
-    var SqlLen := Q.FieldByName('sqllen').AsInteger;
-    var Cp := 0;
-    if Length(N) >= 2 then Cp := Ord(N[2]);
+    lQuery.Connection := Conn;
+    lQuery.Open('SELECT hex(name) AS h, name AS n, length(name) AS sqllen FROM t ORDER BY rowid DESC LIMIT 1');
+    lHex := lQuery.FieldByName('h').AsString;
+    lName := lQuery.FieldByName('n').AsString;
+    lSqlLen := lQuery.FieldByName('sqllen').AsInteger;
+    lCp := 0;
+    if Length(lName) >= 2 then
+      lCp := Ord(lName[2]);
     Writeln(Format('%-26s bytes=%-12s delphiLen=%d sqlLen=%d N[2]=U+%4.4X %s',
-      [ALabel, H, Length(N), SqlLen, Cp,
-       BoolToStr((H = '41E29ABD42') and (Cp = $26BD), True)]));
+      [ALabel, lHex, Length(lName), lSqlLen, lCp,
+       BoolToStr((lHex = '41E29ABD42') and (lCp = $26BD), True)]));
   finally
-    Q.Free;
+    FreeAndNil(lQuery);
   end;
 end;
 
 procedure WriteAsString;
-var Q: TFDQuery;
+var
+  lQuery: TFDQuery;
 begin
-  Q := TFDQuery.Create(nil);
+  lQuery := TFDQuery.Create(nil);
   try
-    Q.Connection := Conn;
-    Q.SQL.Text := 'INSERT INTO t(name) VALUES (:p)';
-    Q.ParamByName('p').AsString := UNI;
-    Q.ExecSQL;
-  finally Q.Free; end;
+    lQuery.Connection := Conn;
+    lQuery.SQL.Text := 'INSERT INTO t(name) VALUES (:p)';
+    lQuery.ParamByName('p').AsString := UNI;
+    lQuery.ExecSQL;
+  finally
+    FreeAndNil(lQuery);
+  end;
   Report('AsString');
 end;
 
 procedure WriteAsWideString;
-var Q: TFDQuery;
+var
+  lQuery: TFDQuery;
 begin
-  Q := TFDQuery.Create(nil);
+  lQuery := TFDQuery.Create(nil);
   try
-    Q.Connection := Conn;
-    Q.SQL.Text := 'INSERT INTO t(name) VALUES (:p)';
-    Q.Params[0].DataType := ftWideString;
-    Q.Params[0].AsWideString := UNI;
-    Q.ExecSQL;
-  finally Q.Free; end;
+    lQuery.Connection := Conn;
+    lQuery.SQL.Text := 'INSERT INTO t(name) VALUES (:p)';
+    lQuery.Params[0].DataType := ftWideString;
+    lQuery.Params[0].AsWideString := UNI;
+    lQuery.ExecSQL;
+  finally
+    FreeAndNil(lQuery);
+  end;
   Report('AsWideString(ftWide)');
 end;
 
 procedure WriteCastBytes;
-var Q: TFDQuery; MS: TBytesStream;
+var
+  lQuery: TFDQuery;
+  lStream: TBytesStream;
 begin
-  MS := TBytesStream.Create(TEncoding.UTF8.GetBytes(UNI));
-  Q := TFDQuery.Create(nil);
+  lStream := TBytesStream.Create(TEncoding.UTF8.GetBytes(UNI));
+  lQuery := TFDQuery.Create(nil);
   try
-    Q.Connection := Conn;
-    Q.SQL.Text := 'INSERT INTO t(name) VALUES (CAST(:p AS TEXT))';
-    MS.Position := 0;
-    Q.Params[0].LoadFromStream(MS, ftBlob);
-    Q.ExecSQL;
-  finally Q.Free; MS.Free; end;
+    lQuery.Connection := Conn;
+    lQuery.SQL.Text := 'INSERT INTO t(name) VALUES (CAST(:p AS TEXT))';
+    lStream.Position := 0;
+    lQuery.Params[0].LoadFromStream(lStream, ftBlob);
+    lQuery.ExecSQL;
+  finally
+    FreeAndNil(lQuery);
+    FreeAndNil(lStream);
+  end;
   Report('CAST(:bytes AS TEXT)');
 end;
 
-procedure OpenConn(AStringFormat: string; AMapRules, AUnicodeDriver: Boolean);
+procedure OpenConn(const AStringFormat: string; AMapRules, AUnicodeDriver: Boolean);
 begin
-  if TFile.Exists(DbPath) then TFile.Delete(DbPath);
+  if TFile.Exists(DbPath) then
+    TFile.Delete(DbPath);
   Conn := TFDConnection.Create(nil);
   Conn.DriverName := 'SQLite';
   Conn.Params.Database := DbPath;
@@ -96,10 +123,9 @@ begin
   if AMapRules then
   begin
     Conn.FormatOptions.OwnMapRules := True;
-    with Conn.FormatOptions.MapRules.Add do
-    begin SourceDataType := dtAnsiString; TargetDataType := dtWideString; end;
-    with Conn.FormatOptions.MapRules.Add do
-    begin SourceDataType := dtMemo; TargetDataType := dtWideMemo; end;
+    // Add(source, target) = Add + set SourceDataType/TargetDataType
+    Conn.FormatOptions.MapRules.Add(dtAnsiString, dtWideString);
+    Conn.FormatOptions.MapRules.Add(dtMemo, dtWideMemo);
   end;
   Conn.Connected := True;
   Conn.ExecSQL('CREATE TABLE t(name TEXT)');
@@ -115,7 +141,7 @@ begin
     WriteAsWideString;
     WriteCastBytes;
   finally
-    Conn.Free;
+    FreeAndNil(Conn);
   end;
 end;
 
@@ -130,7 +156,8 @@ begin
     Variant('no StringFormat, NO MapRules (FireDAC default)', '', False);
     Variant('StringFormat=ANSI', 'ANSI', False);
 
-    if TFile.Exists(DbPath) then TFile.Delete(DbPath);
+    if TFile.Exists(DbPath) then
+      TFile.Delete(DbPath);
   except
     on E: Exception do
       Writeln('ERROR ', E.ClassName, ': ', E.Message);

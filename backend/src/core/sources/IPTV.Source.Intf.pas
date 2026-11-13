@@ -7,15 +7,20 @@ unit IPTV.Source.Intf;
 interface
 
 uses
-  IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg;
+  // Own units
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg;
 
 type
+  /// Reads one source (Xtream / M3U / Stalker) into a catalog snapshot.
   ISourceReader = interface
     ['{7B2A9C10-1F3D-4E6A-9B2C-1A2B3C4D5E6F}']
     /// Read all enabled content types for the source into a fresh snapshot.
     function Read(const ASource: TSourceConfig): TSourceSnapshot;
   end;
 
+  /// Reads a source's XMLTV guide into programmes.
   IEpgReader = interface
     ['{3C4D5E6F-7A8B-49C0-B1D2-E3F4A5B6C7D8}']
     /// Fetch + parse the XMLTV guide for a source. Only programmes whose channel

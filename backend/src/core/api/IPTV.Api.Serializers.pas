@@ -7,8 +7,14 @@ unit IPTV.Api.Serializers;
 interface
 
 uses
-  System.JSON, System.Generics.Collections,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
+  // RTL
+  System.JSON,
+  System.Generics.Collections,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
   IPTV.Model.CustomList;
 
 const
@@ -27,341 +33,366 @@ const
   // what the media servers (Plex/Jellyfin tuner surfaces) publish: linear channels only
   cLinearContentTypes = [ctLive, ctRadio];
 
-function SourceToJson(const S: TSourceConfig): TJSONObject;
-procedure SourceFromJson(const J: TJSONObject; const S: TSourceConfig);
-function SourcesToJson(const L: TObjectList<TSourceConfig>): TJSONArray;
+/// <summary>Source config as JSON.</summary>
+function SourceToJson(const ASource: TSourceConfig): TJSONObject;
+/// <summary>Applies JSON fields onto an existing source config.</summary>
+procedure SourceFromJson(const AJson: TJSONObject; const ASource: TSourceConfig);
+/// <summary>Source configs as a JSON array.</summary>
+function SourcesToJson(const AList: TObjectList<TSourceConfig>): TJSONArray;
 
-function StreamToJson(const S: TStreamItem): TJSONObject;
-function StreamsToJson(const L: TStreamItemList): TJSONArray;
-function CategoryToJson(const C: TCategory): TJSONObject;
-function CategoriesToJson(const L: TCategoryList): TJSONArray;
+/// <summary>Catalog stream as JSON.</summary>
+function StreamToJson(const AStream: TStreamItem): TJSONObject;
+/// <summary>Catalog streams as a JSON array.</summary>
+function StreamsToJson(const AList: TStreamItemList): TJSONArray;
+/// <summary>Catalog category as JSON.</summary>
+function CategoryToJson(const ACategory: TCategory): TJSONObject;
+/// <summary>Catalog categories as a JSON array.</summary>
+function CategoriesToJson(const AList: TCategoryList): TJSONArray;
 
-function ProgrammeToJson(const P: TEpgProgramme): TJSONObject;
-function ProgrammesToJson(const L: TEpgProgrammeList): TJSONArray;
+/// <summary>EPG programme as JSON.</summary>
+function ProgrammeToJson(const AProgramme: TEpgProgramme): TJSONObject;
+/// <summary>EPG programmes as a JSON array.</summary>
+function ProgrammesToJson(const AList: TEpgProgrammeList): TJSONArray;
 
-function ListToJson(const L: TCustomList): TJSONObject;
-procedure ListFromJson(const J: TJSONObject; const L: TCustomList);
-function ListsToJson(const L: TObjectList<TCustomList>): TJSONArray;
+/// <summary>Custom list as JSON.</summary>
+function ListToJson(const AList: TCustomList): TJSONObject;
+/// <summary>Applies JSON fields onto an existing custom list.</summary>
+procedure ListFromJson(const AJson: TJSONObject; const AList: TCustomList);
+/// <summary>Custom lists as a JSON array.</summary>
+function ListsToJson(const AList: TObjectList<TCustomList>): TJSONArray;
 
-function GroupToJson(const G: TCustomGroup): TJSONObject;
-procedure GroupFromJson(const J: TJSONObject; const G: TCustomGroup);
-function GroupsToJson(const L: TCustomGroupList): TJSONArray;
+/// <summary>Custom group as JSON.</summary>
+function GroupToJson(const AGroup: TCustomGroup): TJSONObject;
+/// <summary>Applies JSON fields onto an existing custom group.</summary>
+procedure GroupFromJson(const AJson: TJSONObject; const AGroup: TCustomGroup);
+/// <summary>Custom groups as a JSON array.</summary>
+function GroupsToJson(const AList: TCustomGroupList): TJSONArray;
 
-function ItemToJson(const I: TCustomItem): TJSONObject;
-procedure ItemFromJson(const J: TJSONObject; const I: TCustomItem);
-function ItemsToJson(const L: TCustomItemList): TJSONArray;
+/// <summary>List item as JSON (incl. read-only upstream values).</summary>
+function ItemToJson(const AItem: TCustomItem): TJSONObject;
+/// <summary>Applies JSON fields onto an existing list item.</summary>
+procedure ItemFromJson(const AJson: TJSONObject; const AItem: TCustomItem);
+/// <summary>List items as a JSON array.</summary>
+function ItemsToJson(const AList: TCustomItemList): TJSONArray;
 
-function IntArrayFromJson(const J: TJSONObject; const AName: string): TArray<Integer>;
-function StrArrayToJson(const A: TArray<string>): TJSONArray;
-function StrArrayFromJson(const A: TJSONArray): TArray<string>;
+/// <summary>Integer array under AName (non-numbers skipped; empty when absent).</summary>
+function IntArrayFromJson(const AJson: TJSONObject; const AName: string): TArray<Integer>;
+/// <summary>String array as a JSON array.</summary>
+function StrArrayToJson(const AValues: TArray<string>): TJSONArray;
+/// <summary>Trimmed, non-empty strings of a JSON array (nil gives an empty array).</summary>
+function StrArrayFromJson(const AArray: TJSONArray): TArray<string>;
 
 implementation
 
 uses
+  // RTL
   System.SysUtils,
+  // own units
   IPTV.Core.Utils;
 
 { helpers }
 
 function ContentTypesToJson(const ACt: TContentTypes): TJSONArray;
 var
-  CT: TContentType;
+  lCT: TContentType;
 begin
   Result := TJSONArray.Create;
-  for CT := Low(TContentType) to High(TContentType) do
-    if CT in ACt then
-      Result.Add(ContentTypeNames[CT]);
+  for lCT := Low(TContentType) to High(TContentType) do
+    if lCT in ACt then
+      Result.Add(ContentTypeNames[lCT]);
 end;
 
-function ContentTypesFromJson(const A: TJSONArray): TContentTypes;
+function ContentTypesFromJson(const AArray: TJSONArray): TContentTypes;
 var
-  V: TJSONValue;
+  lValue: TJSONValue;
 begin
   Result := [];
-  if A = nil then
+  if AArray = nil then
     Exit(AllContentTypes);
-  for V in A do
-    Include(Result, ContentTypeFromString(V.Value));
+  for lValue in AArray do
+    Include(Result, ContentTypeFromString(lValue.Value));
 end;
 
-function StrArrayToJson(const A: TArray<string>): TJSONArray;
+function StrArrayToJson(const AValues: TArray<string>): TJSONArray;
 var
-  S: string;
+  lStr: string;
 begin
   Result := TJSONArray.Create;
-  for S in A do
-    Result.Add(S);
+  for lStr in AValues do
+    Result.Add(lStr);
 end;
 
-function StrArrayFromJson(const A: TJSONArray): TArray<string>;
+function StrArrayFromJson(const AArray: TJSONArray): TArray<string>;
 var
-  V: TJSONValue;
-  L: TList<string>;
+  lValue: TJSONValue;
+  lList: TList<string>;
 begin
-  L := TList<string>.Create;
+  lList := TList<string>.Create;
   try
-    if A <> nil then
-      for V in A do
-        if V.Value.Trim <> '' then
-          L.Add(V.Value.Trim);
-    Result := L.ToArray;
+    if AArray <> nil then
+      for lValue in AArray do
+        if lValue.Value.Trim <> '' then
+          lList.Add(lValue.Value.Trim);
+    Result := lList.ToArray;
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 { Source }
 
-function SourceToJson(const S: TSourceConfig): TJSONObject;
+function SourceToJson(const ASource: TSourceConfig): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('id', TJSONNumber.Create(S.Id));
-  Result.AddPair('name', S.Name);
-  Result.AddPair('kind', SourceKindNames[S.Kind]);
-  Result.AddPair('url', S.Url);
-  Result.AddPair('username', S.Username);
-  Result.AddPair('password', S.Password);
-  Result.AddPair('epgUrl', S.EpgUrl);
-  Result.AddPair('userAgent', S.UserAgent);
-  Result.AddPair('referer', S.Referer);
-  Result.AddPair('forceHls', TJSONBool.Create(S.ForceHls));
-  Result.AddPair('preferOwnEpg', TJSONBool.Create(S.PreferOwnEpg));
-  Result.AddPair('enabled', TJSONBool.Create(S.Enabled));
-  Result.AddPair('contentTypes', ContentTypesToJson(S.ContentTypes));
-  Result.AddPair('includeFilters', StrArrayToJson(S.IncludeFilters));
-  Result.AddPair('excludeFilters', StrArrayToJson(S.ExcludeFilters));
-  Result.AddPair('stripPrefixes', StrArrayToJson(S.StripPrefixes));
-  Result.AddPair('stripSuffixes', StrArrayToJson(S.StripSuffixes));
-  Result.AddPair('lastRefreshUtc', DateTimeToIsoUtc(S.LastRefreshUtc));
+  Result.AddPair('id', TJSONNumber.Create(ASource.Id));
+  Result.AddPair('name', ASource.Name);
+  Result.AddPair('kind', SourceKindNames[ASource.Kind]);
+  Result.AddPair('url', ASource.Url);
+  Result.AddPair('username', ASource.Username);
+  Result.AddPair('password', ASource.Password);
+  Result.AddPair('epgUrl', ASource.EpgUrl);
+  Result.AddPair('userAgent', ASource.UserAgent);
+  Result.AddPair('referer', ASource.Referer);
+  Result.AddPair('forceHls', TJSONBool.Create(ASource.ForceHls));
+  Result.AddPair('preferOwnEpg', TJSONBool.Create(ASource.PreferOwnEpg));
+  Result.AddPair('enabled', TJSONBool.Create(ASource.Enabled));
+  Result.AddPair('contentTypes', ContentTypesToJson(ASource.ContentTypes));
+  Result.AddPair('includeFilters', StrArrayToJson(ASource.IncludeFilters));
+  Result.AddPair('excludeFilters', StrArrayToJson(ASource.ExcludeFilters));
+  Result.AddPair('stripPrefixes', StrArrayToJson(ASource.StripPrefixes));
+  Result.AddPair('stripSuffixes', StrArrayToJson(ASource.StripSuffixes));
+  Result.AddPair('lastRefreshUtc', DateTimeToIsoUtc(ASource.LastRefreshUtc));
   // provider account info (read-only; filled on refresh — SourceFromJson ignores it)
-  Result.AddPair('accountStatus', S.AccountStatus);
-  Result.AddPair('expiresUtc', DateTimeToIsoUtc(S.ExpiresUtc));
-  Result.AddPair('maxConnections', TJSONNumber.Create(S.MaxConnections));
+  Result.AddPair('accountStatus', ASource.AccountStatus);
+  Result.AddPair('expiresUtc', DateTimeToIsoUtc(ASource.ExpiresUtc));
+  Result.AddPair('maxConnections', TJSONNumber.Create(ASource.MaxConnections));
 end;
 
-procedure SourceFromJson(const J: TJSONObject; const S: TSourceConfig);
+procedure SourceFromJson(const AJson: TJSONObject; const ASource: TSourceConfig);
 begin
-  S.Id := J.GetValue<Integer>('id', S.Id);
-  S.Name := J.GetValue<string>('name', S.Name);
-  S.Kind := SourceKindFromString(J.GetValue<string>('kind', SourceKindNames[S.Kind]));
-  S.Url := J.GetValue<string>('url', S.Url);
-  S.Username := J.GetValue<string>('username', S.Username);
-  S.Password := J.GetValue<string>('password', S.Password);
-  S.EpgUrl := J.GetValue<string>('epgUrl', S.EpgUrl);
-  S.UserAgent := J.GetValue<string>('userAgent', S.UserAgent);
-  S.Referer := J.GetValue<string>('referer', S.Referer);
-  S.ForceHls := J.GetValue<Boolean>('forceHls', S.ForceHls);
-  S.PreferOwnEpg := J.GetValue<Boolean>('preferOwnEpg', S.PreferOwnEpg);
-  S.Enabled := J.GetValue<Boolean>('enabled', S.Enabled);
-  if J.GetValue('contentTypes') is TJSONArray then
-    S.ContentTypes := ContentTypesFromJson(J.GetValue('contentTypes') as TJSONArray);
-  if J.GetValue('includeFilters') is TJSONArray then
-    S.IncludeFilters := StrArrayFromJson(J.GetValue('includeFilters') as TJSONArray);
-  if J.GetValue('excludeFilters') is TJSONArray then
-    S.ExcludeFilters := StrArrayFromJson(J.GetValue('excludeFilters') as TJSONArray);
-  if J.GetValue('stripPrefixes') is TJSONArray then
-    S.StripPrefixes := StrArrayFromJson(J.GetValue('stripPrefixes') as TJSONArray);
-  if J.GetValue('stripSuffixes') is TJSONArray then
-    S.StripSuffixes := StrArrayFromJson(J.GetValue('stripSuffixes') as TJSONArray);
+  ASource.Id := AJson.GetValue<Integer>('id', ASource.Id);
+  ASource.Name := AJson.GetValue<string>('name', ASource.Name);
+  ASource.Kind := SourceKindFromString(AJson.GetValue<string>('kind', SourceKindNames[ASource.Kind]));
+  ASource.Url := AJson.GetValue<string>('url', ASource.Url);
+  ASource.Username := AJson.GetValue<string>('username', ASource.Username);
+  ASource.Password := AJson.GetValue<string>('password', ASource.Password);
+  ASource.EpgUrl := AJson.GetValue<string>('epgUrl', ASource.EpgUrl);
+  ASource.UserAgent := AJson.GetValue<string>('userAgent', ASource.UserAgent);
+  ASource.Referer := AJson.GetValue<string>('referer', ASource.Referer);
+  ASource.ForceHls := AJson.GetValue<Boolean>('forceHls', ASource.ForceHls);
+  ASource.PreferOwnEpg := AJson.GetValue<Boolean>('preferOwnEpg', ASource.PreferOwnEpg);
+  ASource.Enabled := AJson.GetValue<Boolean>('enabled', ASource.Enabled);
+  if AJson.GetValue('contentTypes') is TJSONArray then
+    ASource.ContentTypes := ContentTypesFromJson(AJson.GetValue('contentTypes') as TJSONArray);
+  if AJson.GetValue('includeFilters') is TJSONArray then
+    ASource.IncludeFilters := StrArrayFromJson(AJson.GetValue('includeFilters') as TJSONArray);
+  if AJson.GetValue('excludeFilters') is TJSONArray then
+    ASource.ExcludeFilters := StrArrayFromJson(AJson.GetValue('excludeFilters') as TJSONArray);
+  if AJson.GetValue('stripPrefixes') is TJSONArray then
+    ASource.StripPrefixes := StrArrayFromJson(AJson.GetValue('stripPrefixes') as TJSONArray);
+  if AJson.GetValue('stripSuffixes') is TJSONArray then
+    ASource.StripSuffixes := StrArrayFromJson(AJson.GetValue('stripSuffixes') as TJSONArray);
 end;
 
-function SourcesToJson(const L: TObjectList<TSourceConfig>): TJSONArray;
+function SourcesToJson(const AList: TObjectList<TSourceConfig>): TJSONArray;
 var
-  S: TSourceConfig;
+  lSource: TSourceConfig;
 begin
   Result := TJSONArray.Create;
-  for S in L do
-    Result.Add(SourceToJson(S));
+  for lSource in AList do
+    Result.Add(SourceToJson(lSource));
 end;
 
 { Stream / Category }
 
-function StreamToJson(const S: TStreamItem): TJSONObject;
+function StreamToJson(const AStream: TStreamItem): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('id', TJSONNumber.Create(S.Id));
-  Result.AddPair('sourceId', TJSONNumber.Create(S.SourceId));
-  Result.AddPair('contentType', ContentTypeNames[S.ContentType]);
-  Result.AddPair('name', S.Name);
-  Result.AddPair('logo', S.Logo);
-  Result.AddPair('groupTitle', S.GroupTitle);
-  Result.AddPair('tvgId', S.TvgId);
-  Result.AddPair('archiveDays', TJSONNumber.Create(S.ArchiveDays));
-  Result.AddPair('isNew', TJSONBool.Create(S.IsNew));
-  Result.AddPair('seenAtUtc', DateTimeToIsoUtc(S.SeenAtUtc));
+  Result.AddPair('id', TJSONNumber.Create(AStream.Id));
+  Result.AddPair('sourceId', TJSONNumber.Create(AStream.SourceId));
+  Result.AddPair('contentType', ContentTypeNames[AStream.ContentType]);
+  Result.AddPair('name', AStream.Name);
+  Result.AddPair('logo', AStream.Logo);
+  Result.AddPair('groupTitle', AStream.GroupTitle);
+  Result.AddPair('tvgId', AStream.TvgId);
+  Result.AddPair('archiveDays', TJSONNumber.Create(AStream.ArchiveDays));
+  Result.AddPair('isNew', TJSONBool.Create(AStream.IsNew));
+  Result.AddPair('seenAtUtc', DateTimeToIsoUtc(AStream.SeenAtUtc));
 end;
 
-function StreamsToJson(const L: TStreamItemList): TJSONArray;
+function StreamsToJson(const AList: TStreamItemList): TJSONArray;
 var
-  S: TStreamItem;
+  lStream: TStreamItem;
 begin
   Result := TJSONArray.Create;
-  for S in L do
-    Result.Add(StreamToJson(S));
+  for lStream in AList do
+    Result.Add(StreamToJson(lStream));
 end;
 
-function CategoryToJson(const C: TCategory): TJSONObject;
+function CategoryToJson(const ACategory: TCategory): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('id', TJSONNumber.Create(C.Id));
-  Result.AddPair('sourceId', TJSONNumber.Create(C.SourceId));
-  Result.AddPair('upstreamId', C.UpstreamId);
-  Result.AddPair('contentType', ContentTypeNames[C.ContentType]);
-  Result.AddPair('name', C.Name);
-  Result.AddPair('isNew', TJSONBool.Create(C.IsNew));
-  Result.AddPair('seenAtUtc', DateTimeToIsoUtc(C.SeenAtUtc));
+  Result.AddPair('id', TJSONNumber.Create(ACategory.Id));
+  Result.AddPair('sourceId', TJSONNumber.Create(ACategory.SourceId));
+  Result.AddPair('upstreamId', ACategory.UpstreamId);
+  Result.AddPair('contentType', ContentTypeNames[ACategory.ContentType]);
+  Result.AddPair('name', ACategory.Name);
+  Result.AddPair('isNew', TJSONBool.Create(ACategory.IsNew));
+  Result.AddPair('seenAtUtc', DateTimeToIsoUtc(ACategory.SeenAtUtc));
 end;
 
-function CategoriesToJson(const L: TCategoryList): TJSONArray;
+function CategoriesToJson(const AList: TCategoryList): TJSONArray;
 var
-  C: TCategory;
+  lCategory: TCategory;
 begin
   Result := TJSONArray.Create;
-  for C in L do
-    Result.Add(CategoryToJson(C));
+  for lCategory in AList do
+    Result.Add(CategoryToJson(lCategory));
 end;
 
 { EPG }
 
-function ProgrammeToJson(const P: TEpgProgramme): TJSONObject;
+function ProgrammeToJson(const AProgramme: TEpgProgramme): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('channelTvgId', P.ChannelTvgId);
-  Result.AddPair('startUtc', DateTimeToIsoUtc(P.StartUtc));
-  Result.AddPair('stopUtc', DateTimeToIsoUtc(P.StopUtc));
-  Result.AddPair('title', P.Title);
-  Result.AddPair('description', P.Description);
-  Result.AddPair('category', P.Category);
+  Result.AddPair('channelTvgId', AProgramme.ChannelTvgId);
+  Result.AddPair('startUtc', DateTimeToIsoUtc(AProgramme.StartUtc));
+  Result.AddPair('stopUtc', DateTimeToIsoUtc(AProgramme.StopUtc));
+  Result.AddPair('title', AProgramme.Title);
+  Result.AddPair('description', AProgramme.Description);
+  Result.AddPair('category', AProgramme.Category);
 end;
 
-function ProgrammesToJson(const L: TEpgProgrammeList): TJSONArray;
+function ProgrammesToJson(const AList: TEpgProgrammeList): TJSONArray;
 var
-  P: TEpgProgramme;
+  lProgramme: TEpgProgramme;
 begin
   Result := TJSONArray.Create;
-  for P in L do
-    Result.Add(ProgrammeToJson(P));
+  for lProgramme in AList do
+    Result.Add(ProgrammeToJson(lProgramme));
 end;
 
 { List / Group / Item }
 
-function ListToJson(const L: TCustomList): TJSONObject;
+function ListToJson(const AList: TCustomList): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('id', TJSONNumber.Create(L.Id));
-  Result.AddPair('name', L.Name);
-  Result.AddPair('outputUsername', L.OutputUsername);
-  Result.AddPair('outputPassword', L.OutputPassword);
-  Result.AddPair('enabled', TJSONBool.Create(L.Enabled));
+  Result.AddPair('id', TJSONNumber.Create(AList.Id));
+  Result.AddPair('name', AList.Name);
+  Result.AddPair('outputUsername', AList.OutputUsername);
+  Result.AddPair('outputPassword', AList.OutputPassword);
+  Result.AddPair('enabled', TJSONBool.Create(AList.Enabled));
 end;
 
-procedure ListFromJson(const J: TJSONObject; const L: TCustomList);
+procedure ListFromJson(const AJson: TJSONObject; const AList: TCustomList);
 begin
-  L.Id := J.GetValue<Integer>('id', L.Id);
-  L.Name := J.GetValue<string>('name', L.Name);
-  L.OutputUsername := J.GetValue<string>('outputUsername', L.OutputUsername);
-  L.OutputPassword := J.GetValue<string>('outputPassword', L.OutputPassword);
-  L.Enabled := J.GetValue<Boolean>('enabled', L.Enabled);
+  AList.Id := AJson.GetValue<Integer>('id', AList.Id);
+  AList.Name := AJson.GetValue<string>('name', AList.Name);
+  AList.OutputUsername := AJson.GetValue<string>('outputUsername', AList.OutputUsername);
+  AList.OutputPassword := AJson.GetValue<string>('outputPassword', AList.OutputPassword);
+  AList.Enabled := AJson.GetValue<Boolean>('enabled', AList.Enabled);
 end;
 
-function ListsToJson(const L: TObjectList<TCustomList>): TJSONArray;
+function ListsToJson(const AList: TObjectList<TCustomList>): TJSONArray;
 var
-  X: TCustomList;
+  lList: TCustomList;
 begin
   Result := TJSONArray.Create;
-  for X in L do
-    Result.Add(ListToJson(X));
+  for lList in AList do
+    Result.Add(ListToJson(lList));
 end;
 
-function GroupToJson(const G: TCustomGroup): TJSONObject;
+function GroupToJson(const AGroup: TCustomGroup): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('id', TJSONNumber.Create(G.Id));
-  Result.AddPair('listId', TJSONNumber.Create(G.ListId));
-  Result.AddPair('name', G.Name);
-  Result.AddPair('contentType', ContentTypeNames[G.ContentType]);
-  Result.AddPair('isFavorite', TJSONBool.Create(G.IsFavorite));
-  Result.AddPair('sortOrder', TJSONNumber.Create(G.SortOrder));
+  Result.AddPair('id', TJSONNumber.Create(AGroup.Id));
+  Result.AddPair('listId', TJSONNumber.Create(AGroup.ListId));
+  Result.AddPair('name', AGroup.Name);
+  Result.AddPair('contentType', ContentTypeNames[AGroup.ContentType]);
+  Result.AddPair('isFavorite', TJSONBool.Create(AGroup.IsFavorite));
+  Result.AddPair('sortOrder', TJSONNumber.Create(AGroup.SortOrder));
 end;
 
-procedure GroupFromJson(const J: TJSONObject; const G: TCustomGroup);
+procedure GroupFromJson(const AJson: TJSONObject; const AGroup: TCustomGroup);
 begin
-  G.Id := J.GetValue<Integer>('id', G.Id);
-  G.ListId := J.GetValue<Integer>('listId', G.ListId);
-  G.Name := J.GetValue<string>('name', G.Name);
-  G.ContentType := ContentTypeFromString(J.GetValue<string>('contentType', ContentTypeNames[G.ContentType]));
-  G.IsFavorite := J.GetValue<Boolean>('isFavorite', G.IsFavorite);
+  AGroup.Id := AJson.GetValue<Integer>('id', AGroup.Id);
+  AGroup.ListId := AJson.GetValue<Integer>('listId', AGroup.ListId);
+  AGroup.Name := AJson.GetValue<string>('name', AGroup.Name);
+  AGroup.ContentType := ContentTypeFromString(
+    AJson.GetValue<string>('contentType', ContentTypeNames[AGroup.ContentType]));
+  AGroup.IsFavorite := AJson.GetValue<Boolean>('isFavorite', AGroup.IsFavorite);
 end;
 
-function GroupsToJson(const L: TCustomGroupList): TJSONArray;
+function GroupsToJson(const AList: TCustomGroupList): TJSONArray;
 var
-  G: TCustomGroup;
+  lGroup: TCustomGroup;
 begin
   Result := TJSONArray.Create;
-  for G in L do
-    Result.Add(GroupToJson(G));
+  for lGroup in AList do
+    Result.Add(GroupToJson(lGroup));
 end;
 
-function ItemToJson(const I: TCustomItem): TJSONObject;
+function ItemToJson(const AItem: TCustomItem): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('id', TJSONNumber.Create(I.Id));
-  Result.AddPair('listId', TJSONNumber.Create(I.ListId));
-  Result.AddPair('streamItemId', TJSONNumber.Create(I.StreamItemId));
-  Result.AddPair('customGroupId', TJSONNumber.Create(I.CustomGroupId));
-  Result.AddPair('contentType', ContentTypeNames[I.ContentType]);
-  Result.AddPair('displayName', I.DisplayName);
-  Result.AddPair('logoOverride', I.LogoOverride);
-  Result.AddPair('tvgIdOverride', I.TvgIdOverride);
-  Result.AddPair('channelNumber', TJSONNumber.Create(I.ChannelNumber));
+  Result.AddPair('id', TJSONNumber.Create(AItem.Id));
+  Result.AddPair('listId', TJSONNumber.Create(AItem.ListId));
+  Result.AddPair('streamItemId', TJSONNumber.Create(AItem.StreamItemId));
+  Result.AddPair('customGroupId', TJSONNumber.Create(AItem.CustomGroupId));
+  Result.AddPair('contentType', ContentTypeNames[AItem.ContentType]);
+  Result.AddPair('displayName', AItem.DisplayName);
+  Result.AddPair('logoOverride', AItem.LogoOverride);
+  Result.AddPair('tvgIdOverride', AItem.TvgIdOverride);
+  Result.AddPair('channelNumber', TJSONNumber.Create(AItem.ChannelNumber));
   // read-only upstream values (so the UI can label items without an override)
-  Result.AddPair('streamName', I.StreamName);
-  Result.AddPair('streamLogo', I.StreamLogo);
-  Result.AddPair('streamTvgId', I.StreamTvgId);
-  Result.AddPair('streamSourceId', TJSONNumber.Create(I.StreamSourceId));
-  Result.AddPair('streamArchiveDays', TJSONNumber.Create(I.StreamArchiveDays));
+  Result.AddPair('streamName', AItem.StreamName);
+  Result.AddPair('streamLogo', AItem.StreamLogo);
+  Result.AddPair('streamTvgId', AItem.StreamTvgId);
+  Result.AddPair('streamSourceId', TJSONNumber.Create(AItem.StreamSourceId));
+  Result.AddPair('streamArchiveDays', TJSONNumber.Create(AItem.StreamArchiveDays));
 end;
 
-procedure ItemFromJson(const J: TJSONObject; const I: TCustomItem);
+procedure ItemFromJson(const AJson: TJSONObject; const AItem: TCustomItem);
 begin
-  I.Id := J.GetValue<Integer>('id', I.Id);
-  I.ListId := J.GetValue<Integer>('listId', I.ListId);
-  I.StreamItemId := J.GetValue<Integer>('streamItemId', I.StreamItemId);
-  I.CustomGroupId := J.GetValue<Integer>('customGroupId', I.CustomGroupId);
-  I.DisplayName := J.GetValue<string>('displayName', I.DisplayName);
-  I.LogoOverride := J.GetValue<string>('logoOverride', I.LogoOverride);
-  I.TvgIdOverride := J.GetValue<string>('tvgIdOverride', I.TvgIdOverride);
-  I.ContentType := ContentTypeFromString(J.GetValue<string>('contentType', ContentTypeNames[I.ContentType]));
-  I.ChannelNumber := J.GetValue<Integer>('channelNumber', I.ChannelNumber);
+  AItem.Id := AJson.GetValue<Integer>('id', AItem.Id);
+  AItem.ListId := AJson.GetValue<Integer>('listId', AItem.ListId);
+  AItem.StreamItemId := AJson.GetValue<Integer>('streamItemId', AItem.StreamItemId);
+  AItem.CustomGroupId := AJson.GetValue<Integer>('customGroupId', AItem.CustomGroupId);
+  AItem.DisplayName := AJson.GetValue<string>('displayName', AItem.DisplayName);
+  AItem.LogoOverride := AJson.GetValue<string>('logoOverride', AItem.LogoOverride);
+  AItem.TvgIdOverride := AJson.GetValue<string>('tvgIdOverride', AItem.TvgIdOverride);
+  AItem.ContentType := ContentTypeFromString(
+    AJson.GetValue<string>('contentType', ContentTypeNames[AItem.ContentType]));
+  AItem.ChannelNumber := AJson.GetValue<Integer>('channelNumber', AItem.ChannelNumber);
 end;
 
-function ItemsToJson(const L: TCustomItemList): TJSONArray;
+function ItemsToJson(const AList: TCustomItemList): TJSONArray;
 var
-  I: TCustomItem;
+  lItem: TCustomItem;
 begin
   Result := TJSONArray.Create;
-  for I in L do
-    Result.Add(ItemToJson(I));
+  for lItem in AList do
+    Result.Add(ItemToJson(lItem));
 end;
 
-function IntArrayFromJson(const J: TJSONObject; const AName: string): TArray<Integer>;
+function IntArrayFromJson(const AJson: TJSONObject; const AName: string): TArray<Integer>;
 var
-  Arr: TJSONArray;
-  V: TJSONValue;
-  L: TList<Integer>;
+  lArr: TJSONArray;
+  lValue: TJSONValue;
+  lList: TList<Integer>;
 begin
-  L := TList<Integer>.Create;
+  lList := TList<Integer>.Create;
   try
-    if J.GetValue(AName) is TJSONArray then
+    if AJson.GetValue(AName) is TJSONArray then
     begin
-      Arr := J.GetValue(AName) as TJSONArray;
-      for V in Arr do
-        if V is TJSONNumber then
-          L.Add((V as TJSONNumber).AsInt);
+      lArr := AJson.GetValue(AName) as TJSONArray;
+      for lValue in lArr do
+        if lValue is TJSONNumber then
+          lList.Add((lValue as TJSONNumber).AsInt);
     end;
-    Result := L.ToArray;
+    Result := lList.ToArray;
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 

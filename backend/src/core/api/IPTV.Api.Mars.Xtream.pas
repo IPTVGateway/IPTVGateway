@@ -9,16 +9,21 @@ unit IPTV.Api.Mars.Xtream;
 interface
 
 uses
+  // RTL
   System.JSON,
-  MARS.Core.Attributes, MARS.Core.MediaType,
+  // third-party
+  MARS.Core.Attributes,
+  MARS.Core.MediaType,
   MARS.Core.RequestAndResponse.Interfaces;
 
 type
+  /// <summary>Xtream player_api.php: account info, categories, streams, EPG, VOD/series info.</summary>
   [Path('player_api.php')]
   TPlayerApiResource = class
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>Dispatches on the Xtream action (empty = account info).</summary>
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function PlayerApi([QueryParam('username')] AUser: string;
       [QueryParam('password')] APass: string;
@@ -30,21 +35,25 @@ type
       [QueryParam('category_id')] ACategoryId: string): TJSONValue;
   end;
 
+  /// <summary>Xtream get.php: the list as an M3U playlist.</summary>
   [Path('get.php')]
   TGetPhpResource = class
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>M3U of the authenticated list (raw upstream or relay URLs).</summary>
     [GET, Produces('application/x-mpegurl')]
     function GetPhp([QueryParam('username')] AUser: string;
       [QueryParam('password')] APass: string): string;
   end;
 
+  /// <summary>Xtream xmltv.php: the list's own XMLTV guide.</summary>
   [Path('xmltv.php')]
   TXmltvResource = class
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>XMLTV restricted to the channels on the authenticated list.</summary>
     [GET, Produces(TMediaType.APPLICATION_XML)]
     function Xmltv([QueryParam('username')] AUser: string;
       [QueryParam('password')] APass: string): string;
@@ -56,26 +65,31 @@ type
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>302 to the stream's upstream URL (or the relay in proxy mode).</summary>
     [GET, Path('{user}/{pass}/{id}')]
     procedure Redirect([PathParam('user')] AUser: string;
       [PathParam('pass')] APass: string; [PathParam('id')] AId: string);
   end;
 
+  /// <summary>movie/{user}/{pass}/{id}: 302 to the upstream movie URL.</summary>
   [Path('movie')]
   TMovieStreamResource = class
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>302 to the stream's upstream URL (or the relay in proxy mode).</summary>
     [GET, Path('{user}/{pass}/{id}')]
     procedure Redirect([PathParam('user')] AUser: string;
       [PathParam('pass')] APass: string; [PathParam('id')] AId: string);
   end;
 
+  /// <summary>series/{user}/{pass}/{id}: 302 to the upstream episode URL.</summary>
   [Path('series')]
   TSeriesStreamResource = class
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>302 to the stream's upstream URL (or the relay in proxy mode).</summary>
     [GET, Path('{user}/{pass}/{id}')]
     procedure Redirect([PathParam('user')] AUser: string;
       [PathParam('pass')] APass: string; [PathParam('id')] AId: string);
@@ -88,6 +102,7 @@ type
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>302 to the provider's timeshift URL (or the relay in proxy mode).</summary>
     [GET, Path('{user}/{pass}/{duration}/{start}/{id}')]
     procedure Redirect([PathParam('user')] AUser: string;
       [PathParam('pass')] APass: string; [PathParam('duration')] ADuration: string;
@@ -101,6 +116,7 @@ type
   protected
     [Context] Response: IMARSResponse;
   public
+    /// <summary>Query-string variant of the timeshift redirect.</summary>
     [GET, Path('timeshift.php')]
     procedure Redirect([QueryParam('username')] AUser: string;
       [QueryParam('password')] APass: string; [QueryParam('stream')] AStream: string;
@@ -110,13 +126,30 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Generics.Collections, System.StrUtils, System.Math, System.RegularExpressions,
-  System.Net.URLClient, System.NetEncoding, System.DateUtils, System.Hash,
+  // RTL
+  System.SysUtils,
+  System.Generics.Collections,
+  System.StrUtils,
+  System.Math,
+  System.RegularExpressions,
+  System.Net.URLClient,
+  System.NetEncoding,
+  System.DateUtils,
+  System.Hash,
+  // third-party
   MARS.Core.Registry,
-  IPTV.Model.Types, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
+  IPTV.Model.CustomList,
   IPTV.Model.Source,
-  IPTV.Storage.Intf, IPTV.App.Context, IPTV.Output.Builder, IPTV.Core.Utils,
-  IPTV.Source.Xtream, IPTV.Api.Serializers;
+  IPTV.Storage.Intf,
+  IPTV.App.Context,
+  IPTV.Output.Builder,
+  IPTV.Core.Utils,
+  IPTV.Source.Xtream,
+  IPTV.Api.Serializers;
 
 const
   // player_api.php actions
@@ -207,24 +240,24 @@ end;
 
 function StreamIdFromParam(const AId: string): Integer;
 var
-  S: string;
-  Dot: Integer;
+  lValue: string;
+  lDot: Integer;
 begin
-  S := AId;
-  Dot := S.IndexOf('.');
-  if Dot >= 0 then
-    S := S.Substring(0, Dot);
-  Result := StrToIntDef(S, 0);
+  lValue := AId;
+  lDot := lValue.IndexOf('.');
+  if lDot >= 0 then
+    lValue := lValue.Substring(0, lDot);
+  Result := StrToIntDef(lValue, 0);
 end;
 
 // the container the box asked for (the bit after the last dot in ":id"), '' if none
 function RequestedExt(const AId: string): string;
 var
-  Dot: Integer;
+  lDot: Integer;
 begin
-  Dot := AId.LastIndexOf('.');
-  if Dot >= 0 then
-    Result := AId.Substring(Dot + 1)
+  lDot := AId.LastIndexOf('.');
+  if lDot >= 0 then
+    Result := AId.Substring(lDot + 1)
   else
     Result := '';
 end;
@@ -242,32 +275,32 @@ end;
 
 function AccountInfo(const AList: TCustomList): TJSONObject;
 var
-  UserInfo, ServerInfo: TJSONObject;
-  Formats: TJSONArray;
-  PortNo: Integer;
+  lUserInfo, lServerInfo: TJSONObject;
+  lFormats: TJSONArray;
+  lPortNo: Integer;
 begin
   Result := TJSONObject.Create;
-  UserInfo := TJSONObject.Create;
+  lUserInfo := TJSONObject.Create;
   // the fields real panels send; some clients refuse an account without them
-  UserInfo.AddPair('username', BoxCred(AList.OutputUsername));
-  UserInfo.AddPair('password', BoxCred(AList.OutputPassword));
-  UserInfo.AddPair('message', '');
-  UserInfo.AddPair('auth', TJSONNumber.Create(1));
-  UserInfo.AddPair('status', 'Active');
-  UserInfo.AddPair('exp_date', TJSONNull.Create); // no end date
-  UserInfo.AddPair('created_at', '0');
-  UserInfo.AddPair('is_trial', '0');
-  UserInfo.AddPair('active_cons', '0');
-  UserInfo.AddPair('max_connections', '1');
+  lUserInfo.AddPair('username', BoxCred(AList.OutputUsername));
+  lUserInfo.AddPair('password', BoxCred(AList.OutputPassword));
+  lUserInfo.AddPair('message', '');
+  lUserInfo.AddPair('auth', TJSONNumber.Create(1));
+  lUserInfo.AddPair('status', 'Active');
+  lUserInfo.AddPair('exp_date', TJSONNull.Create); // no end date
+  lUserInfo.AddPair('created_at', '0');
+  lUserInfo.AddPair('is_trial', '0');
+  lUserInfo.AddPair('active_cons', '0');
+  lUserInfo.AddPair('max_connections', '1');
   // m3u8 first: boxes (e.g. MyTVOnline) take the first format; HLS survives
   // providers that drop .ts connections every ~20 s (measured 2026-11-07)
-  Formats := TJSONArray.Create;
+  lFormats := TJSONArray.Create;
   // in proxy mode the relay serves TS only (HLS can't be relayed; it is bounced)
   if not App.Config.ProxyStreams then
-    Formats.Add(cExtM3u8);
-  Formats.Add(cExtTs);
-  UserInfo.AddPair('allowed_output_formats', Formats);
-  Result.AddPair('user_info', UserInfo);
+    lFormats.Add(cExtM3u8);
+  lFormats.Add(cExtTs);
+  lUserInfo.AddPair('allowed_output_formats', lFormats);
+  Result.AddPair('user_info', lUserInfo);
 
   // server_info.url must be the HOST ONLY (no scheme, no port) — the box builds
   // {protocol}://{url}:{port}/live/... itself. Putting a full URL here makes the
@@ -275,30 +308,30 @@ begin
   // (never raises: a bad publicBaseUrl must not turn every box login into a 500)
   // in proxy mode the box must stream from the relay port, not the API port
   if App.Config.ProxyStreams then
-    PortNo := App.Config.ProxyPort
+    lPortNo := App.Config.ProxyPort
   else
   begin
-    PortNo := SafeUrlPort(App.Config.PublicBaseUrl);
-    if PortNo <= 0 then
-      PortNo := App.Config.HttpPort;
+    lPortNo := SafeUrlPort(App.Config.PublicBaseUrl);
+    if lPortNo <= 0 then
+      lPortNo := App.Config.HttpPort;
   end;
-  ServerInfo := TJSONObject.Create;
-  ServerInfo.AddPair('url', PublicHost);
-  ServerInfo.AddPair('port', PortNo.ToString);
+  lServerInfo := TJSONObject.Create;
+  lServerInfo.AddPair('url', PublicHost);
+  lServerInfo.AddPair('port', lPortNo.ToString);
   // only advertise an https port when we actually serve TLS, else a box that
   // prefers https tries it against a plain-HTTP listener and fails to connect
   // (the relay port in proxy mode is always plain http, also with TLS on the API)
   if App.Config.UseHttps and not App.Config.ProxyStreams then
-    ServerInfo.AddPair('https_port', PortNo.ToString)
+    lServerInfo.AddPair('https_port', lPortNo.ToString)
   else
-    ServerInfo.AddPair('https_port', '0');
-  ServerInfo.AddPair('rtmp_port', '0');
+    lServerInfo.AddPair('https_port', '0');
+  lServerInfo.AddPair('rtmp_port', '0');
   if App.Config.ProxyStreams then
-    ServerInfo.AddPair('server_protocol', cSchemeHttp)
+    lServerInfo.AddPair('server_protocol', cSchemeHttp)
   else
-    ServerInfo.AddPair('server_protocol', PublicScheme);
-  ServerInfo.AddPair('timezone', cServerTimezone);
-  Result.AddPair('server_info', ServerInfo);
+    lServerInfo.AddPair('server_protocol', PublicScheme);
+  lServerInfo.AddPair('timezone', cServerTimezone);
+  Result.AddPair('server_info', lServerInfo);
 end;
 
 // a category id that only depends on the group name (1..cMaxCategoryId)
@@ -311,12 +344,12 @@ end;
 procedure BuildContent(const AChannels: TOutputChannelList; ACt: TContentType;
   const AIdField, AStreamType: string; out ACategories, AStreams: TJSONArray);
 var
-  C: TOutputChannel;
-  GroupToCat: TDictionary<string, Integer>;
-  UsedCatIds: TDictionary<Integer, Byte>;
-  Used: TDictionary<Integer, Byte>; // num values already taken (operator + auto)
-  CatId, Num, N: Integer;
-  Cat, Stream: TJSONObject;
+  lChannel: TOutputChannel;
+  lGroupToCat: TDictionary<string, Integer>;
+  lUsedCatIds: TDictionary<Integer, Byte>;
+  lUsed: TDictionary<Integer, Byte>; // num values already taken (operator + auto)
+  lCatId, lNum, lNumber: Integer;
+  lCat, lStream: TJSONObject;
 
   // Xtream has no radio actions: radio is part of the live list
   function InType(AC: TOutputChannel): Boolean;
@@ -327,82 +360,85 @@ var
 begin
   ACategories := TJSONArray.Create;
   AStreams := TJSONArray.Create;
-  GroupToCat := TDictionary<string, Integer>.Create;
-  UsedCatIds := TDictionary<Integer, Byte>.Create;
-  Used := TDictionary<Integer, Byte>.Create;
+  lGroupToCat := TDictionary<string, Integer>.Create;
+  lUsedCatIds := TDictionary<Integer, Byte>.Create;
+  lUsed := TDictionary<Integer, Byte>.Create;
   try
     // Pre-collect the operator's channel numbers so the auto-fallback for
     // unnumbered channels never collides with them — without this, an unnumbered
     // channel could get the running index N that equals a numbered channel's value,
     // producing duplicate 'num's (some Xtream clients key/sort on num).
-    for C in AChannels do
-      if InType(C) and (C.Number > 0) then
-        Used.AddOrSetValue(C.Number, 0);
-    Num := 0;
-    for C in AChannels do
+    for lChannel in AChannels do
+      if InType(lChannel) and (lChannel.Number > 0) then
+        lUsed.AddOrSetValue(lChannel.Number, 0);
+    lNum := 0;
+    for lChannel in AChannels do
     begin
-      if not InType(C) then
+      if not InType(lChannel) then
         Continue;
-      if not GroupToCat.TryGetValue(C.GroupName, CatId) then
+      if not lGroupToCat.TryGetValue(lChannel.GroupName, lCatId) then
       begin
         // derived from the group NAME, not its position: boxes remember hidden /
         // favourite / locked categories by id, and a new or moved group used to
         // renumber every later one
-        CatId := StableCategoryId(C.GroupName);
-        while UsedCatIds.ContainsKey(CatId) do
-          CatId := CatId mod cMaxCategoryId + 1; // (rare) hash collision: next free
-        UsedCatIds.Add(CatId, 0);
-        GroupToCat.Add(C.GroupName, CatId);
-        Cat := TJSONObject.Create;
-        Cat.AddPair(cFieldCategoryId, CatId.ToString);
-        Cat.AddPair('category_name', C.GroupName);
-        Cat.AddPair('parent_id', TJSONNumber.Create(0));
-        ACategories.Add(Cat);
+        lCatId := StableCategoryId(lChannel.GroupName);
+        while lUsedCatIds.ContainsKey(lCatId) do
+          lCatId := lCatId mod cMaxCategoryId + 1; // (rare) hash collision: next free
+        lUsedCatIds.Add(lCatId, 0);
+        lGroupToCat.Add(lChannel.GroupName, lCatId);
+        lCat := TJSONObject.Create;
+        lCat.AddPair(cFieldCategoryId, lCatId.ToString);
+        lCat.AddPair('category_name', lChannel.GroupName);
+        lCat.AddPair('parent_id', TJSONNumber.Create(0));
+        ACategories.Add(lCat);
       end;
-      if C.Number > 0 then
-        N := C.Number // keep the operator's number as-is
+      if lChannel.Number > 0 then
+        lNumber := lChannel.Number // keep the operator's number as-is
       else
       begin
-        repeat Inc(Num) until not Used.ContainsKey(Num); // next free number
-        N := Num;
-        Used.AddOrSetValue(N, 0);
+        repeat
+          Inc(lNum);
+        until not lUsed.ContainsKey(lNum); // next free number
+        lNumber := lNum;
+        lUsed.AddOrSetValue(lNumber, 0);
       end;
-      Stream := TJSONObject.Create;
-      Stream.AddPair('num', TJSONNumber.Create(N));
-      Stream.AddPair('name', C.Name);
-      if C.ContentType = ctRadio then
-        Stream.AddPair('stream_type', cStreamTypeRadio)
+      lStream := TJSONObject.Create;
+      lStream.AddPair('num', TJSONNumber.Create(lNumber));
+      lStream.AddPair('name', lChannel.Name);
+      if lChannel.ContentType = ctRadio then
+        lStream.AddPair('stream_type', cStreamTypeRadio)
       else
-        Stream.AddPair('stream_type', AStreamType);
-      Stream.AddPair(AIdField, TJSONNumber.Create(C.StreamItemId));
-      Stream.AddPair('stream_icon', C.Logo);
+        lStream.AddPair('stream_type', AStreamType);
+      lStream.AddPair(AIdField, TJSONNumber.Create(lChannel.StreamItemId));
+      lStream.AddPair('stream_icon', lChannel.Logo);
       // the id xmltv.php publishes it under (iptv-<id> for a channel without tvg-id)
-      Stream.AddPair('epg_channel_id', ChannelGuideId(C));
-      Stream.AddPair(cFieldCategoryId, CatId.ToString);
+      lStream.AddPair('epg_channel_id', ChannelGuideId(lChannel));
+      lStream.AddPair(cFieldCategoryId, lCatId.ToString);
       if ACt = ctMovie then
         // the box builds /movie/u/p/{id}.{container_extension}: give it the real one
-        Stream.AddPair('container_extension', System.StrUtils.IfThen(UrlExt(C.UpstreamUrl) = '', cDefaultVodExt, UrlExt(C.UpstreamUrl)))
+        lStream.AddPair('container_extension',
+          System.StrUtils.IfThen(UrlExt(lChannel.UpstreamUrl) = '', cDefaultVodExt, UrlExt(lChannel.UpstreamUrl)))
       else if ACt = ctSeries then
-        Stream.AddPair('cover', C.Logo);
-      if C.ContentType = ctLive then
+        lStream.AddPair('cover', lChannel.Logo);
+      if lChannel.ContentType = ctLive then
       begin
         // catch-up: the box shows a rewind icon and asks /timeshift/ (see below)
-        Stream.AddPair('tv_archive', TJSONNumber.Create(IfThen(C.ArchiveDays > 0, 1, 0)));
-        Stream.AddPair('tv_archive_duration', TJSONNumber.Create(C.ArchiveDays));
+        lStream.AddPair('tv_archive', TJSONNumber.Create(IfThen(lChannel.ArchiveDays > 0, 1, 0)));
+        lStream.AddPair('tv_archive_duration', TJSONNumber.Create(lChannel.ArchiveDays));
       end;
-      AStreams.Add(Stream);
+      AStreams.Add(lStream);
     end;
   finally
-    FreeAndNil(GroupToCat);
-    FreeAndNil(UsedCatIds);
-    Used.Free;
+    FreeAndNil(lGroupToCat);
+    FreeAndNil(lUsedCatIds);
+    FreeAndNil(lUsed);
   end;
 end;
 
 function PlayerApiResult(const AList: TCustomList; const AAction, ACategoryId: string): TJSONValue;
 var
-  Channels: TOutputChannelList;
-  Cats, Streams: TJSONArray;
+  lChannels: TOutputChannelList;
+  lCats, lStreams: TJSONArray;
 
   // only the streams of one category (get_live_streams&category_id=7): clients
   // that load a category at a time got the whole bouquet in every category
@@ -425,16 +461,16 @@ var
 
   function Pick(ACt: TContentType; const AIdField, AStreamType: string; AWantCats: Boolean): TJSONValue;
   begin
-    BuildContent(Channels, ACt, AIdField, AStreamType, Cats, Streams);
+    BuildContent(lChannels, ACt, AIdField, AStreamType, lCats, lStreams);
     if AWantCats then
     begin
-      FreeAndNil(Streams);
-      Result := Cats;
+      FreeAndNil(lStreams);
+      Result := lCats;
     end
     else
     begin
-      FreeAndNil(Cats);
-      Result := OnlyCategory(Streams);
+      FreeAndNil(lCats);
+      Result := OnlyCategory(lStreams);
     end;
   end;
 
@@ -442,35 +478,42 @@ begin
   if (AAction = '') or (AAction = cActGetAccountInfo) then
     Exit(AccountInfo(AList));
 
-  Channels := App.Store.LoadOutputChannels(AList.Id);
+  lChannels := App.Store.LoadOutputChannels(AList.Id);
   try
-    if AAction = cActGetLiveCategories then Result := Pick(ctLive, cFieldStreamId, cStreamTypeLive, cWantCategories)
-    else if AAction = cActGetLiveStreams then Result := Pick(ctLive, cFieldStreamId, cStreamTypeLive, cWantStreams)
+    if AAction = cActGetLiveCategories then
+      Result := Pick(ctLive, cFieldStreamId, cStreamTypeLive, cWantCategories)
+    else if AAction = cActGetLiveStreams then
+      Result := Pick(ctLive, cFieldStreamId, cStreamTypeLive, cWantStreams)
     // (radio is listed with the live channels, stream_type radio_streams - see BuildContent)
-    else if AAction = cActGetVodCategories then Result := Pick(ctMovie, cFieldStreamId, cStreamTypeMovie, cWantCategories)
-    else if AAction = cActGetVodStreams then Result := Pick(ctMovie, cFieldStreamId, cStreamTypeMovie, cWantStreams)
-    else if AAction = cActGetSeriesCategories then Result := Pick(ctSeries, cFieldSeriesId, cStreamTypeSeries, cWantCategories)
-    else if AAction = cActGetSeries then Result := Pick(ctSeries, cFieldSeriesId, cStreamTypeSeries, cWantStreams)
-    else Result := TJSONArray.Create;
+    else if AAction = cActGetVodCategories then
+      Result := Pick(ctMovie, cFieldStreamId, cStreamTypeMovie, cWantCategories)
+    else if AAction = cActGetVodStreams then
+      Result := Pick(ctMovie, cFieldStreamId, cStreamTypeMovie, cWantStreams)
+    else if AAction = cActGetSeriesCategories then
+      Result := Pick(ctSeries, cFieldSeriesId, cStreamTypeSeries, cWantCategories)
+    else if AAction = cActGetSeries then
+      Result := Pick(ctSeries, cFieldSeriesId, cStreamTypeSeries, cWantStreams)
+    else
+      Result := TJSONArray.Create;
   finally
-    Channels.Free;
+    FreeAndNil(lChannels);
   end;
 end;
 
 // the source a stream belongs to (caller frees), nil if gone
 function FindSource(ASourceId: Integer): TSourceConfig;
 var
-  Sources: TObjectList<TSourceConfig>;
-  I: Integer;
+  lSources: TObjectList<TSourceConfig>;
+  i: Integer;
 begin
   Result := nil;
-  Sources := App.Store.LoadSources;
+  lSources := App.Store.LoadSources;
   try
-    for I := 0 to Sources.Count - 1 do
-      if Sources[I].Id = ASourceId then
-        Exit(Sources.Extract(Sources[I]));
+    for i := 0 to lSources.Count - 1 do
+      if lSources[i].Id = ASourceId then
+        Exit(lSources.Extract(lSources[i]));
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
 end;
 
@@ -478,54 +521,56 @@ end;
 // to ours), else a minimal answer built from the catalog row
 function VodInfo(const AList: TCustomList; const AId: string): TJSONValue;
 var
-  Stream: TStreamItem;
-  Src: TSourceConfig;
-  JV, MD: TJSONValue;
-  Ext: string;
+  lStream: TStreamItem;
+  lSrc: TSourceConfig;
+  lJson, lMovieData: TJSONValue;
+  lExt: string;
 begin
-  Stream := App.Store.LoadListStreamById(AList.Id, StreamIdFromParam(AId));
-  if (Stream = nil) or (Stream.ContentType <> ctMovie) then
+  lStream := App.Store.LoadListStreamById(AList.Id, StreamIdFromParam(AId));
+  if (lStream = nil) or (lStream.ContentType <> ctMovie) then
   begin
-    Stream.Free;
+    FreeAndNil(lStream);
     Exit(TJSONArray.Create);
   end;
   try
-    Ext := System.StrUtils.IfThen(UrlExt(Stream.UpstreamUrl) = '', cDefaultVodExt, UrlExt(Stream.UpstreamUrl));
-    Src := FindSource(Stream.SourceId);
+    lExt := System.StrUtils.IfThen(UrlExt(lStream.UpstreamUrl) = '', cDefaultVodExt, UrlExt(lStream.UpstreamUrl));
+    lSrc := FindSource(lStream.SourceId);
     try
-      if (Src <> nil) and (Src.Kind = skXtream) then
+      if (lSrc <> nil) and (lSrc.Kind = skXtream) then
       try
-        JV := XtreamApiGet(Src, 'action=' + cActGetVodInfo + '&vod_id=' + TNetEncoding.URL.Encode(Stream.UpstreamId));
-        if JV is TJSONObject then
+        lJson := XtreamApiGet(lSrc,
+          'action=' + cActGetVodInfo + '&vod_id=' + TNetEncoding.URL.Encode(lStream.UpstreamId));
+        if lJson is TJSONObject then
         begin
-          MD := TJSONObject(JV).GetValue('movie_data');
-          if MD is TJSONObject then
+          lMovieData := TJSONObject(lJson).GetValue('movie_data');
+          if lMovieData is TJSONObject then
           begin
-            TJSONObject(MD).RemovePair(cFieldStreamId).Free;
-            TJSONObject(MD).AddPair(cFieldStreamId, TJSONNumber.Create(Stream.Id));
-            if TJSONObject(MD).GetValue('container_extension') = nil then
-              TJSONObject(MD).AddPair('container_extension', Ext);
+            TJSONObject(lMovieData).RemovePair(cFieldStreamId).Free;
+            TJSONObject(lMovieData).AddPair(cFieldStreamId, TJSONNumber.Create(lStream.Id));
+            if TJSONObject(lMovieData).GetValue('container_extension') = nil then
+              TJSONObject(lMovieData).AddPair('container_extension', lExt);
           end;
-          Exit(JV);
+          Exit(lJson);
         end;
-        JV.Free;
+        FreeAndNil(lJson);
       except
         on E: Exception do
-          App.Log(Format('  get_vod_info %d: provider failed (%s) - minimal info', [Stream.Id, MaskUrlSecrets(E.Message)]));
+          App.Log(Format('  get_vod_info %d: provider failed (%s) - minimal info',
+            [lStream.Id, MaskUrlSecrets(E.Message)]));
       end;
     finally
-      Src.Free;
+      FreeAndNil(lSrc);
     end;
     Result := TJSONObject.Create
       .AddPair('info', TJSONObject.Create
-        .AddPair('name', Stream.Name)
-        .AddPair('movie_image', Stream.Logo))
+        .AddPair('name', lStream.Name)
+        .AddPair('movie_image', lStream.Logo))
       .AddPair('movie_data', TJSONObject.Create
-        .AddPair(cFieldStreamId, TJSONNumber.Create(Stream.Id))
-        .AddPair('name', Stream.Name)
-        .AddPair('container_extension', Ext));
+        .AddPair(cFieldStreamId, TJSONNumber.Create(lStream.Id))
+        .AddPair('name', lStream.Name)
+        .AddPair('container_extension', lExt));
   finally
-    Stream.Free;
+    FreeAndNil(lStream);
   end;
 end;
 
@@ -534,113 +579,114 @@ end;
 // M3U "series" item is a single playable file, offered as one episode.
 function SeriesInfo(const AList: TCustomList; const AId: string): TJSONValue;
 var
-  Stream: TStreamItem;
-  Src: TSourceConfig;
-  JV, Eps, Season: TJSONValue;
-  EpObjs: TList<TJSONObject>;
-  UpIds, Exts: TArray<string>;
-  Ids: TArray<Integer>;
-  Ep: TJSONValue;
-  EpArr: TJSONArray;
-  I: Integer;
-  Ext: string;
+  lStream: TStreamItem;
+  lSrc: TSourceConfig;
+  lJson, lEpisodes, lSeason: TJSONValue;
+  lEpObjs: TList<TJSONObject>;
+  lUpIds, lExts: TArray<string>;
+  lIds: TArray<Integer>;
+  lEpisode: TJSONValue;
+  lEpArr: TJSONArray;
+  i: Integer;
+  lExt: string;
 
   procedure Collect(ASeason: TJSONValue);
   var
-    V: TJSONValue;
+    lValue: TJSONValue;
   begin
     if ASeason is TJSONArray then
-      for V in TJSONArray(ASeason) do
-        if (V is TJSONObject) and (TJSONObject(V).GetValue('id') <> nil) then
-          EpObjs.Add(TJSONObject(V));
+      for lValue in TJSONArray(ASeason) do
+        if (lValue is TJSONObject) and (TJSONObject(lValue).GetValue('id') <> nil) then
+          lEpObjs.Add(TJSONObject(lValue));
   end;
 
 begin
-  Stream := App.Store.LoadListStreamById(AList.Id, StreamIdFromParam(AId));
-  if (Stream = nil) or (Stream.ContentType <> ctSeries) or (Stream.Id >= cEpisodeIdBase) then
+  lStream := App.Store.LoadListStreamById(AList.Id, StreamIdFromParam(AId));
+  if (lStream = nil) or (lStream.ContentType <> ctSeries) or (lStream.Id >= cEpisodeIdBase) then
   begin
-    Stream.Free;
+    FreeAndNil(lStream);
     Exit(TJSONArray.Create);
   end;
   try
-    Src := FindSource(Stream.SourceId);
+    lSrc := FindSource(lStream.SourceId);
     try
-      if (Src <> nil) and (Src.Kind = skXtream) then
+      if (lSrc <> nil) and (lSrc.Kind = skXtream) then
       begin
         try
-          JV := XtreamApiGet(Src, 'action=' + cActGetSeriesInfo + '&series_id=' +TNetEncoding.URL.Encode(Stream.UpstreamId));
+          lJson := XtreamApiGet(lSrc,
+            'action=' + cActGetSeriesInfo + '&series_id=' + TNetEncoding.URL.Encode(lStream.UpstreamId));
         except
           on E: Exception do
           begin
-            App.Log(Format('  get_series_info %d: provider failed (%s)', [Stream.Id, MaskUrlSecrets(E.Message)]));
+            App.Log(Format('  get_series_info %d: provider failed (%s)', [lStream.Id, MaskUrlSecrets(E.Message)]));
             Exit(TJSONArray.Create);
           end;
         end;
-        if not (JV is TJSONObject) then
+        if not (lJson is TJSONObject) then
         begin
-          JV.Free;
+          FreeAndNil(lJson);
           Exit(TJSONArray.Create);
         end;
-        EpObjs := TList<TJSONObject>.Create;
+        lEpObjs := TList<TJSONObject>.Create;
         try
-        try
-          // episodes: {"1":[...],"2":[...]} or (some panels) [[...],[...]]
-          Eps := TJSONObject(JV).GetValue('episodes');
-          if Eps is TJSONObject then
-            for I := 0 to TJSONObject(Eps).Count - 1 do
-              Collect(TJSONObject(Eps).Pairs[I].JsonValue)
-          else if Eps is TJSONArray then
-            for Season in TJSONArray(Eps) do
-              Collect(Season);
-          SetLength(UpIds, EpObjs.Count);
-          SetLength(Exts, EpObjs.Count);
-          for I := 0 to EpObjs.Count - 1 do
-          begin
-            UpIds[I] := EpObjs[I].GetValue('id').Value;
-            Exts[I] := EpObjs[I].GetValue<string>('container_extension', '');
+          try
+            // episodes: {"1":[...],"2":[...]} or (some panels) [[...],[...]]
+            lEpisodes := TJSONObject(lJson).GetValue('episodes');
+            if lEpisodes is TJSONObject then
+              for i := 0 to TJSONObject(lEpisodes).Count - 1 do
+                Collect(TJSONObject(lEpisodes).Pairs[i].JsonValue)
+            else if lEpisodes is TJSONArray then
+              for lSeason in TJSONArray(lEpisodes) do
+                Collect(lSeason);
+            SetLength(lUpIds, lEpObjs.Count);
+            SetLength(lExts, lEpObjs.Count);
+            for i := 0 to lEpObjs.Count - 1 do
+            begin
+              lUpIds[i] := lEpObjs[i].GetValue('id').Value;
+              lExts[i] := lEpObjs[i].GetValue<string>('container_extension', '');
+            end;
+            lIds := App.Store.EnsureEpisodeIds(lStream.Id, lUpIds, lExts);
+            for i := 0 to lEpObjs.Count - 1 do
+            begin
+              lEpObjs[i].RemovePair('id').Free;
+              lEpObjs[i].AddPair('id', lIds[i].ToString);
+            end;
+          except
+            on E: Exception do
+            begin
+              FreeAndNil(lJson);
+              App.Log(Format('  get_series_info %d: %s', [lStream.Id, E.Message]));
+              Exit(TJSONArray.Create);
+            end;
           end;
-          Ids := App.Store.EnsureEpisodeIds(Stream.Id, UpIds, Exts);
-          for I := 0 to EpObjs.Count - 1 do
-          begin
-            EpObjs[I].RemovePair('id').Free;
-            EpObjs[I].AddPair('id', Ids[I].ToString);
-          end;
-        except
-          on E: Exception do
-          begin
-            FreeAndNil(JV);
-            App.Log(Format('  get_series_info %d: %s', [Stream.Id, E.Message]));
-            Exit(TJSONArray.Create);
-          end;
-        end;
         finally
-          FreeAndNil(EpObjs);
+          FreeAndNil(lEpObjs);
         end;
-        Exit(JV);
+        Exit(lJson);
       end;
     finally
-      Src.Free;
+      FreeAndNil(lSrc);
     end;
     // M3U: the item itself is the (only) episode
-    Ext := System.StrUtils.IfThen(UrlExt(Stream.UpstreamUrl) = '', cDefaultVodExt, UrlExt(Stream.UpstreamUrl));
-    Ep := TJSONObject.Create
-      .AddPair('id', Stream.Id.ToString)
+    lExt := System.StrUtils.IfThen(UrlExt(lStream.UpstreamUrl) = '', cDefaultVodExt, UrlExt(lStream.UpstreamUrl));
+    lEpisode := TJSONObject.Create
+      .AddPair('id', lStream.Id.ToString)
       .AddPair('episode_num', TJSONNumber.Create(cM3uEpisode))
-      .AddPair('title', Stream.Name)
-      .AddPair('container_extension', Ext)
+      .AddPair('title', lStream.Name)
+      .AddPair('container_extension', lExt)
       .AddPair('season', TJSONNumber.Create(cM3uSeason))
       .AddPair('info', TJSONObject.Create);
-    EpArr := TJSONArray.Create;
-    EpArr.AddElement(Ep);
+    lEpArr := TJSONArray.Create;
+    lEpArr.AddElement(lEpisode);
     Result := TJSONObject.Create
       .AddPair('seasons', TJSONArray.Create)
       .AddPair('info', TJSONObject.Create
-        .AddPair('name', Stream.Name)
-        .AddPair('cover', Stream.Logo))
+        .AddPair('name', lStream.Name)
+        .AddPair('cover', lStream.Logo))
       .AddPair('episodes', TJSONObject.Create
-        .AddPair(IntToStr(cM3uSeason), EpArr));
+        .AddPair(IntToStr(cM3uSeason), lEpArr));
   finally
-    Stream.Free;
+    FreeAndNil(lStream);
   end;
 end;
 
@@ -649,85 +695,86 @@ end;
 function BuildEpgListings(const AList: TCustomList; const AStreamId: string;
   ALimit: Integer; AOnlyFuture: Boolean): TJSONObject;
 var
-  Channels: TOutputChannelList;
-  Ch: TOutputChannel;
-  Progs: TEpgProgrammeList;
-  Arr: TJSONArray;
-  O: TJSONObject;
-  P: TEpgProgramme;
-  NowU: TDateTime;
-  Cnt, StreamId, ArchiveDays: Integer;
-  ArchiveFrom: TDateTime;
-  Tvg: string;
-  Tvgs: TArray<string>;
+  lChannels: TOutputChannelList;
+  lChannel: TOutputChannel;
+  lProgs: TEpgProgrammeList;
+  lArr: TJSONArray;
+  lEntry: TJSONObject;
+  lProgramme: TEpgProgramme;
+  lNowUtc: TDateTime;
+  lCount, lStreamId, lArchiveDays: Integer;
+  lArchiveFrom: TDateTime;
+  lTvg: string;
+  lTvgs: TArray<string>;
 
-  function B64(const S: string): string;
+  function B64(const AText: string): string;
   begin
-    Result := XtreamBase64(S); // single line: no CR/LF every 76 chars (MyTVOnline rejects those)
+    Result := XtreamBase64(AText); // single line: no CR/LF every 76 chars (MyTVOnline rejects those)
   end;
 
 begin
   Result := TJSONObject.Create;
-  Arr := TJSONArray.Create;
-  Result.AddPair('epg_listings', Arr);
+  lArr := TJSONArray.Create;
+  Result.AddPair('epg_listings', lArr);
 
   // Resolve the channel's EFFECTIVE tvg-id from the curated list, not the raw
   // upstream one — a per-item tvg-id override RELABELS the guide, and xmltv.php
   // serves under that effective id. Query BOTH the effective and the upstream id
   // (programmes may be stored under either) so the box's inline now/next matches
   // what xmltv.php shows. Only channels actually on this list get EPG.
-  StreamId := StreamIdFromParam(AStreamId);
-  Tvg := '';
-  ArchiveDays := 0;
-  Channels := App.Store.LoadOutputChannels(AList.Id);
+  lStreamId := StreamIdFromParam(AStreamId);
+  lTvg := '';
+  lArchiveDays := 0;
+  lChannels := App.Store.LoadOutputChannels(AList.Id);
   try
-    for Ch in Channels do
-      if Ch.StreamItemId = StreamId then
+    for lChannel in lChannels do
+      if lChannel.StreamItemId = lStreamId then
       begin
-        Tvg := Ch.TvgId; // effective (override-or-upstream)
-        ArchiveDays := Ch.ArchiveDays;
-        Tvgs := Ch.EpgReadIds; // own ids, or the matched extra guide
+        lTvg := lChannel.TvgId; // effective (override-or-upstream)
+        lArchiveDays := lChannel.ArchiveDays;
+        lTvgs := lChannel.EpgReadIds; // own ids, or the matched extra guide
         Break;
       end;
   finally
-    Channels.Free;
+    FreeAndNil(lChannels);
   end;
-  if Length(Tvgs) = 0 then
+  if Length(lTvgs) = 0 then
     Exit; // not on the list, or no tvg-id at all
 
-  NowU := NowUtc;
-  ArchiveFrom := IncDay(NowU, -ArchiveDays);
-  Progs := App.Store.LoadEpgForTvgIds(Tvgs, App.Config.EpgMaxDays); // sorted by start
+  lNowUtc := NowUtc;
+  lArchiveFrom := IncDay(lNowUtc, -lArchiveDays);
+  lProgs := App.Store.LoadEpgForTvgIds(lTvgs, App.Config.EpgMaxDays); // sorted by start
   try
-    Cnt := 0;
-    for P in Progs do
+    lCount := 0;
+    for lProgramme in lProgs do
     begin
-      if AOnlyFuture and (P.StopUtc < NowU) then
+      if AOnlyFuture and (lProgramme.StopUtc < lNowUtc) then
         Continue;
-      O := TJSONObject.Create;
+      lEntry := TJSONObject.Create;
       // real portals send non-empty ids; some players (Formuler/MyTVOnline) key the
       // listing on them — the start time is unique within one channel
-      O.AddPair('id', IntToStr(DateTimeToUnix(P.StartUtc, cTimesAreUtc)));
-      O.AddPair('epg_id', '1');
-      O.AddPair('title', B64(P.Title));
-      O.AddPair('lang', '');
-      O.AddPair('start', FormatDateTime(cEpgDateTimeFormat, P.StartUtc));
-      O.AddPair('end', FormatDateTime(cEpgDateTimeFormat, P.StopUtc));
-      O.AddPair('description', B64(P.Description));
-      O.AddPair('channel_id', Tvg);
-      O.AddPair('start_timestamp', IntToStr(DateTimeToUnix(P.StartUtc, cTimesAreUtc)));
-      O.AddPair('stop_timestamp', IntToStr(DateTimeToUnix(P.StopUtc, cTimesAreUtc)));
-      O.AddPair('now_playing', TJSONNumber.Create(IfThen((NowU >= P.StartUtc) and (NowU < P.StopUtc), 1, 0)));
+      lEntry.AddPair('id', IntToStr(DateTimeToUnix(lProgramme.StartUtc, cTimesAreUtc)));
+      lEntry.AddPair('epg_id', '1');
+      lEntry.AddPair('title', B64(lProgramme.Title));
+      lEntry.AddPair('lang', '');
+      lEntry.AddPair('start', FormatDateTime(cEpgDateTimeFormat, lProgramme.StartUtc));
+      lEntry.AddPair('end', FormatDateTime(cEpgDateTimeFormat, lProgramme.StopUtc));
+      lEntry.AddPair('description', B64(lProgramme.Description));
+      lEntry.AddPair('channel_id', lTvg);
+      lEntry.AddPair('start_timestamp', IntToStr(DateTimeToUnix(lProgramme.StartUtc, cTimesAreUtc)));
+      lEntry.AddPair('stop_timestamp', IntToStr(DateTimeToUnix(lProgramme.StopUtc, cTimesAreUtc)));
+      lEntry.AddPair('now_playing', TJSONNumber.Create(IfThen((lNowUtc >= lProgramme.StartUtc) and
+        (lNowUtc < lProgramme.StopUtc), 1, 0)));
       // a finished programme inside the provider's archive window can be replayed
-      O.AddPair('has_archive', TJSONNumber.Create(IfThen((ArchiveDays > 0) and
-        (P.StopUtc <= NowU) and (P.StartUtc >= ArchiveFrom), 1, 0)));
-      Arr.Add(O);
-      Inc(Cnt);
-      if (ALimit > 0) and (Cnt >= ALimit) then
+      lEntry.AddPair('has_archive', TJSONNumber.Create(IfThen((lArchiveDays > 0) and
+        (lProgramme.StopUtc <= lNowUtc) and (lProgramme.StartUtc >= lArchiveFrom), 1, 0)));
+      lArr.Add(lEntry);
+      Inc(lCount);
+      if (ALimit > 0) and (lCount >= ALimit) then
         Break;
     end;
   finally
-    Progs.Free;
+    FreeAndNil(lProgs);
   end;
 end;
 
@@ -735,34 +782,34 @@ end;
 // source name the operator gave it plus the upstream host, e.g. ProviderA (cdn.x.net)
 function ProviderLabel(ASourceId: Integer; const AUpstreamUrl: string): string;
 var
-  Sources: TObjectList<TSourceConfig>;
-  S: TSourceConfig;
-  Name, Host: string;
+  lSources: TObjectList<TSourceConfig>;
+  lSource: TSourceConfig;
+  lName, lHost: string;
 begin
-  Name := '';
-  Sources := App.Store.LoadSources;
+  lName := '';
+  lSources := App.Store.LoadSources;
   try
-    for S in Sources do
-      if S.Id = ASourceId then
+    for lSource in lSources do
+      if lSource.Id = ASourceId then
       begin
-        Name := S.Name;
+        lName := lSource.Name;
         Break;
       end;
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
-  Host := '';
+  lHost := '';
   try
-    Host := TURI.Create(AUpstreamUrl).Host;
+    lHost := TURI.Create(AUpstreamUrl).Host;
   except
-    Host := '';
+    lHost := '';
   end;
-  if (Name <> '') and (Host <> '') then
-    Result := Format('"%s" (%s)', [Name, Host])
-  else if Name <> '' then
-    Result := Format('"%s"', [Name])
-  else if Host <> '' then
-    Result := Host
+  if (lName <> '') and (lHost <> '') then
+    Result := Format('"%s" (%s)', [lName, lHost])
+  else if lName <> '' then
+    Result := Format('"%s"', [lName])
+  else if lHost <> '' then
+    Result := lHost
   else
     Result := Format('source #%d', [ASourceId]);
 end;
@@ -770,31 +817,30 @@ end;
 // true when the operator ticked "live always as HLS" on this stream's source
 function SourceForcesHls(ASourceId: Integer): Boolean;
 var
-  Sources: TObjectList<TSourceConfig>;
-  S: TSourceConfig;
+  lSources: TObjectList<TSourceConfig>;
+  lSource: TSourceConfig;
 begin
   Result := False;
-  Sources := App.Store.LoadSources;
+  lSources := App.Store.LoadSources;
   try
-    for S in Sources do
-      if S.Id = ASourceId then
-        Exit(S.ForceHls);
+    for lSource in lSources do
+      if lSource.Id = ASourceId then
+        Exit(lSource.ForceHls);
   finally
-    Sources.Free;
+    FreeAndNil(lSources);
   end;
 end;
 
 procedure DoRedirect(const AResponse: IMARSResponse; const AUser, APass, AId: string;
   ALive: Boolean = False);
 var
-  List: TCustomList;
-  Stream: TStreamItem;
-  Target, Masked, Provider, Ext: string;
-  Uri: TURI;
-  Hls: Boolean;
+  lList: TCustomList;
+  lStream: TStreamItem;
+  lTarget, lMasked, lProvider, lExt: string;
+  lHls: Boolean;
 begin
-  List := ResolveList(AUser, APass);
-  if List = nil then
+  lList := ResolveList(AUser, APass);
+  if lList = nil then
   begin
     AResponse.StatusCode := cHttpUnauthorized;
     Exit;
@@ -802,8 +848,8 @@ begin
   try
     // scope the lookup to THIS list: the credentials authorise one list, so a box
     // must not be able to stream an arbitrary catalog id that isn't on it.
-    Stream := App.Store.LoadListStreamById(List.Id, StreamIdFromParam(AId));
-    if Stream = nil then
+    lStream := App.Store.LoadListStreamById(lList.Id, StreamIdFromParam(AId));
+    if lStream = nil then
     begin
       AResponse.StatusCode := cHttpNotFound;
       Exit;
@@ -817,39 +863,40 @@ begin
       // only LIVE follows the box's requested container (.ts/.m3u8): a movie or
       // episode exists in ONE container upstream (.mkv stays .mkv)
       if ALive then
-        Ext := RequestedExt(AId)
+        lExt := RequestedExt(AId)
       else
-        Ext := '';
-      Hls := ALive and SourceForcesHls(Stream.SourceId);
-      if Hls then
-        Ext := cExtM3u8;
-      if App.Config.ProxyStreams and not Hls then
+        lExt := '';
+      lHls := ALive and SourceForcesHls(lStream.SourceId);
+      if lHls then
+        lExt := cExtM3u8;
+      if App.Config.ProxyStreams and not lHls then
       begin
-        Target := Format('http://%s:%d/live/%s/%s/%s', [PublicHost, App.Config.ProxyPort,
-          PathCred(List.OutputUsername), PathCred(List.OutputPassword), AId]);
+        lTarget := Format('http://%s:%d/live/%s/%s/%s', [PublicHost, App.Config.ProxyPort,
+          PathCred(lList.OutputUsername), PathCred(lList.OutputPassword), AId]);
       end
       else
         // only an Xtream LIVE .ts/.m3u8 URL follows the box's container choice
-        Target := LiveUpstreamUrl(App.Store, Stream, Ext);
+        lTarget := LiveUpstreamUrl(App.Store, lStream, lExt);
       // mask both path-style (/live/u/p/) AND query-style (?username=&password=)
       // credentials before logging — upstream M3U URLs often carry query creds
-      Masked := TRegEx.Replace(Target, '(/(live|movie|series)/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
-      Masked := TRegEx.Replace(Masked, '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*', '$1***', [roIgnoreCase]);
+      lMasked := TRegEx.Replace(lTarget, '(/(live|movie|series)/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
+      lMasked := TRegEx.Replace(lMasked, '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*', '$1***',
+        [roIgnoreCase]);
       // always name the upstream provider being routed to (in proxy mode Target is
       // our own relay URL, so the provider would otherwise be invisible in the log)
-      Provider := ProviderLabel(Stream.SourceId, Stream.UpstreamUrl);
-      if App.Config.ProxyStreams and not Hls then
+      lProvider := ProviderLabel(lStream.SourceId, lStream.UpstreamUrl);
+      if App.Config.ProxyStreams and not lHls then
         App.Log(Format('  proxy stream %s "%s" -> provider %s  [relay %s]',
-          [AId, Stream.Name, Provider, Masked]))
+          [AId, lStream.Name, lProvider, lMasked]))
       else
         App.Log(Format('  redirect stream %s "%s" -> provider %s  [%s]%s',
-          [AId, Stream.Name, Provider, Masked, System.StrUtils.IfThen(Hls, '  (HLS forced)', '')]));
-      AResponse.RedirectTo(Target);
+          [AId, lStream.Name, lProvider, lMasked, System.StrUtils.IfThen(lHls, '  (HLS forced)', '')]));
+      AResponse.RedirectTo(lTarget);
     finally
-      Stream.Free;
+      FreeAndNil(lStream);
     end;
   finally
-    List.Free;
+    FreeAndNil(lList);
   end;
 end;
 
@@ -859,60 +906,59 @@ end;
 procedure DoTimeshift(const AResponse: IMARSResponse; const AUser, APass,
   ADuration, AStart, AId: string);
 var
-  List: TCustomList;
-  Stream: TStreamItem;
-  StartUtc: TDateTime;
-  Dur: Integer;
-  Ext, Target, Masked: string;
-  Uri: TURI;
+  lList: TCustomList;
+  lStream: TStreamItem;
+  lStartUtc: TDateTime;
+  lDuration: Integer;
+  lExt, lTarget, lMasked: string;
 begin
-  Dur := StrToIntDef(ADuration, 0);
-  if (Dur <= 0) or not ParseTimeshiftStart(AStart, StartUtc) then
+  lDuration := StrToIntDef(ADuration, 0);
+  if (lDuration <= 0) or not ParseTimeshiftStart(AStart, lStartUtc) then
   begin
     AResponse.StatusCode := cHttpBadRequest;
     Exit;
   end;
-  List := ResolveList(AUser, APass);
-  if List = nil then
+  lList := ResolveList(AUser, APass);
+  if lList = nil then
   begin
     AResponse.StatusCode := cHttpUnauthorized;
     Exit;
   end;
   try
     // list-scoped, like the live redirect: only channels on THIS list
-    Stream := App.Store.LoadListStreamById(List.Id, StreamIdFromParam(AId));
-    if Stream = nil then
+    lStream := App.Store.LoadListStreamById(lList.Id, StreamIdFromParam(AId));
+    if lStream = nil then
     begin
       AResponse.StatusCode := cHttpNotFound;
       Exit;
     end;
     try
-      Ext := RequestedExt(AId);
+      lExt := RequestedExt(AId);
       if App.Config.ProxyStreams then
       begin
-        Target := Format('http://%s:%d/timeshift/%s/%s/%d/%s/%d.%s',
-          [PublicHost, App.Config.ProxyPort, PathCred(List.OutputUsername), PathCred(List.OutputPassword),
-           Dur, FormatTimeshiftStart(StartUtc),
-           Stream.Id, System.StrUtils.IfThen(Ext = '', cExtTs, Ext)]);
+        lTarget := Format('http://%s:%d/timeshift/%s/%s/%d/%s/%d.%s',
+          [PublicHost, App.Config.ProxyPort, PathCred(lList.OutputUsername), PathCred(lList.OutputPassword),
+           lDuration, FormatTimeshiftStart(lStartUtc),
+           lStream.Id, System.StrUtils.IfThen(lExt = '', cExtTs, lExt)]);
       end
       else
-        Target := TimeshiftUpstreamUrl(App.Store, Stream, Dur, StartUtc, Ext);
-      if Target = '' then
+        lTarget := TimeshiftUpstreamUrl(App.Store, lStream, lDuration, lStartUtc, lExt);
+      if lTarget = '' then
       begin
         // the stream's source isn't an Xtream portal: no timeshift there
         AResponse.StatusCode := cHttpNotFound;
         Exit;
       end;
-      Masked := TRegEx.Replace(Target, '(/timeshift/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
+      lMasked := TRegEx.Replace(lTarget, '(/timeshift/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
       App.Log(Format('  timeshift stream %d "%s" %s UTC +%d min -> provider %s  [%s]',
-        [Stream.Id, Stream.Name, FormatTimeshiftStart(StartUtc), Dur,
-         ProviderLabel(Stream.SourceId, Stream.UpstreamUrl), Masked]));
-      AResponse.RedirectTo(Target);
+        [lStream.Id, lStream.Name, FormatTimeshiftStart(lStartUtc), lDuration,
+         ProviderLabel(lStream.SourceId, lStream.UpstreamUrl), lMasked]));
+      AResponse.RedirectTo(lTarget);
     finally
-      Stream.Free;
+      FreeAndNil(lStream);
     end;
   finally
-    List.Free;
+    FreeAndNil(lList);
   end;
 end;
 
@@ -921,28 +967,28 @@ end;
 function TPlayerApiResource.PlayerApi(AUser, APass, AAction, AStreamId: string; ALimit: string;
   AVodId, ASeriesId, ACategoryId: string): TJSONValue;
 var
-  List: TCustomList;
+  lList: TCustomList;
 begin
-  List := ResolveList(AUser, APass);
-  if List = nil then
+  lList := ResolveList(AUser, APass);
+  if lList = nil then
     // 200 + auth:0, like real panels: some boxes show a 401 as "network error"
     // instead of "wrong username/password"
     Exit(TJSONObject.Create.AddPair('user_info',
       TJSONObject.Create.AddPair('auth', TJSONNumber.Create(0))));
   try
     if AAction = cActGetShortEpg then
-      Result := BuildEpgListings(List, AStreamId,
+      Result := BuildEpgListings(lList, AStreamId,
         IfThen(StrToIntDef(ALimit, 0) > 0, StrToIntDef(ALimit, 0), cShortEpgDefaultLimit), cOnlyFuture)
     else if AAction = cActGetSimpleDataTable then
-      Result := BuildEpgListings(List, AStreamId, cNoEpgLimit, cWithPast)
+      Result := BuildEpgListings(lList, AStreamId, cNoEpgLimit, cWithPast)
     else if AAction = cActGetVodInfo then
-      Result := VodInfo(List, AVodId)
+      Result := VodInfo(lList, AVodId)
     else if AAction = cActGetSeriesInfo then
-      Result := SeriesInfo(List, ASeriesId)
+      Result := SeriesInfo(lList, ASeriesId)
     else
-      Result := PlayerApiResult(List, AAction, ACategoryId);
+      Result := PlayerApiResult(lList, AAction, ACategoryId);
   finally
-    List.Free;
+    FreeAndNil(lList);
   end;
 end;
 
@@ -950,28 +996,27 @@ end;
 
 function TGetPhpResource.GetPhp(AUser, APass: string): string;
 var
-  List: TCustomList;
-  Prefix: string;
-  Uri: TURI;
+  lList: TCustomList;
+  lPrefix: string;
 begin
-  List := ResolveList(AUser, APass);
-  if List = nil then
+  lList := ResolveList(AUser, APass);
+  if lList = nil then
   begin
     Response.StatusCode := cHttpUnauthorized;
     Exit('');
   end;
   try
-    Prefix := '';
+    lPrefix := '';
     if App.Config.ProxyStreams then
     begin
-      Prefix := Format('http://%s:%d/live/%s/%s/',
-        [PublicHost, App.Config.ProxyPort, PathCred(List.OutputUsername), PathCred(List.OutputPassword)]);
+      lPrefix := Format('http://%s:%d/live/%s/%s/',
+        [PublicHost, App.Config.ProxyPort, PathCred(lList.OutputUsername), PathCred(lList.OutputPassword)]);
     end;
     // the Media Servers group filter is for the Plex bouquet only — a box gets its
     // whole bouquet (group names of one bouquet mean nothing in another)
-    Result := BuildM3U(App.Store, List.Id, Prefix, cBouquetChno, nil);
+    Result := BuildM3U(App.Store, lList.Id, lPrefix, cBouquetChno, nil);
   finally
-    List.Free;
+    FreeAndNil(lList);
   end;
 end;
 
@@ -979,21 +1024,21 @@ end;
 
 function TXmltvResource.Xmltv(AUser, APass: string): string;
 var
-  List: TCustomList;
+  lList: TCustomList;
 begin
-  List := ResolveList(AUser, APass);
-  if List = nil then
+  lList := ResolveList(AUser, APass);
+  if lList = nil then
   begin
     Response.StatusCode := cHttpUnauthorized;
     Exit('');
   end;
   try
-    Result := BuildXmltv(App.Store, List.Id, App.Config.EpgMaxDays,
+    Result := BuildXmltv(App.Store, lList.Id, App.Config.EpgMaxDays,
       TDummyEpgOptions.Make(App.Config.DummyEpgEnabled, App.Config.DummyEpgBlockMinutes,
         App.Config.DummyEpgHoursBack, App.Config.DummyEpgHoursAhead),
       nil); // group filter is Plex-only (see get.php)
   finally
-    List.Free;
+    FreeAndNil(lList);
   end;
 end;
 

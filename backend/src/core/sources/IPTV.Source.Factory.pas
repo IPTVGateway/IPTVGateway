@@ -6,15 +6,23 @@ unit IPTV.Source.Factory;
 interface
 
 uses
-  IPTV.Model.Types, IPTV.Source.Intf;
+  // Own units
+  IPTV.Model.Types,
+  IPTV.Source.Intf;
 
+/// Returns the source reader for a source kind (M3U when the kind is not Xtream/Stalker).
 function CreateSourceReader(AKind: TSourceKind): ISourceReader;
+/// Returns the XMLTV EPG reader.
 function CreateEpgReader: IEpgReader;
 
 implementation
 
 uses
-  IPTV.Source.M3U, IPTV.Source.Xtream, IPTV.Source.Stalker, IPTV.Source.Epg;
+  // Own units
+  IPTV.Source.M3U,
+  IPTV.Source.Xtream,
+  IPTV.Source.Stalker,
+  IPTV.Source.Epg;
 
 function CreateSourceReader(AKind: TSourceKind): ISourceReader;
 begin

@@ -8,11 +8,15 @@ unit IPTV.Api.Mars.Admin;
 interface
 
 uses
+  // RTL
   System.JSON,
-  MARS.Core.Attributes, MARS.Core.MediaType,
+  // third-party
+  MARS.Core.Attributes,
+  MARS.Core.MediaType,
   MARS.Core.RequestAndResponse.Interfaces;
 
 type
+  /// <summary>Admin REST API (/api) behind the web app.</summary>
   [Path('api')]
   TAdminResource = class
   protected
@@ -24,18 +28,24 @@ type
     /// send a header - a password in a URL ends up in browser history / proxy logs)
     procedure RequireApp(AAllowQueryPassword: Boolean = False);
   public
+    /// Liveness + version; needs no login.
     [GET, Path('health'), Produces(TMediaType.APPLICATION_JSON)]
     function Health: TJSONObject;
 
     // ── sources ──────────────────────────────────────────────────────────
+    /// All configured sources.
     [GET, Path('sources'), Produces(TMediaType.APPLICATION_JSON)]
     function GetSources: TJSONArray;
+    /// Create or (partially) update a source.
     [POST, Path('sources'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostSource([BodyParam] ABody: TJSONObject): TJSONObject;
+    /// Delete a source with its catalog and EPG.
     [DELETE, Path('sources/{id}')]
     procedure DeleteSource([PathParam('id')] AId: Integer);
+    /// Start a background refresh of one source.
     [POST, Path('sources/{id}/refresh'), Produces(TMediaType.APPLICATION_JSON)]
     function RefreshSource([PathParam('id')] AId: Integer): TJSONObject;
+    /// Channel-name prefixes of a source with their counts (filter discovery).
     [GET, Path('sources/{id}/prefixes'), Produces(TMediaType.APPLICATION_JSON)]
     function GetSourcePrefixes([PathParam('id')] AId: Integer): TJSONArray;
     // distinct guide ids (tvg-id) in the catalog, for the per-channel tvg-id picker
@@ -47,22 +57,27 @@ type
     function GetLanguages: TJSONArray;
     [GET, Path('languages/{code}'), Produces(TMediaType.APPLICATION_JSON)]
     function GetLanguage([PathParam('code')] ACode: string): TJSONObject;
+    /// Start a background refresh of all sources.
     [POST, Path('refresh'), Produces(TMediaType.APPLICATION_JSON)]
     function RefreshAll: TJSONObject;
     // re-apply every source's strip-prefixes to all channels already on lists
     [POST, Path('restrip-prefixes'), Produces(TMediaType.APPLICATION_JSON)]
     function RestripPrefixes: TJSONObject;
+    /// Per-source refresh state.
     [GET, Path('refresh/status'), Produces(TMediaType.APPLICATION_JSON)]
     function GetRefreshStatus: TJSONArray;
+    /// Start a background EPG-only refresh.
     [POST, Path('epg/refresh'), Produces(TMediaType.APPLICATION_JSON)]
     function RefreshEpg: TJSONObject;
 
     // ── catalog ─────────────────────────────────────────────────────────
+    /// Catalog categories matching the filter.
     [GET, Path('catalog/categories'), Produces(TMediaType.APPLICATION_JSON)]
     function GetCategories([QueryParam('sourceId')] ASourceId: Integer;
       [QueryParam('type')] AType: string; [QueryParam('onlyNew')] AOnlyNew: string;
       [QueryParam('search')] ASearch: string; [QueryParam('prefix')] APrefix: string;
       [QueryParam('includeHidden')] AIncludeHidden: string): TJSONArray;
+    /// One page of catalog streams matching the filter.
     [GET, Path('catalog/streams'), Produces(TMediaType.APPLICATION_JSON)]
     function GetStreams([QueryParam('sourceId')] ASourceId: Integer;
       [QueryParam('type')] AType: string; [QueryParam('onlyNew')] AOnlyNew: string;
@@ -71,6 +86,7 @@ type
       [QueryParam('limit')] ALimit: Integer; [QueryParam('offset')] AOffset: Integer;
       [QueryParam('includeHidden')] AIncludeHidden: string;
       [QueryParam('inCategory')] AInCategory: string): TJSONArray;
+    /// Number of catalog streams matching the filter.
     [GET, Path('catalog/streams/count'), Produces(TMediaType.APPLICATION_JSON)]
     function CountStreams([QueryParam('sourceId')] ASourceId: Integer;
       [QueryParam('type')] AType: string; [QueryParam('onlyNew')] AOnlyNew: string;
@@ -78,52 +94,73 @@ type
       [QueryParam('category')] ACategory: string;
       [QueryParam('includeHidden')] AIncludeHidden: string;
       [QueryParam('inCategory')] AInCategory: string): TJSONObject;
+    /// Clear the 'new' badge of the given categories.
     [POST, Path('catalog/categories/seen'), Consumes(TMediaType.APPLICATION_JSON)]
     procedure MarkCategoriesSeen([BodyParam] ABody: TJSONObject);
+    /// Clear the 'new' badge of the given streams.
     [POST, Path('catalog/streams/seen'), Consumes(TMediaType.APPLICATION_JSON)]
     procedure MarkStreamsSeen([BodyParam] ABody: TJSONObject);
 
     // ── EPG ─────────────────────────────────────────────────────────────
+    /// Source EPG of one tvg-id.
     [GET, Path('epg'), Produces(TMediaType.APPLICATION_JSON)]
     function GetEpg([QueryParam('tvgId')] ATvgId: string): TJSONArray;
 
     // ── lists / groups / items ──────────────────────────────────────────
+    /// All output lists.
     [GET, Path('lists'), Produces(TMediaType.APPLICATION_JSON)]
     function GetLists: TJSONArray;
+    /// Create or (partially) update an output list.
     [POST, Path('lists'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostList([BodyParam] ABody: TJSONObject): TJSONObject;
+    /// Delete an output list with its groups and items.
     [DELETE, Path('lists/{id}')]
     procedure DeleteList([PathParam('id')] AId: Integer);
+    /// Curated EPG of a list, keyed by the effective tvg-ids.
     [GET, Path('lists/{id}/epg'), Produces(TMediaType.APPLICATION_JSON)]
     function GetListEpg([PathParam('id')] AId: Integer): TJSONArray;
+    /// Groups of a list.
     [GET, Path('lists/{id}/groups'), Produces(TMediaType.APPLICATION_JSON)]
     function GetGroups([PathParam('id')] AId: Integer): TJSONArray;
+    /// Create or (partially) update a group of a list.
     [POST, Path('lists/{id}/groups'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostGroup([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
+    /// Delete a group.
     [DELETE, Path('groups/{id}')]
     procedure DeleteGroup([PathParam('id')] AId: Integer);
+    /// Items of a list.
     [GET, Path('lists/{id}/items'), Produces(TMediaType.APPLICATION_JSON)]
     function GetItems([PathParam('id')] AId: Integer): TJSONArray;
+    /// Create or (partially) update an item of a list.
     [POST, Path('lists/{id}/items'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostItem([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
+    /// Add many catalog streams to a list/group at once.
     [POST, Path('lists/{id}/items/bulk'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostItemsBulk([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
     // swap the stream behind existing items in place (variant replace inside a
     // group). Body: { replacements: [ { itemId, streamId }, … ] } -> { replaced: n }
-    [POST, Path('lists/{id}/items/replace'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
+    [POST, Path('lists/{id}/items/replace'),
+      Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostItemsReplace([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
+    /// Delete an item.
     [DELETE, Path('items/{id}')]
     procedure DeleteItem([PathParam('id')] AId: Integer);
+    /// Remove all items of one group.
     [POST, Path('lists/{id}/items/clear'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function ClearGroupItems([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
+    /// Remove duplicate items of a list.
     [POST, Path('lists/{id}/dedupe'), Produces(TMediaType.APPLICATION_JSON)]
     function DedupeList([PathParam('id')] AId: Integer): TJSONObject;
+    /// Sort one group's channels A-Z (renumbers them).
     [POST, Path('lists/{id}/groups/sort'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function SortGroup([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
-    [POST, Path('lists/{id}/groups/reorder'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
+    /// Set one group's channel order (renumbers them).
+    [POST, Path('lists/{id}/groups/reorder'),
+      Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function ReorderGroup([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
     // set the manual drag-order of the list's GROUPS (body: { groupIds:[…] })
-    [POST, Path('lists/{id}/groups/order'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
+    [POST, Path('lists/{id}/groups/order'),
+      Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function OrderGroups([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONObject;
     // renumber the whole bouquet across all groups in one transaction; the client
     // computes the plan. Body: { numbers:[ { itemId, channelNumber }, … ] } -> { numbered }
@@ -143,7 +180,8 @@ type
     // clean the names of a group's channels after the fact (source strip rules +
     // one-off extra tokens). Body: { extraPrefixes:[], extraSuffixes:[], dryRun }
     // -> [ { itemId, oldName, newName, original } ] (dryRun = preview only)
-    [POST, Path('lists/{id}/groups/{gid}/restrip'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
+    [POST, Path('lists/{id}/groups/{gid}/restrip'),
+      Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostGroupRestrip([PathParam('id')] AId: Integer;
       [PathParam('gid')] AGroupId: Integer; [BodyParam] ABody: TJSONObject): TJSONArray;
     // every quality variant of ONE channel (self included), for the quality probe.
@@ -159,8 +197,10 @@ type
       [QueryParam('seconds')] ASeconds: Integer): TJSONObject;
 
     // ── settings (config.json) ──────────────────────────────────────────
+    /// Runtime settings (editable and read-only).
     [GET, Path('config'), Produces(TMediaType.APPLICATION_JSON)]
     function GetConfig: TJSONObject;
+    /// Apply and persist runtime settings (partial body allowed).
     [POST, Path('config'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostConfig([BodyParam] ABody: TJSONObject): TJSONObject;
     // tell the configured Plex server to reload its DVR guide/lineup
@@ -186,14 +226,18 @@ type
 
     // ── settings export / import (portable config bundle: config + sources +
     //    lists + groups; NOT the picked channels/catalog, which are data) ────
+    /// Settings bundle for download.
     [GET, Path('export'), Produces(TMediaType.APPLICATION_JSON)]
     function ExportSettings: TJSONObject;
+    /// Replace the configuration from a settings bundle.
     [POST, Path('import'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function ImportSettings([BodyParam] ABody: TJSONObject): TJSONObject;
 
     // ── exports (downloads) ─────────────────────────────────────────────
+    /// List as an M3U download.
     [GET, Path('lists/{id}/export.m3u'), Produces('application/x-mpegurl')]
     function ExportM3U([PathParam('id')] AId: Integer): string;
+    /// List EPG as an XMLTV download.
     [GET, Path('lists/{id}/export.xmltv'), Produces(TMediaType.APPLICATION_XML)]
     function ExportXmltv([PathParam('id')] AId: Integer): string;
   end;
@@ -201,12 +245,31 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, System.IOUtils, System.Math,
-  MARS.Core.Registry, MARS.Core.Exceptions,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
-  IPTV.Model.CustomList, IPTV.Storage.Intf, IPTV.App.Config, IPTV.App.Context, IPTV.Ingest.Service,
-  IPTV.Api.Serializers, IPTV.Api.SettingsIO, IPTV.Output.Builder, IPTV.Core.Utils,
-  IPTV.Plex.Client, IPTV.Source.Probe;
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.Generics.Collections,
+  System.IOUtils,
+  System.Math,
+  // third-party
+  MARS.Core.Registry,
+  MARS.Core.Exceptions,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
+  IPTV.Model.CustomList,
+  IPTV.Storage.Intf,
+  IPTV.App.Config,
+  IPTV.App.Context,
+  IPTV.Ingest.Service,
+  IPTV.Api.Serializers,
+  IPTV.Api.SettingsIO,
+  IPTV.Output.Builder,
+  IPTV.Core.Utils,
+  IPTV.Plex.Client,
+  IPTV.Source.Probe;
 
 const
   // admin authentication: header (web app), query param (download links only)
@@ -253,14 +316,14 @@ const
 
 procedure TAdminResource.RequireApp(AAllowQueryPassword: Boolean);
 var
-  Pw: string;
+  lPw: string;
 begin
   if App = nil then
     raise EMARSHttpException.Create('service not started', cHttpServiceUnavailable);
-  Pw := App.Config.AdminPassword;
-  if Pw <> '' then
-    if not IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), Pw) and
-       not (AAllowQueryPassword and IsSamePassword(Request.GetQueryParamValue(cAdminPasswordQuery), Pw)) then
+  lPw := App.Config.AdminPassword;
+  if lPw <> '' then
+    if not IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), lPw) and
+       not (AAllowQueryPassword and IsSamePassword(Request.GetQueryParamValue(cAdminPasswordQuery), lPw)) then
       raise EMARSHttpException.Create('Unauthorized', cHttpUnauthorized);
 end;
 
@@ -269,9 +332,9 @@ begin
   Result := IntArrayFromJson(ABody, 'ids');
 end;
 
-function IsTrue(const S: string): Boolean;
+function IsTrue(const AValue: string): Boolean;
 begin
-  Result := (S = cQueryTrueDigit) or SameText(S, cQueryTrueText);
+  Result := (AValue = cQueryTrueDigit) or SameText(AValue, cQueryTrueText);
 end;
 
 // 400 for values the service can't use (also checked on import)
@@ -368,70 +431,71 @@ end;
 
 function TAdminResource.GetSources: TJSONArray;
 var
-  L: TObjectList<TSourceConfig>;
+  lList: TObjectList<TSourceConfig>;
 begin
   RequireApp;
-  L := App.Store.LoadSources;
+  lList := App.Store.LoadSources;
   try
-    Result := SourcesToJson(L);
+    Result := SourcesToJson(lList);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 function TAdminResource.PostSource(ABody: TJSONObject): TJSONObject;
 var
-  S, Ex: TSourceConfig;
-  Existing: TObjectList<TSourceConfig>;
-  Id: Integer;
-  OldStrip, OldStripSfx: TArray<string>;
-  TooLong: string;
+  lSource, lExisting: TSourceConfig;
+  lSources: TObjectList<TSourceConfig>;
+  lId: Integer;
+  lOldStrip, lOldStripSfx: TArray<string>;
+  lTooLong: string;
 begin
   RequireApp;
-  OldStrip := [];
-  OldStripSfx := [];
-  S := TSourceConfig.Create;
+  lOldStrip := [];
+  lOldStripSfx := [];
+  lSource := TSourceConfig.Create;
   try
     // For an update, pre-load the stored row so a PARTIAL body (e.g. just a
     // content-type toggle) doesn't blank out the other columns. SourceFromJson
     // then overrides only the fields the client actually sent.
-    Id := ABody.GetValue<Integer>('id', 0);
-    if Id > 0 then
+    lId := ABody.GetValue<Integer>('id', 0);
+    if lId > 0 then
     begin
-      Existing := App.Store.LoadSources;
+      lSources := App.Store.LoadSources;
       try
-        for Ex in Existing do
-          if Ex.Id = Id then
+        for lExisting in lSources do
+          if lExisting.Id = lId then
           begin
-            S.Assign(Ex);
-            OldStrip := Ex.StripPrefixes; // remember to re-strip existing items if it changes
-            OldStripSfx := Ex.StripSuffixes;
+            lSource.Assign(lExisting);
+            lOldStrip := lExisting.StripPrefixes; // remember to re-strip existing items if it changes
+            lOldStripSfx := lExisting.StripSuffixes;
             Break;
           end;
       finally
-        Existing.Free;
+        FreeAndNil(lSources);
       end;
     end;
-    SourceFromJson(ABody, S);
+    SourceFromJson(ABody, lSource);
     // a name-filter item can't be a whole pasted list: refuse oversized items
     // (they used to reach SQLite as one giant LIKE pattern and fail every catalog
     // query) and split pasted multi-line items into separate tokens
-    TooLong := FirstTooLongFilterToken(S.IncludeFilters + S.ExcludeFilters);
-    if TooLong <> '' then
+    lTooLong := FirstTooLongFilterToken(lSource.IncludeFilters + lSource.ExcludeFilters);
+    if lTooLong <> '' then
       raise EMARSHttpException.Create(Format(
         'Filter item too long (%d chars, max %d) — split it into separate items: "%s…"',
-        [Length(TooLong), MaxFilterTokenLen, Copy(TooLong, 1, cFilterPreviewLen)]), cHttpBadRequest);
-    S.IncludeFilters := CleanFilterTokens(S.IncludeFilters);
-    S.ExcludeFilters := CleanFilterTokens(S.ExcludeFilters);
-    App.Store.SaveSource(S);
+        [Length(lTooLong), MaxFilterTokenLen, Copy(lTooLong, 1, cFilterPreviewLen)]), cHttpBadRequest);
+    lSource.IncludeFilters := CleanFilterTokens(lSource.IncludeFilters);
+    lSource.ExcludeFilters := CleanFilterTokens(lSource.ExcludeFilters);
+    App.Store.SaveSource(lSource);
     // if a strip-prefix/suffix rule changed, re-clean already-added channel names
     // (auto-named items only; manual renames are preserved)
-    if (Id > 0) and ((StrArrayToCsv(OldStrip, cStripTokenSep) <> StrArrayToCsv(S.StripPrefixes, cStripTokenSep)) or
-       (StrArrayToCsv(OldStripSfx, cStripTokenSep) <> StrArrayToCsv(S.StripSuffixes, cStripTokenSep))) then
-      App.Store.RestripSourceItems(S.Id, OldStrip, OldStripSfx, S.StripPrefixes, S.StripSuffixes);
-    Result := SourceToJson(S);
+    if (lId > 0) and
+       ((StrArrayToCsv(lOldStrip, cStripTokenSep) <> StrArrayToCsv(lSource.StripPrefixes, cStripTokenSep)) or
+       (StrArrayToCsv(lOldStripSfx, cStripTokenSep) <> StrArrayToCsv(lSource.StripSuffixes, cStripTokenSep))) then
+      App.Store.RestripSourceItems(lSource.Id, lOldStrip, lOldStripSfx, lSource.StripPrefixes, lSource.StripSuffixes);
+    Result := SourceToJson(lSource);
   finally
-    S.Free;
+    FreeAndNil(lSource);
   end;
 end;
 
@@ -465,54 +529,54 @@ end;
 
 function TAdminResource.GetRefreshStatus: TJSONArray;
 var
-  Arr: TArray<TIngestStatus>;
-  St: TIngestStatus;
-  O: TJSONObject;
+  lStatuses: TArray<TIngestStatus>;
+  lStatus: TIngestStatus;
+  lEntry: TJSONObject;
 begin
   RequireApp;
-  Arr := App.Ingest.GetStatus;
+  lStatuses := App.Ingest.GetStatus;
   Result := TJSONArray.Create;
-  for St in Arr do
+  for lStatus in lStatuses do
   begin
-    O := TJSONObject.Create;
-    O.AddPair('sourceId', TJSONNumber.Create(St.SourceId));
-    O.AddPair('running', TJSONBool.Create(St.Running));
-    O.AddPair('startedUtc', DateTimeToIsoUtc(St.StartedUtc));
-    O.AddPair('finishedUtc', DateTimeToIsoUtc(St.FinishedUtc));
-    O.AddPair('streams', TJSONNumber.Create(St.Streams));
-    O.AddPair('categories', TJSONNumber.Create(St.Categories));
-    O.AddPair('programmes', TJSONNumber.Create(St.Programmes));
-    O.AddPair('error', St.Error);
-    Result.Add(O);
+    lEntry := TJSONObject.Create;
+    lEntry.AddPair('sourceId', TJSONNumber.Create(lStatus.SourceId));
+    lEntry.AddPair('running', TJSONBool.Create(lStatus.Running));
+    lEntry.AddPair('startedUtc', DateTimeToIsoUtc(lStatus.StartedUtc));
+    lEntry.AddPair('finishedUtc', DateTimeToIsoUtc(lStatus.FinishedUtc));
+    lEntry.AddPair('streams', TJSONNumber.Create(lStatus.Streams));
+    lEntry.AddPair('categories', TJSONNumber.Create(lStatus.Categories));
+    lEntry.AddPair('programmes', TJSONNumber.Create(lStatus.Programmes));
+    lEntry.AddPair('error', lStatus.Error);
+    Result.Add(lEntry);
   end;
 end;
 
 function TAdminResource.GetSourcePrefixes(AId: Integer): TJSONArray;
 var
-  Prefixes: TArray<TPrefixCount>;
-  P: TPrefixCount;
+  lPrefixes: TArray<TPrefixCount>;
+  lPrefix: TPrefixCount;
 begin
   RequireApp;
-  Prefixes := App.Store.DiscoverPrefixes(AId);
+  lPrefixes := App.Store.DiscoverPrefixes(AId);
   Result := TJSONArray.Create;
-  for P in Prefixes do
+  for lPrefix in lPrefixes do
     Result.Add(TJSONObject.Create
-      .AddPair('prefix', P.Prefix)
-      .AddPair('count', TJSONNumber.Create(P.Count)));
+      .AddPair('prefix', lPrefix.Prefix)
+      .AddPair('count', TJSONNumber.Create(lPrefix.Count)));
 end;
 
 function TAdminResource.GetTvgIds: TJSONArray;
 var
-  Ids: TArray<TTvgIdInfo>;
-  T: TTvgIdInfo;
+  lIds: TArray<TTvgIdInfo>;
+  lInfo: TTvgIdInfo;
 begin
   RequireApp;
-  Ids := App.Store.LoadKnownTvgIds;
+  lIds := App.Store.LoadKnownTvgIds;
   Result := TJSONArray.Create;
-  for T in Ids do
+  for lInfo in lIds do
     Result.Add(TJSONObject.Create
-      .AddPair('tvgId', T.TvgId)
-      .AddPair('name', T.Name));
+      .AddPair('tvgId', lInfo.TvgId)
+      .AddPair('name', lInfo.Name));
 end;
 
 // The mounted language folder, next to the service exe: <exedir>/lang. Operators
@@ -526,36 +590,36 @@ end;
 
 function TAdminResource.GetLanguages: TJSONArray;
 var
-  FileName, Code, DisplayName: string;
-  Val: TJSONValue;
-  Name: TJSONObject;
+  lFileName, lCode, lDisplayName: string;
+  lValue: TJSONValue;
+  lLangObj: TJSONObject;
 begin
   RequireApp;
   Result := TJSONArray.Create;
   try
-  if not TDirectory.Exists(LangDir) then
-    Exit;
-  for FileName in TDirectory.GetFiles(LangDir, cLangFileMask) do
-  begin
-    Code := TPath.GetFileNameWithoutExtension(FileName);
-    DisplayName := Code;
-    // the optional "_name" key gives a human label (e.g. "Deutsch"); fall back to code.
-    // Parse to a TJSONValue and free it whatever its concrete type — a non-object
-    // file (e.g. a JSON array) must not leak the parsed node.
-    Val := nil;
-    try
-      Val := TJSONObject.ParseJSONValue(TFile.ReadAllText(FileName, TEncoding.UTF8));
-      if (Val is TJSONObject) and (TJSONObject(Val).GetValue(cLangNameKey) <> nil) then
-        DisplayName := TJSONObject(Val).GetValue(cLangNameKey).Value;
-    except
-      // malformed file → skip the label, keep the code
+    if not TDirectory.Exists(LangDir) then
+      Exit;
+    for lFileName in TDirectory.GetFiles(LangDir, cLangFileMask) do
+    begin
+      lCode := TPath.GetFileNameWithoutExtension(lFileName);
+      lDisplayName := lCode;
+      // the optional "_name" key gives a human label (e.g. "Deutsch"); fall back to code.
+      // Parse to a TJSONValue and free it whatever its concrete type — a non-object
+      // file (e.g. a JSON array) must not leak the parsed node.
+      lValue := nil;
+      try
+        lValue := TJSONObject.ParseJSONValue(TFile.ReadAllText(lFileName, TEncoding.UTF8));
+        if (lValue is TJSONObject) and (TJSONObject(lValue).GetValue(cLangNameKey) <> nil) then
+          lDisplayName := TJSONObject(lValue).GetValue(cLangNameKey).Value;
+      except
+        // malformed file → skip the label, keep the code
+      end;
+      FreeAndNil(lValue);
+      lLangObj := TJSONObject.Create;
+      lLangObj.AddPair('code', lCode);
+      lLangObj.AddPair('name', lDisplayName);
+      Result.Add(lLangObj);
     end;
-    Val.Free;
-    Name := TJSONObject.Create;
-    Name.AddPair('code', Code);
-    Name.AddPair('name', DisplayName);
-    Result.Add(Name);
-  end;
   except
     FreeAndNil(Result); // MARS only frees what we return
     raise;
@@ -564,25 +628,25 @@ end;
 
 function TAdminResource.GetLanguage(ACode: string): TJSONObject;
 var
-  FileName: string;
-  Val: TJSONValue;
+  lFileName: string;
+  lValue: TJSONValue;
 begin
   RequireApp;
   // path-traversal guard: codes are simple identifiers, never paths
   if (ACode = '') or ACode.Contains('/') or ACode.Contains('\') or ACode.Contains('..') or
      ACode.Contains(':') then
     raise EMARSHttpException.Create('Bad language code', cHttpBadRequest);
-  FileName := TPath.Combine(LangDir, ACode + cLangFileExt);
-  if not TFile.Exists(FileName) then
+  lFileName := TPath.Combine(LangDir, ACode + cLangFileExt);
+  if not TFile.Exists(lFileName) then
     raise EMARSHttpException.Create('Unknown language', cHttpNotFound);
   // parse to a value first; a non-object (or unparseable) file must not leak
-  Val := TJSONObject.ParseJSONValue(TFile.ReadAllText(FileName, TEncoding.UTF8));
-  if not (Val is TJSONObject) then
+  lValue := TJSONObject.ParseJSONValue(TFile.ReadAllText(lFileName, TEncoding.UTF8));
+  if not (lValue is TJSONObject) then
   begin
-    Val.Free; // nil-safe; frees a non-object value too
+    FreeAndNil(lValue); // nil-safe; frees a non-object value too
     raise EMARSHttpException.Create('Malformed language file', cHttpInternalServerError);
   end;
-  Result := TJSONObject(Val);
+  Result := TJSONObject(lValue);
 end;
 
 function TAdminResource.RefreshAll: TJSONObject;
@@ -602,31 +666,33 @@ begin
   Result := TJSONObject.Create.AddPair('updated', TJSONNumber.Create(App.Store.RestripAllItems));
 end;
 
-function TAdminResource.GetCategories(ASourceId: Integer; AType, AOnlyNew, ASearch, APrefix, AIncludeHidden: string): TJSONArray;
+function TAdminResource.GetCategories(ASourceId: Integer; AType, AOnlyNew, ASearch, APrefix,
+  AIncludeHidden: string): TJSONArray;
 var
-  L: TCategoryList;
+  lList: TCategoryList;
 begin
   RequireApp;
-  L := App.Store.LoadCategories(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, '', cNoLimit, cNoOffset, IsTrue(AIncludeHidden)));
+  lList := App.Store.LoadCategories(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, '', cNoLimit,
+    cNoOffset, IsTrue(AIncludeHidden)));
   try
-    Result := CategoriesToJson(L);
+    Result := CategoriesToJson(lList);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 function TAdminResource.GetStreams(ASourceId: Integer; AType, AOnlyNew, ASearch, APrefix, ACategory: string;
   ALimit, AOffset: Integer; AIncludeHidden, AInCategory: string): TJSONArray;
 var
-  L: TStreamItemList;
+  lList: TStreamItemList;
 begin
   RequireApp;
-  L := App.Store.LoadStreams(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, ACategory,
+  lList := App.Store.LoadStreams(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, ACategory,
     ALimit, AOffset, IsTrue(AIncludeHidden), IsTrue(AInCategory)));
   try
-    Result := StreamsToJson(L);
+    Result := StreamsToJson(lList);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
@@ -653,64 +719,64 @@ end;
 
 function TAdminResource.GetEpg(ATvgId: string): TJSONArray;
 var
-  L: TEpgProgrammeList;
+  lList: TEpgProgrammeList;
 begin
   RequireApp;
-  L := App.Store.LoadEpgForTvgIds([ATvgId], App.Config.EpgMaxDays);
+  lList := App.Store.LoadEpgForTvgIds([ATvgId], App.Config.EpgMaxDays);
   try
-    Result := ProgrammesToJson(L);
+    Result := ProgrammesToJson(lList);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 function TAdminResource.GetLists: TJSONArray;
 var
-  L: TObjectList<TCustomList>;
+  lList: TObjectList<TCustomList>;
 begin
   RequireApp;
-  L := App.Store.LoadLists;
+  lList := App.Store.LoadLists;
   try
-    Result := ListsToJson(L);
+    Result := ListsToJson(lList);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 function TAdminResource.PostList(ABody: TJSONObject): TJSONObject;
 var
-  X, Ex: TCustomList;
-  Existing: TObjectList<TCustomList>;
-  Id: Integer;
+  lList, lExisting: TCustomList;
+  lLists: TObjectList<TCustomList>;
+  lId: Integer;
 begin
   RequireApp;
-  X := TCustomList.Create;
+  lList := TCustomList.Create;
   try
     // load-then-merge so a partial patch can't blank the other list fields
-    Id := ABody.GetValue<Integer>('id', 0);
-    if Id > 0 then
+    lId := ABody.GetValue<Integer>('id', 0);
+    if lId > 0 then
     begin
-      Existing := App.Store.LoadLists;
+      lLists := App.Store.LoadLists;
       try
-        for Ex in Existing do
-          if Ex.Id = Id then
+        for lExisting in lLists do
+          if lExisting.Id = lId then
           begin
-            X.Id := Ex.Id;
-            X.Name := Ex.Name;
-            X.OutputUsername := Ex.OutputUsername;
-            X.OutputPassword := Ex.OutputPassword;
-            X.Enabled := Ex.Enabled;
+            lList.Id := lExisting.Id;
+            lList.Name := lExisting.Name;
+            lList.OutputUsername := lExisting.OutputUsername;
+            lList.OutputPassword := lExisting.OutputPassword;
+            lList.Enabled := lExisting.Enabled;
             Break;
           end;
       finally
-        Existing.Free;
+        FreeAndNil(lLists);
       end;
     end;
-    ListFromJson(ABody, X);
-    App.Store.SaveList(X);
-    Result := ListToJson(X);
+    ListFromJson(ABody, lList);
+    App.Store.SaveList(lList);
+    Result := ListToJson(lList);
   finally
-    X.Free;
+    FreeAndNil(lList);
   end;
 end;
 
@@ -761,9 +827,9 @@ end;
 
 function TAdminResource.PostConfig(ABody: TJSONObject): TJSONObject;
 var
-  Groups: TArray<string>;
-  GArr: TJSONValue;
-  Base: string;
+  lGroups: TArray<string>;
+  lArrValue: TJSONValue;
+  lBase: string;
   lHour, lMinute, lProxyPort, lEpgDays: Integer;
 begin
   RequireApp;
@@ -788,15 +854,16 @@ begin
     ABody.GetValue<string>('plexToken', App.Config.PlexToken));
   App.SetPlexListId(ABody.GetValue<Integer>('plexListId', App.Config.PlexListId));
   // media servers: global group filter + base URL (trailing slash normalised) + dummy EPG
-  GArr := ABody.GetValue('visibleGroups');
-  if GArr is TJSONArray then
-    Groups := StrArrayFromJson(TJSONArray(GArr))
+  lArrValue := ABody.GetValue('visibleGroups');
+  if lArrValue is TJSONArray then
+    lGroups := StrArrayFromJson(TJSONArray(lArrValue))
   else
-    Groups := App.Config.VisibleGroups;
+    lGroups := App.Config.VisibleGroups;
   // validated: a value without scheme/host used to break every box login (500)
-  if not NormalizePublicBaseUrl(ABody.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl), Base) then
-    raise EMARSHttpException.Create('publicBaseUrl is not a valid URL (e.g. http://192.168.1.10:7777)', cHttpBadRequest);
-  App.UpdateMediaConfig(Groups, Base,
+  if not NormalizePublicBaseUrl(ABody.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl), lBase) then
+    raise EMARSHttpException.Create('publicBaseUrl is not a valid URL (e.g. http://192.168.1.10:7777)',
+      cHttpBadRequest);
+  App.UpdateMediaConfig(lGroups, lBase,
     ABody.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
     ABody.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
     ABody.GetValue<Integer>('dummyEpgHoursBack', App.Config.DummyEpgHoursBack),
@@ -806,25 +873,25 @@ begin
     ABody.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
     ABody.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
   // extra (third-party) XMLTV guides: only when the body carries the field
-  GArr := ABody.GetValue('mediaAllowedClients');
-  if GArr is TJSONArray then
-    App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(GArr)));
-  GArr := ABody.GetValue('extraEpgUrls');
-  if GArr is TJSONArray then
-    App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(GArr)));
+  lArrValue := ABody.GetValue('mediaAllowedClients');
+  if lArrValue is TJSONArray then
+    App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lArrValue)));
+  lArrValue := ABody.GetValue('extraEpgUrls');
+  if lArrValue is TJSONArray then
+    App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(lArrValue)));
   Result := GetConfig;
 end;
 
 function TAdminResource.PlexRescan: TJSONObject;
 var
-  Count: Integer;
+  lCount: Integer;
 begin
   RequireApp;
   try
-    Count := ReloadPlexGuides(App.Config.PlexServerUrl, App.Config.PlexToken);
+    lCount := ReloadPlexGuides(App.Config.PlexServerUrl, App.Config.PlexToken);
     App.MarkPlexRescanned; // clears the "rescan due" reminder
-    App.Log(Format('Plex rescan: reloaded %d DVR(s)', [Count]));
-    Result := TJSONObject.Create.AddPair('dvrs', TJSONNumber.Create(Count));
+    App.Log(Format('Plex rescan: reloaded %d DVR(s)', [lCount]));
+    Result := TJSONObject.Create.AddPair('dvrs', TJSONNumber.Create(lCount));
   except
     on E: Exception do
       raise EMARSHttpException.Create('Plex rescan failed: ' + E.Message, cHttpBadRequest);
@@ -846,64 +913,64 @@ end;
 // source+upstreamId on a later refresh) and the items re-linked by upstream URL.
 function TAdminResource.ImportSettings(ABody: TJSONObject): TJSONObject;
 var
-  Counts: TImportCounts;
-  Cfg: TJSONObject;
+  lCounts: TImportCounts;
+  lCfg: TJSONObject;
 begin
   RequireApp;
   if not ((ABody.GetValue('sources') is TJSONArray) or (ABody.GetValue('lists') is TJSONArray)) then
     raise EMARSHttpException.Create('Invalid import file (no "sources"/"lists")', cHttpBadRequest);
 
-  Counts := ImportStoreSettings(App.Store, ABody);
+  lCounts := ImportStoreSettings(App.Store, ABody);
 
   if ABody.GetValue('config') is TJSONObject then
   begin
-    Cfg := TJSONObject(ABody.GetValue('config'));
+    lCfg := TJSONObject(ABody.GetValue('config'));
     CheckSettingsRange(
-      Cfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
-      Cfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
-      Cfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
-      Cfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays));
+      lCfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
+      lCfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
+      lCfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
+      lCfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays));
     App.UpdateSettings(
-      Cfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
-      Cfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
-      Cfg.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
-      Cfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
-      Cfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays), // was dropped on import
-      Cfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
+      lCfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
+      lCfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
+      lCfg.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
+      lCfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
+      lCfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays), // was dropped on import
+      lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
     // were exported but never restored
-    if Cfg.GetValue('extraEpgUrls') is TJSONArray then
-      App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(Cfg.GetValue('extraEpgUrls'))));
-    if Cfg.GetValue('mediaAllowedClients') is TJSONArray then
-      App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(Cfg.GetValue('mediaAllowedClients'))));
-    App.SetPlexListId(ImportedPlexListId(ABody, Cfg));
+    if lCfg.GetValue('extraEpgUrls') is TJSONArray then
+      App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(lCfg.GetValue('extraEpgUrls'))));
+    if lCfg.GetValue('mediaAllowedClients') is TJSONArray then
+      App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lCfg.GetValue('mediaAllowedClients'))));
+    App.SetPlexListId(ImportedPlexListId(ABody, lCfg));
     // the Plex tuner surfaces are part of the clone too — restore them as well
     App.UpdatePlexSettings(
-      Cfg.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
-      Cfg.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
-      Cfg.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
-      Cfg.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
-      Cfg.GetValue<Integer>('plexTunerCount', App.Config.PlexTunerCount),
-      Cfg.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
-      Cfg.GetValue<string>('plexToken', App.Config.PlexToken));
+      lCfg.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
+      lCfg.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
+      lCfg.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
+      lCfg.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
+      lCfg.GetValue<Integer>('plexTunerCount', App.Config.PlexTunerCount),
+      lCfg.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
+      lCfg.GetValue<string>('plexToken', App.Config.PlexToken));
     // media servers: the global group filter + base URL + dummy-EPG settings
-    if Cfg.GetValue('visibleGroups') is TJSONArray then
-      App.UpdateMediaConfig(StrArrayFromJson(TJSONArray(Cfg.GetValue('visibleGroups'))),
-        ImportedBaseUrl(Cfg.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl)),
-        Cfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
-        Cfg.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
-        Cfg.GetValue<Integer>('dummyEpgHoursBack', App.Config.DummyEpgHoursBack),
-        Cfg.GetValue<Integer>('dummyEpgHoursAhead', App.Config.DummyEpgHoursAhead),
-        Cfg.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
-        Cfg.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
-        Cfg.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
-        Cfg.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
+    if lCfg.GetValue('visibleGroups') is TJSONArray then
+      App.UpdateMediaConfig(StrArrayFromJson(TJSONArray(lCfg.GetValue('visibleGroups'))),
+        ImportedBaseUrl(lCfg.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl)),
+        lCfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
+        lCfg.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
+        lCfg.GetValue<Integer>('dummyEpgHoursBack', App.Config.DummyEpgHoursBack),
+        lCfg.GetValue<Integer>('dummyEpgHoursAhead', App.Config.DummyEpgHoursAhead),
+        lCfg.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
+        lCfg.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
+        lCfg.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
+        lCfg.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
   end;
 
   Result := TJSONObject.Create;
-  Result.AddPair('sources', TJSONNumber.Create(Counts.Sources));
-  Result.AddPair('lists', TJSONNumber.Create(Counts.Lists));
-  Result.AddPair('groups', TJSONNumber.Create(Counts.Groups));
-  Result.AddPair('items', TJSONNumber.Create(Counts.Items));
+  Result.AddPair('sources', TJSONNumber.Create(lCounts.Sources));
+  Result.AddPair('lists', TJSONNumber.Create(lCounts.Lists));
+  Result.AddPair('groups', TJSONNumber.Create(lCounts.Groups));
+  Result.AddPair('items', TJSONNumber.Create(lCounts.Items));
 end;
 
 function TAdminResource.PlexStatus: TJSONObject;
@@ -926,50 +993,50 @@ end;
 
 function TAdminResource.GetMediaGroups: TJSONArray;
 var
-  L: TCustomList;
-  Channels: TOutputChannelList;
-  C: TOutputChannel;
-  Counts: TDictionary<string, Integer>;
-  Names: TStringList;
-  N, I: Integer;
+  lList: TCustomList;
+  lChannels: TOutputChannelList;
+  lChannel: TOutputChannel;
+  lCounts: TDictionary<string, Integer>;
+  lNames: TStringList;
+  lCount, i: Integer;
 begin
   RequireApp;
-  L := ServedListForMedia;
+  lList := ServedListForMedia;
   Result := TJSONArray.Create;
-  if L = nil then
+  if lList = nil then
     Exit;
-  Counts := nil;
-  Names := nil;
+  lCounts := nil;
+  lNames := nil;
   try
-  Counts := TDictionary<string, Integer>.Create;
-  Names := TStringList.Create;
-  try
-    Names.Sorted := True;
-    Names.Duplicates := dupIgnore;
-    Names.CaseSensitive := False;
-    Channels := App.Store.LoadOutputChannels(L.Id);
+    lCounts := TDictionary<string, Integer>.Create;
+    lNames := TStringList.Create;
     try
-      for C in Channels do
-      begin
-        if not Counts.TryGetValue(C.GroupName, N) then
+      lNames.Sorted := True;
+      lNames.Duplicates := dupIgnore;
+      lNames.CaseSensitive := False;
+      lChannels := App.Store.LoadOutputChannels(lList.Id);
+      try
+        for lChannel in lChannels do
         begin
-          N := 0;
-          Names.Add(C.GroupName);
+          if not lCounts.TryGetValue(lChannel.GroupName, lCount) then
+          begin
+            lCount := 0;
+            lNames.Add(lChannel.GroupName);
+          end;
+          lCounts.AddOrSetValue(lChannel.GroupName, lCount + 1);
         end;
-        Counts.AddOrSetValue(C.GroupName, N + 1);
+      finally
+        FreeAndNil(lChannels);
       end;
+      for i := 0 to lNames.Count - 1 do
+        Result.Add(TJSONObject.Create
+          .AddPair('name', lNames[i])
+          .AddPair('channels', TJSONNumber.Create(lCounts[lNames[i]])));
     finally
-      Channels.Free;
+      FreeAndNil(lCounts);
+      FreeAndNil(lNames);
+      FreeAndNil(lList);
     end;
-    for I := 0 to Names.Count - 1 do
-      Result.Add(TJSONObject.Create
-        .AddPair('name', Names[I])
-        .AddPair('channels', TJSONNumber.Create(Counts[Names[I]])));
-  finally
-    Counts.Free;
-    Names.Free;
-    L.Free;
-  end;
   except
     FreeAndNil(Result); // MARS only frees what we return
     raise;
@@ -978,99 +1045,104 @@ end;
 
 function TAdminResource.GetLogs(ASince: string): TJSONObject;
 var
-  Pw: string;
-  Lines: TArray<TLogLine>;
-  L: TLogLine;
-  Arr: TJSONArray;
-  O: TJSONObject;
-  Last: Int64;
+  lPw: string;
+  lLines: TArray<TLogLine>;
+  lLine: TLogLine;
+  lArr: TJSONArray;
+  lEntry: TJSONObject;
+  lLast: Int64;
 begin
   // no RequireApp (the log is most useful when the app failed to start), but the
   // admin password IS checked: provider errors in the log may name hosts/accounts
-  Pw := AdminPasswordEarly;
+  lPw := AdminPasswordEarly;
   if App <> nil then
-    Pw := App.Config.AdminPassword;
+    lPw := App.Config.AdminPassword;
   // header only (the web app's Log tab sends it; a ?pw= would end up in URLs)
-  if (Pw <> '') and not IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), Pw) then
+  if (lPw <> '') and not IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), lPw) then
     raise EMARSHttpException.Create('Unauthorized', cHttpUnauthorized);
   Result := TJSONObject.Create;
-  Arr := TJSONArray.Create;
-  Last := StrToInt64Def(ASince, 0);
+  lArr := TJSONArray.Create;
+  lLast := StrToInt64Def(ASince, 0);
   if LogRing <> nil then
   begin
-    Lines := LogRing.Since(Last);
-    for L in Lines do
+    lLines := LogRing.Since(lLast);
+    for lLine in lLines do
     begin
-      O := TJSONObject.Create;
-      O.AddPair('seq', TJSONNumber.Create(L.Seq));
-      O.AddPair('t', DateTimeToIsoUtc(L.TimeUtc));
-      O.AddPair('text', L.Text);
-      Arr.Add(O);
-      Last := L.Seq;
+      lEntry := TJSONObject.Create;
+      lEntry.AddPair('seq', TJSONNumber.Create(lLine.Seq));
+      lEntry.AddPair('t', DateTimeToIsoUtc(lLine.TimeUtc));
+      lEntry.AddPair('text', lLine.Text);
+      lArr.Add(lEntry);
+      lLast := lLine.Seq;
     end;
   end;
-  Result.AddPair('next', TJSONNumber.Create(Last));
-  Result.AddPair('lines', Arr);
+  Result.AddPair('next', TJSONNumber.Create(lLast));
+  Result.AddPair('lines', lArr);
 end;
 
 function TAdminResource.GetMediaStatus: TJSONObject;
 var
-  L: TCustomList;
-  Channels: TOutputChannelList;
-  C: TOutputChannel;
-  Ids: TStringList;
-  GotEpg: TStringList;
-  Progs: TEpgProgrammeList;
-  P: TEpgProgramme;
-  Total, Real_, I: Integer;
-  HasReal: Boolean;
-  Eff: string;
+  lList: TCustomList;
+  lChannels: TOutputChannelList;
+  lChannel: TOutputChannel;
+  lIds: TStringList;
+  lGotEpg: TStringList;
+  lProgs: TEpgProgrammeList;
+  lTotal, lReal, i: Integer;
+  lHasReal: Boolean;
+  lEff: string;
 begin
   RequireApp;
   Result := TJSONObject.Create;
-  Total := 0; Real_ := 0;
-  L := ServedListForMedia;
-  if L <> nil then
+  lTotal := 0;
+  lReal := 0;
+  lList := ServedListForMedia;
+  if lList <> nil then
   try
-    // the channels actually published under the current global group filter
-    Channels := SelectOutputChannels(App.Store, L.Id, App.Config.VisibleGroups);
-    KeepContentTypes(Channels, cLinearContentTypes); // what the media servers actually get
-    Ids := TStringList.Create;
-    GotEpg := TStringList.Create;
+    lChannels := nil;
+    lIds := nil;
+    lGotEpg := nil;
     try
-      Ids.Sorted := True; Ids.Duplicates := dupIgnore;
-      GotEpg.Sorted := True; GotEpg.Duplicates := dupIgnore;
-      for C in Channels do
-        for Eff in C.EpgReadIds do
-          Ids.Add(Eff);
-      Progs := App.Store.LoadEpgForTvgIds(Ids.ToStringArray, cNoEpgDayLimit);
+      // the channels actually published under the current global group filter
+      lChannels := SelectOutputChannels(App.Store, lList.Id, App.Config.VisibleGroups);
+      KeepContentTypes(lChannels, cLinearContentTypes); // what the media servers actually get
+      lIds := TStringList.Create;
+      lGotEpg := TStringList.Create;
+      lIds.Sorted := True;
+      lIds.Duplicates := dupIgnore;
+      lGotEpg.Sorted := True;
+      lGotEpg.Duplicates := dupIgnore;
+      for lChannel in lChannels do
+        for lEff in lChannel.EpgReadIds do
+          lIds.Add(lEff);
+      lProgs := App.Store.LoadEpgForTvgIds(lIds.ToStringArray, cNoEpgDayLimit);
       try
-        for I := 0 to Progs.Count - 1 do
-          GotEpg.Add(Progs[I].ChannelTvgId);
+        for i := 0 to lProgs.Count - 1 do
+          lGotEpg.Add(lProgs[i].ChannelTvgId);
       finally
-        Progs.Free;
+        FreeAndNil(lProgs);
       end;
-      Total := Channels.Count;
-      for C in Channels do
+      lTotal := lChannels.Count;
+      for lChannel in lChannels do
       begin
-        HasReal := False;
-        for Eff in C.EpgReadIds do
-          if GotEpg.IndexOf(Eff) >= 0 then
-            HasReal := True;
-        if HasReal then
-          Inc(Real_);
+        lHasReal := False;
+        for lEff in lChannel.EpgReadIds do
+          if lGotEpg.IndexOf(lEff) >= 0 then
+            lHasReal := True;
+        if lHasReal then
+          Inc(lReal);
       end;
     finally
-      Ids.Free;
-      GotEpg.Free;
-      Channels.Free;
+      FreeAndNil(lIds);
+      FreeAndNil(lGotEpg);
+      FreeAndNil(lChannels);
     end;
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
-  Result.AddPair('channels', TJSONNumber.Create(Total));
-  Result.AddPair('realEpg', TJSONNumber.Create(Real_));
-  Result.AddPair('dummyEpg', TJSONNumber.Create(Total - Real_));
+  Result.AddPair('channels', TJSONNumber.Create(lTotal));
+  Result.AddPair('realEpg', TJSONNumber.Create(lReal));
+  Result.AddPair('dummyEpg', TJSONNumber.Create(lTotal - lReal));
 end;
 
 function TAdminResource.ResetDeviceId: TJSONObject;
@@ -1081,98 +1153,100 @@ end;
 
 function TAdminResource.GetListEpg(AId: Integer): TJSONArray;
 var
-  Channels: TOutputChannelList;
-  C: TOutputChannel;
-  Upstreams: TStringList;
-  EffById: TDictionary<string, string>; // upstream tvg-id -> effective (override) id
-  Progs: TEpgProgrammeList;
-  P: TEpgProgramme;
-  Eff: string;
+  lChannels: TOutputChannelList;
+  lChannel: TOutputChannel;
+  lUpstreams: TStringList;
+  lEffById: TDictionary<string, string>; // upstream tvg-id -> effective (override) id
+  lProgs: TEpgProgrammeList;
+  lProgramme: TEpgProgramme;
+  lEff: string;
 begin
   RequireApp;
-  Upstreams := TStringList.Create;
-  Upstreams.Sorted := True;
-  Upstreams.Duplicates := dupIgnore;
-  EffById := TDictionary<string, string>.Create;
+  lUpstreams := nil;
+  lEffById := nil;
   try
-    Channels := App.Store.LoadOutputChannels(AId);
+    lUpstreams := TStringList.Create;
+    lUpstreams.Sorted := True;
+    lUpstreams.Duplicates := dupIgnore;
+    lEffById := TDictionary<string, string>.Create;
+    lChannels := App.Store.LoadOutputChannels(AId);
     try
       // fetch EPG by UPSTREAM id (where the provider's programmes are stored), and
       // remember the effective (override) id to re-key them to on the way out
-      for C in Channels do
-        if C.TvgId <> '' then
-          for Eff in C.EpgReadIds do
+      for lChannel in lChannels do
+        if lChannel.TvgId <> '' then
+          for lEff in lChannel.EpgReadIds do
           begin
-            Upstreams.Add(Eff);
-            EffById.AddOrSetValue(Eff, C.TvgId);
+            lUpstreams.Add(lEff);
+            lEffById.AddOrSetValue(lEff, lChannel.TvgId);
           end;
     finally
-      Channels.Free;
+      FreeAndNil(lChannels);
     end;
-    Progs := App.Store.LoadEpgForTvgIds(Upstreams.ToStringArray, App.Config.EpgMaxDays);
+    lProgs := App.Store.LoadEpgForTvgIds(lUpstreams.ToStringArray, App.Config.EpgMaxDays);
     try
-      for P in Progs do
-        if EffById.TryGetValue(P.ChannelTvgId, Eff) then
-          P.ChannelTvgId := Eff;
-      Result := ProgrammesToJson(Progs);
+      for lProgramme in lProgs do
+        if lEffById.TryGetValue(lProgramme.ChannelTvgId, lEff) then
+          lProgramme.ChannelTvgId := lEff;
+      Result := ProgrammesToJson(lProgs);
     finally
-      Progs.Free;
+      FreeAndNil(lProgs);
     end;
   finally
-    Upstreams.Free;
-    EffById.Free;
+    FreeAndNil(lUpstreams);
+    FreeAndNil(lEffById);
   end;
 end;
 
 function TAdminResource.GetGroups(AId: Integer): TJSONArray;
 var
-  L: TCustomGroupList;
+  lList: TCustomGroupList;
 begin
   RequireApp;
-  L := App.Store.LoadGroups(AId);
+  lList := App.Store.LoadGroups(AId);
   try
-    Result := GroupsToJson(L);
+    Result := GroupsToJson(lList);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 function TAdminResource.PostGroup(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  G, Ex: TCustomGroup;
-  Existing: TCustomGroupList;
-  Id: Integer;
+  lGroup, lExisting: TCustomGroup;
+  lGroups: TCustomGroupList;
+  lId: Integer;
 begin
   RequireApp;
-  G := TCustomGroup.Create;
+  lGroup := TCustomGroup.Create;
   try
     // load-then-merge for an update: a PARTIAL patch (e.g. just the favorite
     // star, or just a rename) must not blank the group's other fields.
-    Id := ABody.GetValue<Integer>('id', 0);
-    if Id > 0 then
+    lId := ABody.GetValue<Integer>('id', 0);
+    if lId > 0 then
     begin
-      Existing := App.Store.LoadGroups(AId);
+      lGroups := App.Store.LoadGroups(AId);
       try
-        for Ex in Existing do
-          if Ex.Id = Id then
+        for lExisting in lGroups do
+          if lExisting.Id = lId then
           begin
-            G.Id := Ex.Id;
-            G.ListId := Ex.ListId;
-            G.Name := Ex.Name;
-            G.ContentType := Ex.ContentType;
-            G.IsFavorite := Ex.IsFavorite;
+            lGroup.Id := lExisting.Id;
+            lGroup.ListId := lExisting.ListId;
+            lGroup.Name := lExisting.Name;
+            lGroup.ContentType := lExisting.ContentType;
+            lGroup.IsFavorite := lExisting.IsFavorite;
             Break;
           end;
       finally
-        Existing.Free;
+        FreeAndNil(lGroups);
       end;
     end;
-    GroupFromJson(ABody, G); // overrides only the fields the client actually sent
-    G.ListId := AId;
-    App.Store.SaveGroup(G);
-    Result := GroupToJson(G);
+    GroupFromJson(ABody, lGroup); // overrides only the fields the client actually sent
+    lGroup.ListId := AId;
+    App.Store.SaveGroup(lGroup);
+    Result := GroupToJson(lGroup);
   finally
-    G.Free;
+    FreeAndNil(lGroup);
   end;
 end;
 
@@ -1184,93 +1258,93 @@ end;
 
 function TAdminResource.GetItems(AId: Integer): TJSONArray;
 var
-  L: TCustomItemList;
+  lList: TCustomItemList;
 begin
   RequireApp;
-  L := App.Store.LoadItems(AId);
+  lList := App.Store.LoadItems(AId);
   try
-    Result := ItemsToJson(L);
+    Result := ItemsToJson(lList);
   finally
-    L.Free;
+    FreeAndNil(lList);
   end;
 end;
 
 function TAdminResource.PostItem(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  I, Ex: TCustomItem;
-  Existing: TCustomItemList;
-  Id: Integer;
+  lItem, lExisting: TCustomItem;
+  lItems: TCustomItemList;
+  lId: Integer;
 begin
   RequireApp;
-  I := TCustomItem.Create;
+  lItem := TCustomItem.Create;
   try
     // load-then-merge: a partial patch must not reset channel_number / move the
     // item to the upstream group (custom_group_id) etc.
-    Id := ABody.GetValue<Integer>('id', 0);
-    if Id > 0 then
+    lId := ABody.GetValue<Integer>('id', 0);
+    if lId > 0 then
     begin
-      Existing := App.Store.LoadItems(AId);
+      lItems := App.Store.LoadItems(AId);
       try
-        for Ex in Existing do
-          if Ex.Id = Id then
+        for lExisting in lItems do
+          if lExisting.Id = lId then
           begin
-            I.Id := Ex.Id;
-            I.ListId := Ex.ListId;
-            I.StreamItemId := Ex.StreamItemId;
-            I.CustomGroupId := Ex.CustomGroupId;
-            I.ContentType := Ex.ContentType;
-            I.DisplayName := Ex.DisplayName;
-            I.LogoOverride := Ex.LogoOverride;
-            I.TvgIdOverride := Ex.TvgIdOverride;
-            I.ChannelNumber := Ex.ChannelNumber;
+            lItem.Id := lExisting.Id;
+            lItem.ListId := lExisting.ListId;
+            lItem.StreamItemId := lExisting.StreamItemId;
+            lItem.CustomGroupId := lExisting.CustomGroupId;
+            lItem.ContentType := lExisting.ContentType;
+            lItem.DisplayName := lExisting.DisplayName;
+            lItem.LogoOverride := lExisting.LogoOverride;
+            lItem.TvgIdOverride := lExisting.TvgIdOverride;
+            lItem.ChannelNumber := lExisting.ChannelNumber;
             Break;
           end;
       finally
-        Existing.Free;
+        FreeAndNil(lItems);
       end;
     end;
-    ItemFromJson(ABody, I);
-    I.ListId := AId;
-    App.Store.SaveItem(I);
-    Result := ItemToJson(I);
+    ItemFromJson(ABody, lItem);
+    lItem.ListId := AId;
+    App.Store.SaveItem(lItem);
+    Result := ItemToJson(lItem);
   finally
-    I.Free;
+    FreeAndNil(lItem);
   end;
 end;
 
 function TAdminResource.PostItemsBulk(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  Added: Integer;
+  lAdded: Integer;
 begin
   RequireApp;
-  Added := App.Store.AddItems(AId, ABody.GetValue<Integer>('customGroupId', 0),
+  lAdded := App.Store.AddItems(AId, ABody.GetValue<Integer>('customGroupId', 0),
     IntArrayFromJson(ABody, 'streamItemIds'));
-  Result := TJSONObject.Create.AddPair('added', TJSONNumber.Create(Added));
+  Result := TJSONObject.Create.AddPair('added', TJSONNumber.Create(lAdded));
 end;
 
 function TAdminResource.PostItemsReplace(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  Arr: TJSONArray;
-  V: TJSONValue;
-  R: TItemStreamReplace;
-  Reps: TArray<TItemStreamReplace>;
+  lArr: TJSONArray;
+  lValue: TJSONValue;
+  lReplace: TItemStreamReplace;
+  lReps: TArray<TItemStreamReplace>;
 begin
   RequireApp;
-  Reps := [];
+  lReps := [];
   if ABody.GetValue('replacements') is TJSONArray then
   begin
-    Arr := ABody.GetValue('replacements') as TJSONArray;
-    for V in Arr do
-      if V is TJSONObject then
+    lArr := ABody.GetValue('replacements') as TJSONArray;
+    for lValue in lArr do
+      if lValue is TJSONObject then
       begin
-        R.ItemId := TJSONObject(V).GetValue<Integer>('itemId', 0);
-        R.StreamId := TJSONObject(V).GetValue<Integer>('streamId', 0);
-        if (R.ItemId > 0) and (R.StreamId > 0) then
-          Reps := Reps + [R];
+        lReplace.ItemId := TJSONObject(lValue).GetValue<Integer>('itemId', 0);
+        lReplace.StreamId := TJSONObject(lValue).GetValue<Integer>('streamId', 0);
+        if (lReplace.ItemId > 0) and (lReplace.StreamId > 0) then
+          lReps := lReps + [lReplace];
       end;
   end;
   Result := TJSONObject.Create.AddPair('replaced',
-    TJSONNumber.Create(App.Store.ReplaceItemStreams(AId, Reps)));
+    TJSONNumber.Create(App.Store.ReplaceItemStreams(AId, lReps)));
 end;
 
 procedure TAdminResource.DeleteItem(AId: Integer);
@@ -1281,11 +1355,11 @@ end;
 
 function TAdminResource.ClearGroupItems(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  Removed: Integer;
+  lRemoved: Integer;
 begin
   RequireApp;
-  Removed := App.Store.ClearGroupItems(AId, ABody.GetValue<Integer>('customGroupId', 0));
-  Result := TJSONObject.Create.AddPair('removed', TJSONNumber.Create(Removed));
+  lRemoved := App.Store.ClearGroupItems(AId, ABody.GetValue<Integer>('customGroupId', 0));
+  Result := TJSONObject.Create.AddPair('removed', TJSONNumber.Create(lRemoved));
 end;
 
 function TAdminResource.DedupeList(AId: Integer): TJSONObject;
@@ -1296,47 +1370,47 @@ end;
 
 function TAdminResource.SortGroup(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  Sorted: Integer;
+  lSorted: Integer;
 begin
   RequireApp;
-  Sorted := App.Store.SortGroupAlphabetically(AId, ABody.GetValue<Integer>('customGroupId', 0));
-  Result := TJSONObject.Create.AddPair('sorted', TJSONNumber.Create(Sorted));
+  lSorted := App.Store.SortGroupAlphabetically(AId, ABody.GetValue<Integer>('customGroupId', 0));
+  Result := TJSONObject.Create.AddPair('sorted', TJSONNumber.Create(lSorted));
 end;
 
 function TAdminResource.ReorderGroup(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  Numbered: Integer;
+  lNumbered: Integer;
 begin
   RequireApp;
   // body: { customGroupId, itemIds:[…] } — itemIds in the desired display order
-  Numbered := App.Store.ReorderGroupItems(AId, ABody.GetValue<Integer>('customGroupId', 0),
+  lNumbered := App.Store.ReorderGroupItems(AId, ABody.GetValue<Integer>('customGroupId', 0),
     IntArrayFromJson(ABody, 'itemIds'));
-  Result := TJSONObject.Create.AddPair('numbered', TJSONNumber.Create(Numbered));
+  Result := TJSONObject.Create.AddPair('numbered', TJSONNumber.Create(lNumbered));
 end;
 
 function TAdminResource.RenumberList(AId: Integer; ABody: TJSONObject): TJSONObject;
 var
-  Arr: TJSONArray;
-  V: TJSONValue;
-  N: TItemNumber;
-  L: TArray<TItemNumber>;
+  lArr: TJSONArray;
+  lValue: TJSONValue;
+  lNumber: TItemNumber;
+  lNumbers: TArray<TItemNumber>;
 begin
   RequireApp;
-  L := [];
+  lNumbers := [];
   if ABody.GetValue('numbers') is TJSONArray then
   begin
-    Arr := ABody.GetValue('numbers') as TJSONArray;
-    for V in Arr do
-      if V is TJSONObject then
+    lArr := ABody.GetValue('numbers') as TJSONArray;
+    for lValue in lArr do
+      if lValue is TJSONObject then
       begin
-        N.ItemId := TJSONObject(V).GetValue<Integer>('itemId', 0);
-        N.ChannelNumber := TJSONObject(V).GetValue<Integer>('channelNumber', 0);
-        if N.ItemId > 0 then
-          L := L + [N];
+        lNumber.ItemId := TJSONObject(lValue).GetValue<Integer>('itemId', 0);
+        lNumber.ChannelNumber := TJSONObject(lValue).GetValue<Integer>('channelNumber', 0);
+        if lNumber.ItemId > 0 then
+          lNumbers := lNumbers + [lNumber];
       end;
   end;
   Result := TJSONObject.Create.AddPair('numbered',
-    TJSONNumber.Create(App.Store.SetItemNumbers(AId, L)));
+    TJSONNumber.Create(App.Store.SetItemNumbers(AId, lNumbers)));
 end;
 
 function TAdminResource.OrderGroups(AId: Integer; ABody: TJSONObject): TJSONObject;
@@ -1349,22 +1423,22 @@ end;
 
 function VariantsToJson(const AMatches: TArray<TVariantMatch>): TJSONArray;
 var
-  M: TVariantMatch;
-  O: TJSONObject;
+  lMatch: TVariantMatch;
+  lEntry: TJSONObject;
 begin
   Result := TJSONArray.Create;
-  for M in AMatches do
+  for lMatch in AMatches do
   begin
-    O := TJSONObject.Create;
-    O.AddPair('itemId', TJSONNumber.Create(M.ItemId));
-    O.AddPair('streamId', TJSONNumber.Create(M.StreamId));
-    O.AddPair('name', M.Name);
-    O.AddPair('quality', M.Quality);
-    O.AddPair('candidateStreamId', TJSONNumber.Create(M.CandidateStreamId));
-    O.AddPair('candidateName', M.CandidateName);
-    O.AddPair('matched', TJSONBool.Create(M.CandidateStreamId > 0));
-    O.AddPair('alreadyInList', TJSONBool.Create(M.AlreadyInList));
-    Result.AddElement(O);
+    lEntry := TJSONObject.Create;
+    lEntry.AddPair('itemId', TJSONNumber.Create(lMatch.ItemId));
+    lEntry.AddPair('streamId', TJSONNumber.Create(lMatch.StreamId));
+    lEntry.AddPair('name', lMatch.Name);
+    lEntry.AddPair('quality', lMatch.Quality);
+    lEntry.AddPair('candidateStreamId', TJSONNumber.Create(lMatch.CandidateStreamId));
+    lEntry.AddPair('candidateName', lMatch.CandidateName);
+    lEntry.AddPair('matched', TJSONBool.Create(lMatch.CandidateStreamId > 0));
+    lEntry.AddPair('alreadyInList', TJSONBool.Create(lMatch.AlreadyInList));
+    Result.AddElement(lEntry);
   end;
 end;
 
@@ -1382,116 +1456,116 @@ end;
 
 function TAdminResource.PostGroupRestrip(AId, AGroupId: Integer; ABody: TJSONObject): TJSONArray;
 var
-  Pfx, Sfx: TArray<string>;
-  C: TNameChange;
-  O: TJSONObject;
+  lPrefixes, lSuffixes: TArray<string>;
+  lChange: TNameChange;
+  lEntry: TJSONObject;
 begin
   RequireApp;
-  Pfx := [];
-  Sfx := [];
+  lPrefixes := [];
+  lSuffixes := [];
   if ABody.GetValue('extraPrefixes') is TJSONArray then
-    Pfx := StrArrayFromJson(ABody.GetValue('extraPrefixes') as TJSONArray);
+    lPrefixes := StrArrayFromJson(ABody.GetValue('extraPrefixes') as TJSONArray);
   if ABody.GetValue('extraSuffixes') is TJSONArray then
-    Sfx := StrArrayFromJson(ABody.GetValue('extraSuffixes') as TJSONArray);
+    lSuffixes := StrArrayFromJson(ABody.GetValue('extraSuffixes') as TJSONArray);
   Result := TJSONArray.Create;
-  for C in App.Store.RestripGroupItems(AId, AGroupId, Pfx, Sfx,
+  for lChange in App.Store.RestripGroupItems(AId, AGroupId, lPrefixes, lSuffixes,
     ABody.GetValue<Boolean>('dryRun', False)) do
   begin
-    O := TJSONObject.Create;
-    O.AddPair('itemId', TJSONNumber.Create(C.ItemId));
-    O.AddPair('oldName', C.OldName);
-    O.AddPair('newName', C.NewName);
-    O.AddPair('original', C.Original);
-    Result.AddElement(O);
+    lEntry := TJSONObject.Create;
+    lEntry.AddPair('itemId', TJSONNumber.Create(lChange.ItemId));
+    lEntry.AddPair('oldName', lChange.OldName);
+    lEntry.AddPair('newName', lChange.NewName);
+    lEntry.AddPair('original', lChange.Original);
+    Result.AddElement(lEntry);
   end;
 end;
 
 function TAdminResource.GetStreamVariants(AId: Integer; AAllSources: string;
   AListId: Integer): TJSONArray;
 var
-  V: TStreamVariant;
-  O: TJSONObject;
+  lVariant: TStreamVariant;
+  lEntry: TJSONObject;
 begin
   RequireApp;
   Result := TJSONArray.Create;
-  for V in App.Store.FindStreamVariants(AId,
+  for lVariant in App.Store.FindStreamVariants(AId,
     IsTrue(AAllSources), AListId) do
   begin
-    O := TJSONObject.Create;
-    O.AddPair('streamId', TJSONNumber.Create(V.StreamId));
-    O.AddPair('sourceId', TJSONNumber.Create(V.SourceId));
-    O.AddPair('name', V.Name);
-    O.AddPair('quality', V.Quality);
-    O.AddPair('tvgId', V.TvgId);
-    O.AddPair('groupTitle', V.GroupTitle);
-    O.AddPair('isSelf', TJSONBool.Create(V.IsSelf));
-    O.AddPair('matchedBy', V.MatchedBy);
-    O.AddPair('onList', TJSONBool.Create(V.OnList));
-    Result.AddElement(O);
+    lEntry := TJSONObject.Create;
+    lEntry.AddPair('streamId', TJSONNumber.Create(lVariant.StreamId));
+    lEntry.AddPair('sourceId', TJSONNumber.Create(lVariant.SourceId));
+    lEntry.AddPair('name', lVariant.Name);
+    lEntry.AddPair('quality', lVariant.Quality);
+    lEntry.AddPair('tvgId', lVariant.TvgId);
+    lEntry.AddPair('groupTitle', lVariant.GroupTitle);
+    lEntry.AddPair('isSelf', TJSONBool.Create(lVariant.IsSelf));
+    lEntry.AddPair('matchedBy', lVariant.MatchedBy);
+    lEntry.AddPair('onList', TJSONBool.Create(lVariant.OnList));
+    Result.AddElement(lEntry);
   end;
 end;
 
 function TAdminResource.PostStreamProbe(AId, ASeconds: Integer): TJSONObject;
 var
-  S: TStreamItem;
-  R: TProbeResult;
-  Url, Ua, Ref: string;
-  SrcId: Integer;
-  A: TProbeAudio;
-  Arr: TJSONArray;
-  Srcs: TObjectList<TSourceConfig>;
-  Src: TSourceConfig;
+  lStream: TStreamItem;
+  lProbe: TProbeResult;
+  lUrl, lUserAgent, lReferer: string;
+  lSrcId: Integer;
+  lAudio: TProbeAudio;
+  lArr: TJSONArray;
+  lSources: TObjectList<TSourceConfig>;
+  lSource: TSourceConfig;
 begin
   RequireApp;
-  S := App.Store.LoadStreamById(AId);
-  if S = nil then
+  lStream := App.Store.LoadStreamById(AId);
+  if lStream = nil then
     raise EMARSHttpException.Create('stream not found', cHttpNotFound);
   try
-    Url := S.UpstreamUrl;
-    SrcId := S.SourceId;
+    lUrl := lStream.UpstreamUrl;
+    lSrcId := lStream.SourceId;
   finally
-    S.Free;
+    FreeAndNil(lStream);
   end;
   // fetch like the source is configured: its own User-Agent / Referer, if set
-  Ua := '';
-  Ref := '';
-  Srcs := App.Store.LoadSources;
+  lUserAgent := '';
+  lReferer := '';
+  lSources := App.Store.LoadSources;
   try
-    for Src in Srcs do
-      if Src.Id = SrcId then
+    for lSource in lSources do
+      if lSource.Id = lSrcId then
       begin
-        Ua := Src.UserAgent;
-        Ref := Src.Referer;
+        lUserAgent := lSource.UserAgent;
+        lReferer := lSource.Referer;
       end;
   finally
-    Srcs.Free;
+    FreeAndNil(lSources);
   end;
   if ASeconds <= 0 then
     ASeconds := cDefaultProbeSeconds;
-  R := ProbeStream(Url, ASeconds, Ua, Ref); // never raises; serialised inside
+  lProbe := ProbeStream(lUrl, ASeconds, lUserAgent, lReferer); // never raises; serialised inside
   Result := TJSONObject.Create;
   Result.AddPair('streamId', TJSONNumber.Create(AId));
-  Result.AddPair('ok', TJSONBool.Create(R.Ok));
-  Result.AddPair('error', R.Error);
-  Result.AddPair('container', R.Container);
-  Result.AddPair('videoCodec', R.VideoCodec);
-  Result.AddPair('profile', R.Profile);
-  Result.AddPair('width', TJSONNumber.Create(R.Width));
-  Result.AddPair('height', TJSONNumber.Create(R.Height));
-  Result.AddPair('fps', TJSONNumber.Create(R.Fps));
-  Result.AddPair('interlaced', TJSONBool.Create(R.Interlaced));
-  Result.AddPair('bitDepth', TJSONNumber.Create(R.BitDepth));
-  Arr := TJSONArray.Create;
-  for A in R.Audio do
-    Arr.AddElement(TJSONObject.Create.AddPair('codec', A.Codec).AddPair('language', A.Language));
-  Result.AddPair('audio', Arr);
-  Result.AddPair('bitrateKbps', TJSONNumber.Create(R.BitrateKbps));
-  Result.AddPair('mediaSeconds', TJSONNumber.Create(RoundTo(R.MediaSeconds, cProbeRoundDigits)));
-  Result.AddPair('wallSeconds', TJSONNumber.Create(RoundTo(R.WallSeconds, cProbeRoundDigits)));
-  Result.AddPair('realtime', TJSONNumber.Create(RoundTo(R.Realtime, cProbeRoundDigits)));
-  Result.AddPair('firstByteMs', TJSONNumber.Create(R.FirstByteMs));
-  Result.AddPair('redirects', TJSONNumber.Create(R.Redirects));
-  Result.AddPair('bytes', TJSONNumber.Create(R.Bytes));
+  Result.AddPair('ok', TJSONBool.Create(lProbe.Ok));
+  Result.AddPair('error', lProbe.Error);
+  Result.AddPair('container', lProbe.Container);
+  Result.AddPair('videoCodec', lProbe.VideoCodec);
+  Result.AddPair('profile', lProbe.Profile);
+  Result.AddPair('width', TJSONNumber.Create(lProbe.Width));
+  Result.AddPair('height', TJSONNumber.Create(lProbe.Height));
+  Result.AddPair('fps', TJSONNumber.Create(lProbe.Fps));
+  Result.AddPair('interlaced', TJSONBool.Create(lProbe.Interlaced));
+  Result.AddPair('bitDepth', TJSONNumber.Create(lProbe.BitDepth));
+  lArr := TJSONArray.Create;
+  for lAudio in lProbe.Audio do
+    lArr.AddElement(TJSONObject.Create.AddPair('codec', lAudio.Codec).AddPair('language', lAudio.Language));
+  Result.AddPair('audio', lArr);
+  Result.AddPair('bitrateKbps', TJSONNumber.Create(lProbe.BitrateKbps));
+  Result.AddPair('mediaSeconds', TJSONNumber.Create(RoundTo(lProbe.MediaSeconds, cProbeRoundDigits)));
+  Result.AddPair('wallSeconds', TJSONNumber.Create(RoundTo(lProbe.WallSeconds, cProbeRoundDigits)));
+  Result.AddPair('realtime', TJSONNumber.Create(RoundTo(lProbe.Realtime, cProbeRoundDigits)));
+  Result.AddPair('firstByteMs', TJSONNumber.Create(lProbe.FirstByteMs));
+  Result.AddPair('redirects', TJSONNumber.Create(lProbe.Redirects));
+  Result.AddPair('bytes', TJSONNumber.Create(lProbe.Bytes));
 end;
 
 function TAdminResource.ExportM3U(AId: Integer): string;

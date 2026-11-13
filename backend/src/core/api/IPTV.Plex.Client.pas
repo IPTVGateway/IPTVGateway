@@ -14,8 +14,14 @@ function ReloadPlexGuides(const AServerUrl, AToken: string): Integer;
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections,
-  System.JSON, System.Net.HttpClient, System.Net.URLClient,
+  // RTL
+  System.SysUtils,
+  System.Classes,
+  System.Generics.Collections,
+  System.JSON,
+  System.Net.HttpClient,
+  System.Net.URLClient,
+  // own units
   IPTV.Api.Serializers;
 
 const
@@ -36,79 +42,79 @@ const
 
 function ReloadPlexGuides(const AServerUrl, AToken: string): Integer;
 var
-  Client: THTTPClient;
-  Resp: IHTTPResponse;
-  Root, MC: TJSONObject;
-  RootVal, DvrsVal: TJSONValue;
-  Dvrs: TJSONArray;
-  Empty: TStringStream;
-  Base: string; // declared before ReloadOne so the nested proc can see it
+  lClient: THTTPClient;
+  lResp: IHTTPResponse;
+  lRoot, lMC: TJSONObject;
+  lRootVal, lDvrsVal: TJSONValue;
+  lDvrs: TJSONArray;
+  lEmpty: TStringStream;
+  lBase: string; // declared before ReloadOne so the nested proc can see it
 
   procedure ReloadOne(const AKey: string);
   var
-    R: IHTTPResponse;
+    lR: IHTTPResponse;
   begin
     if AKey = '' then
       Exit;
-    Empty := TStringStream.Create('');
+    lEmpty := TStringStream.Create('');
     try
-      // use Base (trailing slash stripped) — AServerUrl may end in '/', which
+      // use lBase (trailing slash stripped) — AServerUrl may end in '/', which
       // would make '//livetv/...' that Plex 404s; and only count a real success
-      R := Client.Post(Format('%s%s/%s/reloadGuide', [Base, cDvrsPath, AKey]), Empty);
-      if (R.StatusCode >= cHttpOk) and (R.StatusCode <= cHttpSuccessLast) then
+      lR := lClient.Post(Format('%s%s/%s/reloadGuide', [lBase, cDvrsPath, AKey]), lEmpty);
+      if (lR.StatusCode >= cHttpOk) and (lR.StatusCode <= cHttpSuccessLast) then
         Inc(Result);
     finally
-      Empty.Free;
+      FreeAndNil(lEmpty);
     end;
   end;
 
 var
-  I: Integer;
+  i: Integer;
 begin
   Result := 0;
   if (AServerUrl.Trim = '') or (AToken.Trim = '') then
     raise Exception.Create('Plex server URL and token must be set first');
-  Base := AServerUrl.TrimRight(['/']);
+  lBase := AServerUrl.TrimRight(['/']);
 
-  Client := THTTPClient.Create;
+  lClient := THTTPClient.Create;
   try
-    Client.ConnectionTimeout := cConnectTimeoutMs;
-    Client.ResponseTimeout := cResponseTimeoutMs;
-    Client.CustomHeaders[cHeaderAccept] := cMimeJson;
-    Client.CustomHeaders[cHeaderPlexToken] := AToken;
+    lClient.ConnectionTimeout := cConnectTimeoutMs;
+    lClient.ResponseTimeout := cResponseTimeoutMs;
+    lClient.CustomHeaders[cHeaderAccept] := cMimeJson;
+    lClient.CustomHeaders[cHeaderPlexToken] := AToken;
 
-    Resp := Client.Get(Base + cDvrsPath);
-    if Resp.StatusCode = cHttpUnauthorized then
+    lResp := lClient.Get(lBase + cDvrsPath);
+    if lResp.StatusCode = cHttpUnauthorized then
       raise Exception.Create('Plex rejected the token (401)');
-    if Resp.StatusCode <> cHttpOk then
-      raise Exception.CreateFmt('Plex returned %d listing DVRs', [Resp.StatusCode]);
+    if lResp.StatusCode <> cHttpOk then
+      raise Exception.CreateFmt('Plex returned %d listing DVRs', [lResp.StatusCode]);
 
-    RootVal := TJSONObject.ParseJSONValue(Resp.ContentAsString);
-    if not (RootVal is TJSONObject) then
+    lRootVal := TJSONObject.ParseJSONValue(lResp.ContentAsString);
+    if not (lRootVal is TJSONObject) then
     begin
-      RootVal.Free; // nil-safe; frees a non-object reply without leaking
+      FreeAndNil(lRootVal); // nil-safe; frees a non-object reply without leaking
       raise Exception.Create('Plex DVR list was not valid JSON');
     end;
-    Root := TJSONObject(RootVal);
+    lRoot := TJSONObject(lRootVal);
     try
-      if not (Root.GetValue(cKeyMediaContainer) is TJSONObject) then
+      if not (lRoot.GetValue(cKeyMediaContainer) is TJSONObject) then
         Exit; // no DVRs configured in Plex (or an unexpected shape) — nothing to reload
-      MC := TJSONObject(Root.GetValue(cKeyMediaContainer));
-      DvrsVal := MC.GetValue(cKeyDvr);
-      if DvrsVal is TJSONArray then
+      lMC := TJSONObject(lRoot.GetValue(cKeyMediaContainer));
+      lDvrsVal := lMC.GetValue(cKeyDvr);
+      if lDvrsVal is TJSONArray then
       begin
-        Dvrs := TJSONArray(DvrsVal);
-        for I := 0 to Dvrs.Count - 1 do
-          if Dvrs.Items[I] is TJSONObject then
-            ReloadOne(TJSONObject(Dvrs.Items[I]).GetValue<string>(cKeyDvrKey, ''));
+        lDvrs := TJSONArray(lDvrsVal);
+        for i := 0 to lDvrs.Count - 1 do
+          if lDvrs.Items[i] is TJSONObject then
+            ReloadOne(TJSONObject(lDvrs.Items[i]).GetValue<string>(cKeyDvrKey, ''));
       end
-      else if DvrsVal is TJSONObject then
-        ReloadOne(TJSONObject(DvrsVal).GetValue<string>(cKeyDvrKey, ''));
+      else if lDvrsVal is TJSONObject then
+        ReloadOne(TJSONObject(lDvrsVal).GetValue<string>(cKeyDvrKey, ''));
     finally
-      Root.Free;
+      FreeAndNil(lRoot);
     end;
   finally
-    Client.Free;
+    FreeAndNil(lClient);
   end;
 end;
 

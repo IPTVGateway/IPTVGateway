@@ -6,11 +6,23 @@ unit Form.Main;
 interface
 
 uses
-  Winapi.Windows, Winapi.Messages, Winapi.ShellAPI, System.SysUtils, System.Classes,
-  Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, Vcl.ExtCtrls,
-  IPTV.App.Config, IPTV.App.Runner, IPTV.App.Context;
+  // RTL
+  Winapi.Windows,
+  Winapi.Messages,
+  Winapi.ShellAPI,
+  System.SysUtils,
+  System.Classes,
+  Vcl.Controls,
+  Vcl.Forms,
+  Vcl.StdCtrls,
+  Vcl.ExtCtrls,
+  // Own units
+  IPTV.App.Config,
+  IPTV.App.Runner,
+  IPTV.App.Context;
 
 type
+  /// Dev cockpit form: start/stop the runner, refresh, proxy toggle and a log memo.
   TMainForm = class(TForm)
     pnlTop: TPanel;
     btnStart: TButton;
@@ -32,8 +44,11 @@ type
   private
     FRunner: TAppRunner;   // dev host controls the same worker thread the service uses
     FSyncingProxy: Boolean; // guard: setting chkProxy.Checked in code must not re-fire the handler
+    /// config.json next to the exe.
     function ConfigPath: string;
+    /// Appends a line to the memo (marshalled to the UI thread).
     procedure Log(const AMsg: string);
+    /// Enables the buttons and sets the status label for the running state.
     procedure UpdateButtons;
   end;
 
@@ -55,12 +70,12 @@ end;
 
 procedure TMainForm.FormCreate(Sender: TObject);
 var
-  Cfg: TAppConfig;
+  lConfig: TAppConfig;
 begin
-  Cfg := TAppConfig.Load(ConfigPath);
-  edPort.Text := Cfg.HttpPort.ToString;
+  lConfig := TAppConfig.Load(ConfigPath);
+  edPort.Text := lConfig.HttpPort.ToString;
   FSyncingProxy := True;
-  chkProxy.Checked := Cfg.ProxyStreams;
+  chkProxy.Checked := lConfig.ProxyStreams;
   FSyncingProxy := False;
   UpdateButtons;
 end;
@@ -103,13 +118,13 @@ end;
 
 procedure TMainForm.btnStartClick(Sender: TObject);
 var
-  Cfg: TAppConfig;
+  lConfig: TAppConfig;
 begin
   if Assigned(FRunner) then
     Exit; // already running — guard against a reentrant click leaking the runner/port
-  Cfg := TAppConfig.Load(ConfigPath);
-  Cfg.HttpPort := StrToIntDef(edPort.Text, Cfg.HttpPort);
-  FRunner := TAppRunner.Create(Cfg, Log);  // worker thread does the real work
+  lConfig := TAppConfig.Load(ConfigPath);
+  lConfig.HttpPort := StrToIntDef(edPort.Text, lConfig.HttpPort);
+  FRunner := TAppRunner.Create(lConfig, Log);  // worker thread does the real work
   Log('Starting...');
   UpdateButtons;
 end;
@@ -125,50 +140,50 @@ end;
 
 procedure TMainForm.btnRefreshClick(Sender: TObject);
 var
-  Ctx: TAppContext;
+  lContext: TAppContext;
 begin
   if (FRunner = nil) or (not FRunner.Started) then
     Exit;
   // Route through SpawnBackground so the context's FBgOps counter tracks it and
   // Stop WAITS for the refresh to finish before freeing the store/ingest — a raw
   // detached thread here would let Stop free them mid-refresh (use-after-free).
-  Ctx := FRunner.Context;
-  Ctx.SpawnBackground(
+  lContext := FRunner.Context;
+  lContext.SpawnBackground(
     procedure
     begin
-      Ctx.Ingest.RefreshAll;
+      lContext.Ingest.RefreshAll;
     end);
 end;
 
 procedure TMainForm.btnOpenClientClick(Sender: TObject);
 var
-  Cfg: TAppConfig;
+  lConfig: TAppConfig;
 begin
   // open the React client (Vite dev server by default) in the default browser
-  Cfg := TAppConfig.Load(ConfigPath);
-  ShellExecute(Handle, 'open', PChar(Cfg.ClientUrl), nil, nil, SW_SHOWNORMAL);
+  lConfig := TAppConfig.Load(ConfigPath);
+  ShellExecute(Handle, 'open', PChar(lConfig.ClientUrl), nil, nil, SW_SHOWNORMAL);
 end;
 
 procedure TMainForm.chkProxyClick(Sender: TObject);
 var
-  Cfg: TAppConfig;
+  lConfig: TAppConfig;
 begin
   if FSyncingProxy then
     Exit;
   if (FRunner <> nil) and FRunner.Started then
   begin
     // apply live: starts/stops the relay and persists to config.json
-    Cfg := FRunner.Context.Config;
-    FRunner.Context.UpdateSettings(Cfg.RefreshHour, Cfg.RefreshMinute, chkProxy.Checked, Cfg.ProxyPort);
+    lConfig := FRunner.Context.Config;
+    FRunner.Context.UpdateSettings(lConfig.RefreshHour, lConfig.RefreshMinute, chkProxy.Checked, lConfig.ProxyPort);
     Log(Format('Stream proxy %s (port %d).',
-      [BoolToStr(chkProxy.Checked, True), Cfg.ProxyPort]));
+      [BoolToStr(chkProxy.Checked, True), lConfig.ProxyPort]));
   end
   else
   begin
     // not running: persist the choice so the next Start picks it up
-    Cfg := TAppConfig.Load(ConfigPath);
-    Cfg.ProxyStreams := chkProxy.Checked;
-    Cfg.Save(ConfigPath);
+    lConfig := TAppConfig.Load(ConfigPath);
+    lConfig.ProxyStreams := chkProxy.Checked;
+    lConfig.Save(ConfigPath);
     Log(Format('Stream proxy %s saved to config (applies on Start).',
       [BoolToStr(chkProxy.Checked, True)]));
   end;

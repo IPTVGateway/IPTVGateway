@@ -6,206 +6,234 @@ unit Test.M3U;
 interface
 
 uses
+  // third-party
   DUnitX.TestFramework;
 
 type
+  /// <summary>Tests for the M3U / M3U_plus parser.</summary>
   [TestFixture]
   TM3UTests = class
   public
+    /// <summary>M3U_plus attributes (tvg-id, logo, group-title) are parsed.</summary>
     [Test] procedure ParsesM3UPlusAttributes;
+    /// <summary>A plain M3U without attributes is parsed.</summary>
     [Test] procedure ParsesPlainM3U;
+    /// <summary>Directives between #EXTINF and the URL don't break pairing.</summary>
     [Test] procedure IgnoresUnknownDirectivesBetweenExtinfAndUrl;
+    /// <summary>The header's url-tvg becomes the EPG URL.</summary>
     [Test] procedure ReadsUrlTvgFromHeader;
+    /// <summary>The same URL yields the same upstream id.</summary>
     [Test] procedure DerivesStableIdFromUrl;
+    /// <summary>Path-style credentials don't change the upstream id.</summary>
     [Test] procedure IdSurvivesCredentialSwapPathStyle;
+    /// <summary>Query-style credentials don't change the upstream id.</summary>
     [Test] procedure IdSurvivesCredentialSwapQueryStyle;
+    /// <summary>Distinct streams keep distinct ids after blanking credentials.</summary>
     [Test] procedure IdStaysDistinctPerStreamAcrossSwap;
+    /// <summary>Junk lines are skipped; valid entries survive.</summary>
     [Test] procedure TolerantParserSkipsJunkAndKeepsGoodEntries;
+    /// <summary>An #EXTINF without a URL line is dropped.</summary>
     [Test] procedure DropsExtinfWithoutUrlLine;
+    /// <summary>The URL path decides the content type, then whole-word group names.</summary>
     [Test] procedure GuessesContentTypeFromUrlThenWholeWords;
   end;
 
 implementation
 
 uses
-  System.SysUtils, IPTV.Model.Types, IPTV.Model.Catalog, IPTV.Source.M3U;
+  // RTL
+  System.SysUtils,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Catalog,
+  IPTV.Source.M3U;
 
 function Parse(const AContent: string): TSourceSnapshot;
 var
-  Reader: TM3UReader;
+  lReader: TM3UReader;
 begin
-  Reader := TM3UReader.Create;
+  lReader := TM3UReader.Create;
   try
     Result := TSourceSnapshot.Create(1);
-    Reader.ParseContent(AContent, Result);
+    lReader.ParseContent(AContent, Result);
   finally
-    Reader.Free;
+    FreeAndNil(lReader);
   end;
 end;
 
 function ParseWithCreds(const AContent, AUser, APass: string): TSourceSnapshot;
 var
-  Reader: TM3UReader;
+  lReader: TM3UReader;
 begin
-  Reader := TM3UReader.Create;
+  lReader := TM3UReader.Create;
   try
     Result := TSourceSnapshot.Create(1);
-    Reader.ParseContent(AContent, Result, AUser, APass);
+    lReader.ParseContent(AContent, Result, AUser, APass);
   finally
-    Reader.Free;
+    FreeAndNil(lReader);
   end;
 end;
 
 procedure TM3UTests.ParsesM3UPlusAttributes;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 begin
-  Snap := Parse(
+  lSnapshot := Parse(
     '#EXTM3U'#10 +
-    '#EXTINF:-1 tvg-id="nl1" tvg-name="NPO 1 HD" tvg-logo="http://x/logo.png" group-title="NL | Publiek",NPO 1'#10 +
+    '#EXTINF:-1 tvg-id="nl1" tvg-name="NPO 1 HD" tvg-logo="http://x/logo.png" ' +
+    'group-title="NL | Publiek",NPO 1'#10 +
     'http://provider/live/u/p/101.ts'#10);
   try
-    Assert.AreEqual<Integer>(1, Snap.Streams.Count);
-    Assert.AreEqual('nl1', Snap.Streams[0].TvgId);
-    Assert.AreEqual('NPO 1', Snap.Streams[0].Name);
-    Assert.AreEqual('NL | Publiek', Snap.Streams[0].GroupTitle);
-    Assert.AreEqual('http://x/logo.png', Snap.Streams[0].Logo);
-    Assert.AreEqual('http://provider/live/u/p/101.ts', Snap.Streams[0].UpstreamUrl);
+    Assert.AreEqual<Integer>(1, lSnapshot.Streams.Count);
+    Assert.AreEqual('nl1', lSnapshot.Streams[0].TvgId);
+    Assert.AreEqual('NPO 1', lSnapshot.Streams[0].Name);
+    Assert.AreEqual('NL | Publiek', lSnapshot.Streams[0].GroupTitle);
+    Assert.AreEqual('http://x/logo.png', lSnapshot.Streams[0].Logo);
+    Assert.AreEqual('http://provider/live/u/p/101.ts', lSnapshot.Streams[0].UpstreamUrl);
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 
 procedure TM3UTests.ParsesPlainM3U;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 begin
-  Snap := Parse(
+  lSnapshot := Parse(
     '#EXTM3U'#10 +
     '#EXTINF:-1,Radio 538'#10 +
     'http://provider/radio.mp3'#10);
   try
-    Assert.AreEqual<Integer>(1, Snap.Streams.Count);
-    Assert.AreEqual('Radio 538', Snap.Streams[0].Name);
-    Assert.AreEqual('', Snap.Streams[0].TvgId);
-    Assert.AreEqual('http://provider/radio.mp3', Snap.Streams[0].UpstreamUrl);
+    Assert.AreEqual<Integer>(1, lSnapshot.Streams.Count);
+    Assert.AreEqual('Radio 538', lSnapshot.Streams[0].Name);
+    Assert.AreEqual('', lSnapshot.Streams[0].TvgId);
+    Assert.AreEqual('http://provider/radio.mp3', lSnapshot.Streams[0].UpstreamUrl);
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 
 procedure TM3UTests.IgnoresUnknownDirectivesBetweenExtinfAndUrl;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 begin
-  Snap := Parse(
+  lSnapshot := Parse(
     '#EXTM3U'#10 +
     '#EXTINF:-1,Test'#10 +
     '#EXTGRP:News'#10 +
     '#EXTVLCOPT:http-user-agent=foo'#10 +
     'http://provider/test.ts'#10);
   try
-    Assert.AreEqual<Integer>(1, Snap.Streams.Count);
-    Assert.AreEqual('http://provider/test.ts', Snap.Streams[0].UpstreamUrl,
+    Assert.AreEqual<Integer>(1, lSnapshot.Streams.Count);
+    Assert.AreEqual('http://provider/test.ts', lSnapshot.Streams[0].UpstreamUrl,
       'directives between EXTINF and URL must not break pairing');
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 
 procedure TM3UTests.ReadsUrlTvgFromHeader;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 begin
-  Snap := Parse(
+  lSnapshot := Parse(
     '#EXTM3U url-tvg="http://provider/epg.xml.gz"'#10 +
     '#EXTINF:-1,Ch'#10 +
     'http://provider/ch.ts'#10);
   try
-    Assert.AreEqual('http://provider/epg.xml.gz', Snap.EpgUrl);
+    Assert.AreEqual('http://provider/epg.xml.gz', lSnapshot.EpgUrl);
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 
 procedure TM3UTests.DerivesStableIdFromUrl;
 var
-  A, B: TSourceSnapshot;
+  lFirst: TSourceSnapshot;
+  lSecond: TSourceSnapshot;
 begin
-  A := Parse('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/same.ts'#10);
-  B := Parse('#EXTM3U'#10'#EXTINF:-1,Y'#10'http://p/same.ts'#10);
+  lFirst := nil;
+  lSecond := nil;
   try
+    lFirst := Parse('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/same.ts'#10);
+    lSecond := Parse('#EXTM3U'#10'#EXTINF:-1,Y'#10'http://p/same.ts'#10);
     // same URL => same upstream id => stable across refreshes / renames
-    Assert.AreEqual(A.Streams[0].UpstreamId, B.Streams[0].UpstreamId);
+    Assert.AreEqual(lFirst.Streams[0].UpstreamId, lSecond.Streams[0].UpstreamId);
   finally
-    A.Free;
-    B.Free;
+    FreeAndNil(lFirst);
+    FreeAndNil(lSecond);
   end;
 end;
 
 procedure TM3UTests.IdSurvivesCredentialSwapPathStyle;
 var
-  A, B: TSourceSnapshot;
+  lFirst: TSourceSnapshot;
+  lSecond: TSourceSnapshot;
 begin
   // same provider, NEW subscription: the Xtream-style M3U embeds creds as path
   // segments (…/live/USER/PASS/ID.ts). The id must stay constant so the curated
   // layout survives the swap (only username/password changed; stream id 101 same).
-  A := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/live/olduser/oldpass/101.ts'#10,
-    'olduser', 'oldpass');
-  B := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/live/newuser/newpass/101.ts'#10,
-    'newuser', 'newpass');
+  lFirst := nil;
+  lSecond := nil;
   try
-    Assert.AreEqual(A.Streams[0].UpstreamId, B.Streams[0].UpstreamId,
+    lFirst := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/live/olduser/oldpass/101.ts'#10,
+      'olduser', 'oldpass');
+    lSecond := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/live/newuser/newpass/101.ts'#10,
+      'newuser', 'newpass');
+    Assert.AreEqual(lFirst.Streams[0].UpstreamId, lSecond.Streams[0].UpstreamId,
       'credential swap must not change the stream id (path-style)');
   finally
-    A.Free;
-    B.Free;
+    FreeAndNil(lFirst);
+    FreeAndNil(lSecond);
   end;
 end;
 
 procedure TM3UTests.IdSurvivesCredentialSwapQueryStyle;
 var
-  A, B: TSourceSnapshot;
+  lFirst: TSourceSnapshot;
+  lSecond: TSourceSnapshot;
 begin
   // query-style creds (…?username=…&password=…&stream=12345)
-  A := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10 +
-    'http://p/stream?username=olduser&password=oldpass&id=12345'#10, 'olduser', 'oldpass');
-  B := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10 +
-    'http://p/stream?username=newuser&password=newpass&id=12345'#10, 'newuser', 'newpass');
+  lFirst := nil;
+  lSecond := nil;
   try
-    Assert.AreEqual(A.Streams[0].UpstreamId, B.Streams[0].UpstreamId,
+    lFirst := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10 +
+      'http://p/stream?username=olduser&password=oldpass&id=12345'#10, 'olduser', 'oldpass');
+    lSecond := ParseWithCreds('#EXTM3U'#10'#EXTINF:-1,X'#10 +
+      'http://p/stream?username=newuser&password=newpass&id=12345'#10, 'newuser', 'newpass');
+    Assert.AreEqual(lFirst.Streams[0].UpstreamId, lSecond.Streams[0].UpstreamId,
       'credential swap must not change the stream id (query-style)');
   finally
-    A.Free;
-    B.Free;
+    FreeAndNil(lFirst);
+    FreeAndNil(lSecond);
   end;
 end;
 
 procedure TM3UTests.IdStaysDistinctPerStreamAcrossSwap;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 begin
   // blanking creds must NOT collapse two different streams into one id (the
   // discriminating stream id is what's left after the creds are removed)
-  Snap := ParseWithCreds('#EXTM3U'#10 +
+  lSnapshot := ParseWithCreds('#EXTM3U'#10 +
     '#EXTINF:-1,One'#10'http://p/live/u/p/101.ts'#10 +
     '#EXTINF:-1,Two'#10'http://p/live/u/p/102.ts'#10, 'u', 'p');
   try
-    Assert.AreEqual<Integer>(2, Snap.Streams.Count);
-    Assert.AreNotEqual(Snap.Streams[0].UpstreamId, Snap.Streams[1].UpstreamId,
+    Assert.AreEqual<Integer>(2, lSnapshot.Streams.Count);
+    Assert.AreNotEqual(lSnapshot.Streams[0].UpstreamId, lSnapshot.Streams[1].UpstreamId,
       'distinct streams must keep distinct ids after creds are blanked');
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 
 procedure TM3UTests.TolerantParserSkipsJunkAndKeepsGoodEntries;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 begin
   // a provider dumps a stray non-standard line between valid entries — the parser
   // must log-and-skip, not abort the whole playlist (#16)
-  Snap := Parse(
+  lSnapshot := Parse(
     '#EXTM3U'#10 +
     '#EXTINF:-1,Good One'#10 +
     'http://provider/one.ts'#10 +
@@ -213,53 +241,53 @@ begin
     '#EXTINF:-1,Good Two'#10 +
     'http://provider/two.ts'#10);
   try
-    Assert.AreEqual<Integer>(2, Snap.Streams.Count, 'both valid channels survive the junk line');
-    Assert.AreEqual('Good One', Snap.Streams[0].Name);
-    Assert.AreEqual('Good Two', Snap.Streams[1].Name);
+    Assert.AreEqual<Integer>(2, lSnapshot.Streams.Count, 'both valid channels survive the junk line');
+    Assert.AreEqual('Good One', lSnapshot.Streams[0].Name);
+    Assert.AreEqual('Good Two', lSnapshot.Streams[1].Name);
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 
 procedure TM3UTests.DropsExtinfWithoutUrlLine;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 begin
   // a #EXTINF with no following URL line (another #EXTINF comes next, or EOF) must
   // NOT persist as a ghost stream with an empty URL/id (those collide on the merge
   // key and serve a dead row).
-  Snap := Parse(
+  lSnapshot := Parse(
     '#EXTM3U'#10 +
     '#EXTINF:-1,Ghost No Url'#10 +     // no URL — next line is another #EXTINF
     '#EXTINF:-1,Real Channel'#10 +
     'http://provider/real.ts'#10 +
     '#EXTINF:-1,Trailing Ghost'#10);   // no URL — end of file
   try
-    Assert.AreEqual<Integer>(1, Snap.Streams.Count, 'only the channel with a URL survives');
-    Assert.AreEqual('Real Channel', Snap.Streams[0].Name);
-    Assert.AreEqual('http://provider/real.ts', Snap.Streams[0].UpstreamUrl);
+    Assert.AreEqual<Integer>(1, lSnapshot.Streams.Count, 'only the channel with a URL survives');
+    Assert.AreEqual('Real Channel', lSnapshot.Streams[0].Name);
+    Assert.AreEqual('http://provider/real.ts', lSnapshot.Streams[0].UpstreamUrl);
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 
 // the /live/ /movie/ /series/ URL path wins; group names only count as whole words
 procedure TM3UTests.GuessesContentTypeFromUrlThenWholeWords;
 var
-  Snap: TSourceSnapshot;
+  lSnapshot: TSourceSnapshot;
 
   function TypeOf(const AName: string): TContentType;
   var
-    S: TStreamItem;
+    lStream: TStreamItem;
   begin
-    for S in Snap.Streams do
-      if S.Name = AName then
-        Exit(S.ContentType);
+    for lStream in lSnapshot.Streams do
+      if lStream.Name = AName then
+        Exit(lStream.ContentType);
     raise Exception.Create('missing ' + AName);
   end;
 
 begin
-  Snap := Parse(
+  lSnapshot := Parse(
     '#EXTM3U'#10 +
     '#EXTINF:-1 group-title="NL| FILM",Film1 Action'#10 + 'http://p:80/live/u/p/1.ts'#10 +
     '#EXTINF:-1 group-title="VODAFONE SPORT",Sport X'#10 + 'http://p:80/x/2.ts'#10 +
@@ -275,7 +303,7 @@ begin
     Assert.AreEqual(Ord(ctRadio), Ord(TypeOf('Radio 1')));
     Assert.AreEqual(Ord(ctSeries), Ord(TypeOf('Ep 1')));
   finally
-    Snap.Free;
+    FreeAndNil(lSnapshot);
   end;
 end;
 

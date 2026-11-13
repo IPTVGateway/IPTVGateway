@@ -26,10 +26,13 @@ unit IPTV.Model.CustomList;
 interface
 
 uses
+  // RTL
   System.Generics.Collections,
+  // Own units
   IPTV.Model.Types;
 
 type
+  /// An operator-curated output list, published as its own Xtream portal.
   TCustomList = class
   private
     FId: Integer;
@@ -38,6 +41,7 @@ type
     FOutputPassword: string;
     FEnabled: Boolean;
   public
+    /// Creates an enabled list.
     constructor Create;
     property Id: Integer read FId write FId;
     property Name: string read FName write FName;
@@ -66,6 +70,7 @@ type
     property SortOrder: Integer read FSortOrder write FSortOrder;
   end;
 
+  /// A list entry: an ingested stream plus the operator's overrides.
   TCustomItem = class
   private
     FId: Integer;
@@ -101,7 +106,9 @@ type
     property StreamArchiveDays: Integer read FStreamArchiveDays write FStreamArchiveDays;
   end;
 
+  /// Owning list of custom groups.
   TCustomGroupList = class(TObjectList<TCustomGroup>);
+  /// Owning list of custom items.
   TCustomItemList = class(TObjectList<TCustomItem>);
 
   /// A fully-resolved output row: a custom item joined with its upstream stream
@@ -152,6 +159,7 @@ type
     property ExtraGuideId: string read FExtraGuideId write FExtraGuideId;
   end;
 
+  /// Owning list of resolved output channels.
   TOutputChannelList = class(TObjectList<TOutputChannel>);
 
 implementation

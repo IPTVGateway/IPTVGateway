@@ -15,10 +15,13 @@ unit IPTV.Api.SettingsIO;
 interface
 
 uses
+  // RTL
   System.JSON,
+  // own units
   IPTV.Storage.Intf;
 
 type
+  /// How many sources, lists, groups and items an import created.
   TImportCounts = record
     Sources, Lists, Groups, Items: Integer;
   end;
@@ -33,8 +36,14 @@ function ImportStoreSettings(const AStore: IStore; const ABody: TJSONObject): TI
 implementation
 
 uses
+  // RTL
+  System.SysUtils,
   System.Generics.Collections,
-  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.CustomList,
+  // own units
+  IPTV.Model.Types,
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.CustomList,
   IPTV.Api.Serializers;
 
 const
@@ -56,297 +65,306 @@ begin
   Result.AddPair('upstreamUrl', AStream.UpstreamUrl);
 end;
 
-function StreamFromExportJson(const J: TJSONObject; ASourceId: Integer): TStreamItem;
+function StreamFromExportJson(const AJson: TJSONObject; ASourceId: Integer): TStreamItem;
 begin
   Result := TStreamItem.Create;
   Result.SourceId := ASourceId;
-  Result.ContentType := ContentTypeFromString(J.GetValue<string>('contentType', ContentTypeNames[ctLive]));
-  Result.UpstreamId := J.GetValue<string>('upstreamId', '');
-  Result.Name := J.GetValue<string>('name', '');
-  Result.Logo := J.GetValue<string>('logo', '');
-  Result.GroupTitle := J.GetValue<string>('groupTitle', '');
-  Result.CategoryUpstreamId := J.GetValue<string>('categoryUpstreamId', '');
-  Result.TvgId := J.GetValue<string>('tvgId', '');
-  Result.TvgName := J.GetValue<string>('tvgName', '');
-  Result.UpstreamUrl := J.GetValue<string>('upstreamUrl', '');
+  Result.ContentType := ContentTypeFromString(AJson.GetValue<string>('contentType', ContentTypeNames[ctLive]));
+  Result.UpstreamId := AJson.GetValue<string>('upstreamId', '');
+  Result.Name := AJson.GetValue<string>('name', '');
+  Result.Logo := AJson.GetValue<string>('logo', '');
+  Result.GroupTitle := AJson.GetValue<string>('groupTitle', '');
+  Result.CategoryUpstreamId := AJson.GetValue<string>('categoryUpstreamId', '');
+  Result.TvgId := AJson.GetValue<string>('tvgId', '');
+  Result.TvgName := AJson.GetValue<string>('tvgName', '');
+  Result.UpstreamUrl := AJson.GetValue<string>('upstreamUrl', '');
 end;
 
 function ExportStoreSettings(const AStore: IStore): TJSONObject;
 var
-  Sources: TObjectList<TSourceConfig>;
-  Lists: TObjectList<TCustomList>;
-  Groups: TCustomGroupList;
-  Items: TCustomItemList;
-  S: TSourceConfig;
-  L: TCustomList;
-  G: TCustomGroup;
-  It: TCustomItem;
-  Stream: TStreamItem;
-  SrcArr, ListArr, GrpArr, ItemArr: TJSONArray;
-  LObj, ItObj: TJSONObject;
-  SrcNames, GrpNames: TDictionary<Integer, string>;
-  GName: string;
+  lSources: TObjectList<TSourceConfig>;
+  lLists: TObjectList<TCustomList>;
+  lGroups: TCustomGroupList;
+  lItems: TCustomItemList;
+  lSource: TSourceConfig;
+  lList: TCustomList;
+  lGroup: TCustomGroup;
+  lItem: TCustomItem;
+  lStream: TStreamItem;
+  lSrcArr, lListArr, lGrpArr, lItemArr: TJSONArray;
+  lListObj, lItemObj: TJSONObject;
+  lSrcNames, lGrpNames: TDictionary<Integer, string>;
+  lGName: string;
 begin
   Result := TJSONObject.Create;
   Result.AddPair('version', TJSONNumber.Create(cBundleVersion));
 
-  SrcNames := TDictionary<Integer, string>.Create;
+  lSrcNames := TDictionary<Integer, string>.Create;
   try
-    SrcArr := TJSONArray.Create;
-    Sources := AStore.LoadSources;
+    lSrcArr := TJSONArray.Create;
+    lSources := AStore.LoadSources;
     try
-      for S in Sources do
+      for lSource in lSources do
       begin
-        SrcArr.Add(SourceToJson(S));
-        SrcNames.AddOrSetValue(S.Id, S.Name);
+        lSrcArr.Add(SourceToJson(lSource));
+        lSrcNames.AddOrSetValue(lSource.Id, lSource.Name);
       end;
     finally
-      Sources.Free;
+      FreeAndNil(lSources);
     end;
-    Result.AddPair('sources', SrcArr);
+    Result.AddPair('sources', lSrcArr);
 
-    ListArr := TJSONArray.Create;
-    Lists := AStore.LoadLists;
+    lListArr := TJSONArray.Create;
+    lLists := AStore.LoadLists;
     try
-      for L in Lists do
+      for lList in lLists do
       begin
-        LObj := ListToJson(L);
-        GrpArr := TJSONArray.Create;
-        GrpNames := TDictionary<Integer, string>.Create;
+        lListObj := ListToJson(lList);
+        lGrpArr := TJSONArray.Create;
+        lGrpNames := TDictionary<Integer, string>.Create;
         try
-          Groups := AStore.LoadGroups(L.Id);
+          lGroups := AStore.LoadGroups(lList.Id);
           try
-            for G in Groups do
+            for lGroup in lGroups do
             begin
-              GrpArr.Add(GroupToJson(G));
-              GrpNames.AddOrSetValue(G.Id, G.Name);
+              lGrpArr.Add(GroupToJson(lGroup));
+              lGrpNames.AddOrSetValue(lGroup.Id, lGroup.Name);
             end;
           finally
-            Groups.Free;
+            FreeAndNil(lGroups);
           end;
-          LObj.AddPair('groups', GrpArr);
+          lListObj.AddPair('groups', lGrpArr);
 
-          ItemArr := TJSONArray.Create;
-          Items := AStore.LoadItems(L.Id);
+          lItemArr := TJSONArray.Create;
+          lItems := AStore.LoadItems(lList.Id);
           try
-            for It in Items do
+            for lItem in lItems do
             begin
-              Stream := AStore.LoadStreamById(It.StreamItemId);
-              if Stream = nil then
+              lStream := AStore.LoadStreamById(lItem.StreamItemId);
+              if lStream = nil then
                 Continue;
               try
-                ItObj := TJSONObject.Create;
-                ItObj.AddPair('displayName', It.DisplayName);
-                ItObj.AddPair('logoOverride', It.LogoOverride);
-                ItObj.AddPair('tvgIdOverride', It.TvgIdOverride);
-                ItObj.AddPair('channelNumber', TJSONNumber.Create(It.ChannelNumber));
-                if (It.CustomGroupId <> 0) and GrpNames.TryGetValue(It.CustomGroupId, GName) then
-                  ItObj.AddPair('groupName', GName)
+                lItemObj := TJSONObject.Create;
+                lItemObj.AddPair('displayName', lItem.DisplayName);
+                lItemObj.AddPair('logoOverride', lItem.LogoOverride);
+                lItemObj.AddPair('tvgIdOverride', lItem.TvgIdOverride);
+                lItemObj.AddPair('channelNumber', TJSONNumber.Create(lItem.ChannelNumber));
+                if (lItem.CustomGroupId <> 0) and lGrpNames.TryGetValue(lItem.CustomGroupId, lGName) then
+                  lItemObj.AddPair('groupName', lGName)
                 else
-                  ItObj.AddPair('groupName', '');
-                if not SrcNames.TryGetValue(Stream.SourceId, GName) then
-                  GName := '';
-                ItObj.AddPair('stream', StreamExportJson(GName, Stream));
-                ItemArr.Add(ItObj);
+                  lItemObj.AddPair('groupName', '');
+                if not lSrcNames.TryGetValue(lStream.SourceId, lGName) then
+                  lGName := '';
+                lItemObj.AddPair('stream', StreamExportJson(lGName, lStream));
+                lItemArr.Add(lItemObj);
               finally
-                Stream.Free;
+                FreeAndNil(lStream);
               end;
             end;
           finally
-            Items.Free;
+            FreeAndNil(lItems);
           end;
-          LObj.AddPair('items', ItemArr);
+          lListObj.AddPair('items', lItemArr);
         finally
-          GrpNames.Free;
+          FreeAndNil(lGrpNames);
         end;
-        ListArr.Add(LObj);
+        lListArr.Add(lListObj);
       end;
     finally
-      Lists.Free;
+      FreeAndNil(lLists);
     end;
-    Result.AddPair('lists', ListArr);
+    Result.AddPair('lists', lListArr);
   finally
-    SrcNames.Free;
+    FreeAndNil(lSrcNames);
   end;
 end;
 
 function ImportStoreSettings(const AStore: IStore; const ABody: TJSONObject): TImportCounts;
 var
-  Existing: TObjectList<TSourceConfig>;
-  ExistingLists: TObjectList<TCustomList>;
-  AllStreams: TStreamItemList;
-  St: TStreamItem;
-  S: TSourceConfig;
-  L: TCustomList;
-  G: TCustomGroup;
-  Item: TCustomItem;
-  V, GV, IV: TJSONValue;
-  SObj: TJSONObject;
-  NewListId, NewSrcId, Sid, GId: Integer;
-  GrpOrder: TList<Integer>;
-  SrcIdByName, GrpIdByName, StreamIdByUrl: TDictionary<string, Integer>;
-  Snaps: TObjectDictionary<string, TSourceSnapshot>;
-  SeenStream: TDictionary<string, Boolean>;
-  SName, Url, GName, Key: string;
-  Snap: TSourceSnapshot;
-  F: TCatalogFilter;
+  lExisting: TObjectList<TSourceConfig>;
+  lExistingLists: TObjectList<TCustomList>;
+  lAllStreams: TStreamItemList;
+  lStream: TStreamItem;
+  lSource: TSourceConfig;
+  lList: TCustomList;
+  lGroup: TCustomGroup;
+  lItem: TCustomItem;
+  lValue, lGroupValue, lItemValue: TJSONValue;
+  lStreamObj: TJSONObject;
+  lNewListId, lNewSrcId, lStreamId, lGroupId: Integer;
+  lGrpOrder: TList<Integer>;
+  lSrcIdByName, lGrpIdByName, lStreamIdByUrl: TDictionary<string, Integer>;
+  lSnaps: TObjectDictionary<string, TSourceSnapshot>;
+  lSeenStream: TDictionary<string, Boolean>;
+  lSrcName, lUrl, lGName, lKey: string;
+  lSnap: TSourceSnapshot;
+  lFilter: TCatalogFilter;
 begin
   Result := Default(TImportCounts);
 
-  SrcIdByName := TDictionary<string, Integer>.Create;
-  StreamIdByUrl := TDictionary<string, Integer>.Create;
-  Snaps := TObjectDictionary<string, TSourceSnapshot>.Create([doOwnsValues]);
-  SeenStream := TDictionary<string, Boolean>.Create;
+  lSrcIdByName := nil;
+  lStreamIdByUrl := nil;
+  lSnaps := nil;
+  lSeenStream := nil;
   try
+    lSrcIdByName := TDictionary<string, Integer>.Create;
+    lStreamIdByUrl := TDictionary<string, Integer>.Create;
+    lSnaps := TObjectDictionary<string, TSourceSnapshot>.Create([doOwnsValues]);
+    lSeenStream := TDictionary<string, Boolean>.Create;
     // wipe: lists first (drops items + groups), then sources (drops catalog/EPG)
-    ExistingLists := AStore.LoadLists;
+    lExistingLists := AStore.LoadLists;
     try
-      for L in ExistingLists do AStore.DeleteList(L.Id);
+      for lList in lExistingLists do
+        AStore.DeleteList(lList.Id);
     finally
-      ExistingLists.Free;
+      FreeAndNil(lExistingLists);
     end;
-    Existing := AStore.LoadSources;
+    lExisting := AStore.LoadSources;
     try
-      for S in Existing do AStore.DeleteSource(S.Id);
+      for lSource in lExisting do
+        AStore.DeleteSource(lSource.Id);
     finally
-      Existing.Free;
+      FreeAndNil(lExisting);
     end;
 
     // 1) recreate sources, remember name -> new id
     if ABody.GetValue('sources') is TJSONArray then
-      for V in TJSONArray(ABody.GetValue('sources')) do
-        if V is TJSONObject then
+      for lValue in TJSONArray(ABody.GetValue('sources')) do
+        if lValue is TJSONObject then
         begin
-          S := TSourceConfig.Create;
+          lSource := TSourceConfig.Create;
           try
-            SourceFromJson(TJSONObject(V), S);
-            S.Id := 0;
-            NewSrcId := AStore.SaveSource(S);
-            SrcIdByName.AddOrSetValue(S.Name, NewSrcId);
+            SourceFromJson(TJSONObject(lValue), lSource);
+            lSource.Id := 0;
+            lNewSrcId := AStore.SaveSource(lSource);
+            lSrcIdByName.AddOrSetValue(lSource.Name, lNewSrcId);
             Inc(Result.Sources);
           finally
-            S.Free;
+            FreeAndNil(lSource);
           end;
         end;
 
     // 2) gather every chosen channel's stream (deduped) into a per-source snapshot
     if ABody.GetValue('lists') is TJSONArray then
-      for V in TJSONArray(ABody.GetValue('lists')) do
-        if (V is TJSONObject) and (TJSONObject(V).GetValue('items') is TJSONArray) then
-          for IV in TJSONArray(TJSONObject(V).GetValue('items')) do
-            if (IV is TJSONObject) and (TJSONObject(IV).GetValue('stream') is TJSONObject) then
+      for lValue in TJSONArray(ABody.GetValue('lists')) do
+        if (lValue is TJSONObject) and (TJSONObject(lValue).GetValue('items') is TJSONArray) then
+          for lItemValue in TJSONArray(TJSONObject(lValue).GetValue('items')) do
+            if (lItemValue is TJSONObject) and (TJSONObject(lItemValue).GetValue('stream') is TJSONObject) then
             begin
-              SObj := TJSONObject(TJSONObject(IV).GetValue('stream'));
-              SName := SObj.GetValue<string>('sourceName', '');
-              if not SrcIdByName.TryGetValue(SName, NewSrcId) then
+              lStreamObj := TJSONObject(TJSONObject(lItemValue).GetValue('stream'));
+              lSrcName := lStreamObj.GetValue<string>('sourceName', '');
+              if not lSrcIdByName.TryGetValue(lSrcName, lNewSrcId) then
                 Continue;
-              Key := SName + cStreamKeySep + SObj.GetValue<string>('contentType', '') + cStreamKeySep +
-                     SObj.GetValue<string>('upstreamId', '') + cStreamKeySep +
-                     SObj.GetValue<string>('upstreamUrl', '');
-              if SeenStream.ContainsKey(Key) then
+              lKey := lSrcName + cStreamKeySep + lStreamObj.GetValue<string>('contentType', '') + cStreamKeySep +
+                     lStreamObj.GetValue<string>('upstreamId', '') + cStreamKeySep +
+                     lStreamObj.GetValue<string>('upstreamUrl', '');
+              if lSeenStream.ContainsKey(lKey) then
                 Continue;
-              SeenStream.Add(Key, True);
-              if not Snaps.TryGetValue(SName, Snap) then
+              lSeenStream.Add(lKey, True);
+              if not lSnaps.TryGetValue(lSrcName, lSnap) then
               begin
-                Snap := TSourceSnapshot.Create(NewSrcId);
-                Snaps.Add(SName, Snap);
+                lSnap := TSourceSnapshot.Create(lNewSrcId);
+                lSnaps.Add(lSrcName, lSnap);
               end;
-              Snap.Streams.Add(StreamFromExportJson(SObj, NewSrcId));
+              lSnap.Streams.Add(StreamFromExportJson(lStreamObj, lNewSrcId));
             end;
 
     // 3) merge those streams into the catalog, then map upstream URL -> new id
-    for Snap in Snaps.Values do
-      AStore.MergeSnapshot(Snap);
-    F := Default(TCatalogFilter);
-    AllStreams := AStore.LoadStreams(F);
+    for lSnap in lSnaps.Values do
+      AStore.MergeSnapshot(lSnap);
+    lFilter := Default(TCatalogFilter);
+    lAllStreams := AStore.LoadStreams(lFilter);
     try
-      for St in AllStreams do
-        StreamIdByUrl.AddOrSetValue(St.UpstreamUrl, St.Id);
+      for lStream in lAllStreams do
+        lStreamIdByUrl.AddOrSetValue(lStream.UpstreamUrl, lStream.Id);
     finally
-      AllStreams.Free;
+      FreeAndNil(lAllStreams);
     end;
 
     // 4) recreate lists + groups + items
     if ABody.GetValue('lists') is TJSONArray then
-      for V in TJSONArray(ABody.GetValue('lists')) do
-        if V is TJSONObject then
+      for lValue in TJSONArray(ABody.GetValue('lists')) do
+        if lValue is TJSONObject then
         begin
-          L := TCustomList.Create;
+          lList := TCustomList.Create;
           try
-            ListFromJson(TJSONObject(V), L);
-            L.Id := 0;
-            NewListId := AStore.SaveList(L);
+            ListFromJson(TJSONObject(lValue), lList);
+            lList.Id := 0;
+            lNewListId := AStore.SaveList(lList);
             Inc(Result.Lists);
           finally
-            L.Free;
+            FreeAndNil(lList);
           end;
 
-          GrpIdByName := TDictionary<string, Integer>.Create;
-          GrpOrder := TList<Integer>.Create;
+          lGrpIdByName := nil;
+          lGrpOrder := nil;
           try
-            if TJSONObject(V).GetValue('groups') is TJSONArray then
-              for GV in TJSONArray(TJSONObject(V).GetValue('groups')) do
-                if GV is TJSONObject then
+            lGrpIdByName := TDictionary<string, Integer>.Create;
+            lGrpOrder := TList<Integer>.Create;
+            if TJSONObject(lValue).GetValue('groups') is TJSONArray then
+              for lGroupValue in TJSONArray(TJSONObject(lValue).GetValue('groups')) do
+                if lGroupValue is TJSONObject then
                 begin
-                  G := TCustomGroup.Create;
+                  lGroup := TCustomGroup.Create;
                   try
-                    GroupFromJson(TJSONObject(GV), G);
-                    G.Id := 0;
-                    G.ListId := NewListId;
-                    GId := AStore.SaveGroup(G);
-                    GrpIdByName.AddOrSetValue(G.Name, GId);
-                    GrpOrder.Add(GId);
+                    GroupFromJson(TJSONObject(lGroupValue), lGroup);
+                    lGroup.Id := 0;
+                    lGroup.ListId := lNewListId;
+                    lGroupId := AStore.SaveGroup(lGroup);
+                    lGrpIdByName.AddOrSetValue(lGroup.Name, lGroupId);
+                    lGrpOrder.Add(lGroupId);
                     Inc(Result.Groups);
                   finally
-                    G.Free;
+                    FreeAndNil(lGroup);
                   end;
                 end;
             // SaveGroup doesn't persist sort_order (only ReorderGroups does), so the
             // manual group order would be lost on import. The export writes groups in
             // display order (favorites first, then sort_order), so re-applying that
             // array order via ReorderGroups restores the operator's arrangement.
-            if GrpOrder.Count > 0 then
-              AStore.ReorderGroups(NewListId, GrpOrder.ToArray);
+            if lGrpOrder.Count > 0 then
+              AStore.ReorderGroups(lNewListId, lGrpOrder.ToArray);
 
-            if TJSONObject(V).GetValue('items') is TJSONArray then
-              for IV in TJSONArray(TJSONObject(V).GetValue('items')) do
-                if (IV is TJSONObject) and (TJSONObject(IV).GetValue('stream') is TJSONObject) then
+            if TJSONObject(lValue).GetValue('items') is TJSONArray then
+              for lItemValue in TJSONArray(TJSONObject(lValue).GetValue('items')) do
+                if (lItemValue is TJSONObject) and (TJSONObject(lItemValue).GetValue('stream') is TJSONObject) then
                 begin
-                  SObj := TJSONObject(TJSONObject(IV).GetValue('stream'));
-                  Url := SObj.GetValue<string>('upstreamUrl', '');
-                  if not StreamIdByUrl.TryGetValue(Url, Sid) then
+                  lStreamObj := TJSONObject(TJSONObject(lItemValue).GetValue('stream'));
+                  lUrl := lStreamObj.GetValue<string>('upstreamUrl', '');
+                  if not lStreamIdByUrl.TryGetValue(lUrl, lStreamId) then
                     Continue;
-                  Item := TCustomItem.Create;
+                  lItem := TCustomItem.Create;
                   try
-                    Item.Id := 0;
-                    Item.ListId := NewListId;
-                    Item.StreamItemId := Sid;
-                    Item.ContentType := ContentTypeFromString(SObj.GetValue<string>('contentType', ContentTypeNames[ctLive]));
-                    Item.DisplayName := TJSONObject(IV).GetValue<string>('displayName', '');
-                    Item.LogoOverride := TJSONObject(IV).GetValue<string>('logoOverride', '');
-                    Item.TvgIdOverride := TJSONObject(IV).GetValue<string>('tvgIdOverride', '');
-                    Item.ChannelNumber := TJSONObject(IV).GetValue<Integer>('channelNumber', 0);
-                    GName := TJSONObject(IV).GetValue<string>('groupName', '');
-                    if (GName <> '') and GrpIdByName.TryGetValue(GName, GId) then
-                      Item.CustomGroupId := GId
+                    lItem.Id := 0;
+                    lItem.ListId := lNewListId;
+                    lItem.StreamItemId := lStreamId;
+                    lItem.ContentType := ContentTypeFromString(
+                      lStreamObj.GetValue<string>('contentType', ContentTypeNames[ctLive]));
+                    lItem.DisplayName := TJSONObject(lItemValue).GetValue<string>('displayName', '');
+                    lItem.LogoOverride := TJSONObject(lItemValue).GetValue<string>('logoOverride', '');
+                    lItem.TvgIdOverride := TJSONObject(lItemValue).GetValue<string>('tvgIdOverride', '');
+                    lItem.ChannelNumber := TJSONObject(lItemValue).GetValue<Integer>('channelNumber', 0);
+                    lGName := TJSONObject(lItemValue).GetValue<string>('groupName', '');
+                    if (lGName <> '') and lGrpIdByName.TryGetValue(lGName, lGroupId) then
+                      lItem.CustomGroupId := lGroupId
                     else
-                      Item.CustomGroupId := 0;
-                    AStore.SaveItem(Item);
+                      lItem.CustomGroupId := 0;
+                    AStore.SaveItem(lItem);
                     Inc(Result.Items);
                   finally
-                    Item.Free;
+                    FreeAndNil(lItem);
                   end;
                 end;
           finally
-            GrpIdByName.Free;
-            GrpOrder.Free;
+            FreeAndNil(lGrpIdByName);
+            FreeAndNil(lGrpOrder);
           end;
         end;
   finally
-    SrcIdByName.Free;
-    StreamIdByUrl.Free;
-    Snaps.Free;
-    SeenStream.Free;
+    FreeAndNil(lSrcIdByName);
+    FreeAndNil(lStreamIdByUrl);
+    FreeAndNil(lSnaps);
+    FreeAndNil(lSeenStream);
   end;
 end;
 

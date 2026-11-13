@@ -32,11 +32,20 @@ unit IPTV.Storage.Locking;
 interface
 
 uses
-  System.SysUtils, System.SyncObjs, System.Generics.Collections,
-  IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
+  // RTL
+  System.SysUtils,
+  System.SyncObjs,
+  System.Generics.Collections,
+  // own units
+  IPTV.Model.Source,
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg,
+  IPTV.Model.CustomList,
   IPTV.Storage.Intf;
 
 type
+  /// Thread-safe IStore decorator: separate reader/writer stores and locks, plus
+  /// in-memory source and zap caches (see the unit header).
   TLockingStore = class(TInterfacedObject, IStore)
   private
     FWrite: IStore;            // writer connection (also runs Init/migrations)
@@ -54,10 +63,13 @@ type
     procedure InvalidateSources;
     procedure InvalidateZap;
   public
-    // AWrite must be created first (it creates the DB file); ARead opens the same file.
+    /// AWrite must be created first (it creates the DB file); ARead opens the same file.
     constructor Create(const AWrite, ARead: IStore);
+    /// Frees the locks and caches and releases both inner stores.
     destructor Destroy; override;
 
+    /// IStore implementation (see IPTV.Storage.Intf): writes go to the writer store
+    /// under the write lock, reads to the reader store under the read lock.
     procedure Init;
     function LoadSources: TObjectList<TSourceConfig>;
     function SaveSource(const ASource: TSourceConfig): Integer;
@@ -147,27 +159,28 @@ end;
 destructor TLockingStore.Destroy;
 begin
   if FReadLock <> FWriteLock then
-    FReadLock.Free;
-  FWriteLock.Free;
-  FSourceCache.Free;
-  FZapStreams.Free;
-  FZapLists.Free;
-  FCacheLock.Free;
+    FreeAndNil(FReadLock);
+  FreeAndNil(FWriteLock);
+  FreeAndNil(FSourceCache);
+  FreeAndNil(FZapStreams);
+  FreeAndNil(FZapLists);
+  FreeAndNil(FCacheLock);
   FWrite := nil;
   FRead := nil;
   inherited;
 end;
 
-function CloneSources(const L: TObjectList<TSourceConfig>): TObjectList<TSourceConfig>;
+function CloneSources(const AList: TObjectList<TSourceConfig>): TObjectList<TSourceConfig>;
 var
-  S, N: TSourceConfig;
+  lSource: TSourceConfig;
+  lCopy: TSourceConfig;
 begin
   Result := TObjectList<TSourceConfig>.Create(True);
-  for S in L do
+  for lSource in AList do
   begin
-    N := TSourceConfig.Create;
-    Result.Add(N);
-    N.Assign(S);
+    lCopy := TSourceConfig.Create;
+    Result.Add(lCopy);
+    lCopy.Assign(lSource);
   end;
 end;
 
@@ -194,36 +207,36 @@ begin
   end;
 end;
 
-function CloneList(const L: TCustomList): TCustomList;
+function CloneList(const AList: TCustomList): TCustomList;
 begin
   Result := TCustomList.Create;
-  Result.Id := L.Id;
-  Result.Name := L.Name;
-  Result.OutputUsername := L.OutputUsername;
-  Result.OutputPassword := L.OutputPassword;
-  Result.Enabled := L.Enabled;
+  Result.Id := AList.Id;
+  Result.Name := AList.Name;
+  Result.OutputUsername := AList.OutputUsername;
+  Result.OutputPassword := AList.OutputPassword;
+  Result.Enabled := AList.Enabled;
 end;
 
-function CloneStream(const S: TStreamItem): TStreamItem;
+function CloneStream(const AStream: TStreamItem): TStreamItem;
 begin
   Result := TStreamItem.Create;
-  Result.Id := S.Id;
-  Result.SourceId := S.SourceId;
-  Result.UpstreamId := S.UpstreamId;
-  Result.ContentType := S.ContentType;
-  Result.Name := S.Name;
-  Result.Logo := S.Logo;
-  Result.GroupTitle := S.GroupTitle;
-  Result.CategoryUpstreamId := S.CategoryUpstreamId;
-  Result.TvgId := S.TvgId;
-  Result.TvgName := S.TvgName;
-  Result.UpstreamUrl := S.UpstreamUrl;
-  Result.ContentHash := S.ContentHash;
-  Result.ArchiveDays := S.ArchiveDays;
-  Result.IsNew := S.IsNew;
-  Result.SeenAtUtc := S.SeenAtUtc;
-  Result.FirstSeenUtc := S.FirstSeenUtc;
-  Result.LastSeenUtc := S.LastSeenUtc;
+  Result.Id := AStream.Id;
+  Result.SourceId := AStream.SourceId;
+  Result.UpstreamId := AStream.UpstreamId;
+  Result.ContentType := AStream.ContentType;
+  Result.Name := AStream.Name;
+  Result.Logo := AStream.Logo;
+  Result.GroupTitle := AStream.GroupTitle;
+  Result.CategoryUpstreamId := AStream.CategoryUpstreamId;
+  Result.TvgId := AStream.TvgId;
+  Result.TvgName := AStream.TvgName;
+  Result.UpstreamUrl := AStream.UpstreamUrl;
+  Result.ContentHash := AStream.ContentHash;
+  Result.ArchiveDays := AStream.ArchiveDays;
+  Result.IsNew := AStream.IsNew;
+  Result.SeenAtUtc := AStream.SeenAtUtc;
+  Result.FirstSeenUtc := AStream.FirstSeenUtc;
+  Result.LastSeenUtc := AStream.LastSeenUtc;
 end;
 
 // ── writes: writer connection, write lock ──────────────────────────────────
@@ -267,86 +280,150 @@ end;
 procedure TLockingStore.MergeSnapshot(const ASnapshot: TSourceSnapshot);
 begin
   FWriteLock.Acquire;
-  try FWrite.MergeSnapshot(ASnapshot); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    FWrite.MergeSnapshot(ASnapshot);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 procedure TLockingStore.MarkCategoriesSeen(const AIds: TArray<Integer>);
 begin
   FWriteLock.Acquire;
-  try FWrite.MarkCategoriesSeen(AIds); finally FWriteLock.Release; end;
+  try
+    FWrite.MarkCategoriesSeen(AIds);
+  finally
+    FWriteLock.Release;
+  end;
 end;
 
 procedure TLockingStore.MarkStreamsSeen(const AIds: TArray<Integer>);
 begin
   FWriteLock.Acquire;
-  try FWrite.MarkStreamsSeen(AIds); finally FWriteLock.Release; end;
+  try
+    FWrite.MarkStreamsSeen(AIds);
+  finally
+    FWriteLock.Release;
+  end;
 end;
 
 procedure TLockingStore.SetState(const AKey, AValue: string);
 begin
   FWriteLock.Acquire;
-  try FWrite.SetState(AKey, AValue); finally FWriteLock.Release; end;
+  try
+    FWrite.SetState(AKey, AValue);
+  finally
+    FWriteLock.Release;
+  end;
 end;
 
 procedure TLockingStore.ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgProgrammeList);
 begin
   FWriteLock.Acquire;
-  try FWrite.ReplaceEpg(ASourceId, AProgrammes); finally FWriteLock.Release; end;
+  try
+    FWrite.ReplaceEpg(ASourceId, AProgrammes);
+  finally
+    FWriteLock.Release;
+  end;
 end;
 
 procedure TLockingStore.ReplaceExtraEpg(ASourceId: Integer;
   const AChannels: TArray<TEpgChannelInfo>; const AProgrammes: TEpgProgrammeList);
 begin
   FWriteLock.Acquire;
-  try FWrite.ReplaceExtraEpg(ASourceId, AChannels, AProgrammes); finally FWriteLock.Release; end;
+  try
+    FWrite.ReplaceExtraEpg(ASourceId, AChannels, AProgrammes);
+  finally
+    FWriteLock.Release;
+  end;
 end;
 
 procedure TLockingStore.ClearExtraEpgBelow(AMinSourceId: Integer);
 begin
   FWriteLock.Acquire;
-  try FWrite.ClearExtraEpgBelow(AMinSourceId); finally FWriteLock.Release; end;
+  try
+    FWrite.ClearExtraEpgBelow(AMinSourceId);
+  finally
+    FWriteLock.Release;
+  end;
 end;
 
 function TLockingStore.SaveList(const AList: TCustomList): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SaveList(AList); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.SaveList(AList);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 procedure TLockingStore.DeleteList(AId: Integer);
 begin
   FWriteLock.Acquire;
-  try FWrite.DeleteList(AId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    FWrite.DeleteList(AId);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.SaveGroup(const AGroup: TCustomGroup): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SaveGroup(AGroup); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.SaveGroup(AGroup);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.ReorderGroups(AListId: Integer; const AGroupIds: TArray<Integer>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ReorderGroups(AListId, AGroupIds); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.ReorderGroups(AListId, AGroupIds);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 procedure TLockingStore.DeleteGroup(AId: Integer);
 begin
   FWriteLock.Acquire;
-  try FWrite.DeleteGroup(AId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    FWrite.DeleteGroup(AId);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.SaveItem(const AItem: TCustomItem): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SaveItem(AItem); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.SaveItem(AItem);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.AddItems(AListId, ACustomGroupId: Integer; const AStreamItemIds: TArray<Integer>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.AddItems(AListId, ACustomGroupId, AStreamItemIds); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.AddItems(AListId, ACustomGroupId, AStreamItemIds);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.RestripSourceItems(ASourceId: Integer;
@@ -365,7 +442,12 @@ function TLockingStore.ReplaceItemStreams(AListId: Integer;
   const AReplacements: TArray<TItemStreamReplace>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ReplaceItemStreams(AListId, AReplacements); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.ReplaceItemStreams(AListId, AReplacements);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.RestripGroupItems(AListId, AGroupId: Integer;
@@ -384,69 +466,108 @@ end;
 function TLockingStore.RestripAllItems: Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.RestripAllItems; finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.RestripAllItems;
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 procedure TLockingStore.DeleteItem(AId: Integer);
 begin
   FWriteLock.Acquire;
-  try FWrite.DeleteItem(AId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    FWrite.DeleteItem(AId);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.ClearGroupItems(AListId, ACustomGroupId: Integer): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ClearGroupItems(AListId, ACustomGroupId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.ClearGroupItems(AListId, ACustomGroupId);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.DedupeListItems(AListId: Integer): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.DedupeListItems(AListId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.DedupeListItems(AListId);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.SortGroupAlphabetically(AListId, ACustomGroupId: Integer): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SortGroupAlphabetically(AListId, ACustomGroupId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.SortGroupAlphabetically(AListId, ACustomGroupId);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.SetItemNumbers(AListId: Integer; const ANumbers: TArray<TItemNumber>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SetItemNumbers(AListId, ANumbers); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.SetItemNumbers(AListId, ANumbers);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.ReorderGroupItems(AListId, ACustomGroupId: Integer; const AItemIds: TArray<Integer>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ReorderGroupItems(AListId, ACustomGroupId, AItemIds); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
+  try
+    Result := FWrite.ReorderGroupItems(AListId, ACustomGroupId, AItemIds);
+  finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
 end;
 
 // ── reads: reader connection, read lock (independent of writes) ─────────────
 
 function TLockingStore.LoadSources: TObjectList<TSourceConfig>;
 var
-  Gen: Integer;
+  lGen: Integer;
 begin
   // served from memory when cached (callers own + free the returned copy)
   FCacheLock.Acquire;
   try
     if FSourceCache <> nil then
       Exit(CloneSources(FSourceCache));
-    Gen := FSourceGen;
+    lGen := FSourceGen;
   finally
     FCacheLock.Release;
   end;
 
   FReadLock.Acquire;
-  try Result := FRead.LoadSources; finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadSources;
+  finally
+    FReadLock.Release;
+  end;
 
   // cache it unless a write invalidated meanwhile (then this read may be stale
   // for the cache — still a correct answer for this caller)
   FCacheLock.Acquire;
   try
-    if (Gen = FSourceGen) and (FSourceCache = nil) then
+    if (lGen = FSourceGen) and (FSourceCache = nil) then
       FSourceCache := CloneSources(Result);
   finally
     FCacheLock.Release;
@@ -456,50 +577,70 @@ end;
 function TLockingStore.LoadCategories(const AFilter: TCatalogFilter): TCategoryList;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadCategories(AFilter); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadCategories(AFilter);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadStreams(const AFilter: TCatalogFilter): TStreamItemList;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadStreams(AFilter); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadStreams(AFilter);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.CountStreams(const AFilter: TCatalogFilter): Integer;
 begin
   FReadLock.Acquire;
-  try Result := FRead.CountStreams(AFilter); finally FReadLock.Release; end;
+  try
+    Result := FRead.CountStreams(AFilter);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadStreamById(AId: Integer): TStreamItem;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadStreamById(AId); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadStreamById(AId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
 var
-  Key: string;
-  Hit: TStreamItem;
-  Gen: Integer;
+  lKey: string;
+  lHit: TStreamItem;
+  lGen: Integer;
 begin
-  Key := AListId.ToString + cZapStreamKeySep + AStreamItemId.ToString;
+  lKey := AListId.ToString + cZapStreamKeySep + AStreamItemId.ToString;
   FCacheLock.Acquire;
   try
-    if FZapStreams.TryGetValue(Key, Hit) then
-      Exit(CloneStream(Hit));
-    Gen := FZapGen;
+    if FZapStreams.TryGetValue(lKey, lHit) then
+      Exit(CloneStream(lHit));
+    lGen := FZapGen;
   finally
     FCacheLock.Release;
   end;
   FReadLock.Acquire;
-  try Result := FRead.LoadListStreamById(AListId, AStreamItemId); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadListStreamById(AListId, AStreamItemId);
+  finally
+    FReadLock.Release;
+  end;
   if Result <> nil then
   begin
     FCacheLock.Acquire;
     try
-      if Gen = FZapGen then // no write in between: safe to remember
-        FZapStreams.AddOrSetValue(Key, CloneStream(Result));
+      if lGen = FZapGen then // no write in between: safe to remember
+        FZapStreams.AddOrSetValue(lKey, CloneStream(Result));
     finally
       FCacheLock.Release;
     end;
@@ -550,97 +691,138 @@ end;
 function TLockingStore.LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadStreamSiblings(AStreamItemId); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadStreamSiblings(AStreamItemId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.DiscoverPrefixes(ASourceId); finally FReadLock.Release; end;
+  try
+    Result := FRead.DiscoverPrefixes(ASourceId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadKnownTvgIds: TArray<TTvgIdInfo>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadKnownTvgIds; finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadKnownTvgIds;
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.FindQualityVariants(AListId, ASourceGroupId: Integer;
   const ATargetQuality: string): TArray<TVariantMatch>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.FindQualityVariants(AListId, ASourceGroupId, ATargetQuality);
-  finally FReadLock.Release; end;
+  try
+    Result := FRead.FindQualityVariants(AListId, ASourceGroupId, ATargetQuality);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.FindStreamVariants(AStreamId: Integer; AAllSources: Boolean;
   AListId: Integer): TArray<TStreamVariant>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.FindStreamVariants(AStreamId, AAllSources, AListId);
-  finally FReadLock.Release; end;
+  try
+    Result := FRead.FindStreamVariants(AStreamId, AAllSources, AListId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.FindProviderVariants(AListId, ASourceGroupId,
   ATargetSourceId: Integer): TArray<TVariantMatch>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.FindProviderVariants(AListId, ASourceGroupId, ATargetSourceId);
-  finally FReadLock.Release; end;
+  try
+    Result := FRead.FindProviderVariants(AListId, ASourceGroupId, ATargetSourceId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.GetState(const AKey: string): string;
 begin
   FReadLock.Acquire;
-  try Result := FRead.GetState(AKey); finally FReadLock.Release; end;
+  try
+    Result := FRead.GetState(AKey);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadEpgForTvgIds(const ATvgIds: TArray<string>; AMaxDays: Integer): TEpgProgrammeList;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadEpgForTvgIds(ATvgIds, AMaxDays); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadEpgForTvgIds(ATvgIds, AMaxDays);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadListTvgIds: TArray<string>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadListTvgIds; finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadListTvgIds;
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadLists: TObjectList<TCustomList>;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadLists; finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadLists;
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.FindListByCredentials(const AUser, APass: string): TCustomList;
 var
-  Key: string;
-  Hit: TCustomList;
-  Gen: Integer;
+  lKey: string;
+  lHit: TCustomList;
+  lGen: Integer;
 begin
   // an empty username ignores the password (login-free bouquet): one cache entry,
   // not one per random password a client tries
   if AUser = '' then
-    Key := cZapCredKeySep
+    lKey := cZapCredKeySep
   else
-    Key := AUser + cZapCredKeySep + APass;
+    lKey := AUser + cZapCredKeySep + APass;
   FCacheLock.Acquire;
   try
-    if FZapLists.TryGetValue(Key, Hit) then
-      Exit(CloneList(Hit));
-    Gen := FZapGen;
+    if FZapLists.TryGetValue(lKey, lHit) then
+      Exit(CloneList(lHit));
+    lGen := FZapGen;
   finally
     FCacheLock.Release;
   end;
   FReadLock.Acquire;
-  try Result := FRead.FindListByCredentials(AUser, APass); finally FReadLock.Release; end;
+  try
+    Result := FRead.FindListByCredentials(AUser, APass);
+  finally
+    FReadLock.Release;
+  end;
   if Result <> nil then // unknown logins are not cached (no memory for guessers)
   begin
     FCacheLock.Acquire;
     try
-      if Gen = FZapGen then
-        FZapLists.AddOrSetValue(Key, CloneList(Result));
+      if lGen = FZapGen then
+        FZapLists.AddOrSetValue(lKey, CloneList(Result));
     finally
       FCacheLock.Release;
     end;
@@ -650,19 +832,31 @@ end;
 function TLockingStore.LoadGroups(AListId: Integer): TCustomGroupList;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadGroups(AListId); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadGroups(AListId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadItems(AListId: Integer): TCustomItemList;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadItems(AListId); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadItems(AListId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadOutputChannels(AListId: Integer): TOutputChannelList;
 begin
   FReadLock.Acquire;
-  try Result := FRead.LoadOutputChannels(AListId); finally FReadLock.Release; end;
+  try
+    Result := FRead.LoadOutputChannels(AListId);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 end.

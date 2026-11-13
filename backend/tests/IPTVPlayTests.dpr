@@ -9,9 +9,12 @@ program IPTVPlayTests;
 {$STRONGLINKTYPES ON}
 
 uses
+  // RTL
   System.SysUtils,
+  // third-party
   DUnitX.Loggers.Console,
   DUnitX.TestFramework,
+  // own units
   Test.M3U in 'Test.M3U.pas',
   Test.Utils in 'Test.Utils.pas',
   Test.Config in 'Test.Config.pas',

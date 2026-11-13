@@ -32,6 +32,7 @@ type
     [Test] procedure IdSortPrefixReordersAndKeepsEpg;
     [Test] procedure PlexUsesUniqueBouquetNumbers;
     [Test] procedure CatchupFlowsFromCatalogToOutput;
+    [Test] procedure EpgOfOneSourcePerChannel;
   end;
 
 implementation
@@ -39,7 +40,7 @@ implementation
 uses
   System.SysUtils, System.IOUtils, System.DateUtils,
   IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
-  IPTV.Storage.Intf, IPTV.Storage.SQLite, IPTV.Output.Builder;
+  IPTV.Storage.Intf, IPTV.Storage.SQLite, IPTV.Output.Builder, IPTV.Core.Utils;
 
 function NewStore(const APath: string): IStore;
 begin
@@ -812,6 +813,52 @@ begin
       end;
   finally
     LS.Free;
+  end;
+end;
+
+// Two providers deliver a guide for the same tvg-id: the output must carry ONE
+// of them (the one with most upcoming programmes), not both — else every
+// programme shows twice on the box (per-channel EPG) and in xmltv.php.
+procedure TOutputBuilderTests.EpgOfOneSourcePerChannel;
+var
+  Store: IStore;
+  L: TEpgProgrammeList;
+  Got: TEpgProgrammeList;
+  H: Integer;
+
+  procedure Add(AList: TEpgProgrammeList; const ATvg: string; AStartHoursFromNow: Integer);
+  var
+    P: TEpgProgramme;
+  begin
+    P := TEpgProgramme.Create;
+    P.ChannelTvgId := ATvg;
+    P.StartUtc := IncHour(NowUtc, AStartHoursFromNow);
+    P.StopUtc := IncHour(P.StartUtc, 1);
+    P.Title := 'P' + AStartHoursFromNow.ToString;
+    AList.Add(P);
+  end;
+
+begin
+  Store := NewStore(FDbPath);
+  // source 1: mostly the past; source 2: covers the coming hours
+  L := TEpgProgrammeList.Create(True);
+  for H := -6 to 1 do Add(L, 'npo1.nl', H);
+  Add(L, 'only1.nl', 0);
+  Store.ReplaceEpg(1, L);
+  L.Free;
+  L := TEpgProgrammeList.Create(True);
+  for H := 0 to 5 do Add(L, 'npo1.nl', H);
+  Store.ReplaceEpg(2, L);
+  L.Free;
+
+  Got := Store.LoadEpgForTvgIds(['npo1.nl', 'only1.nl']);
+  try
+    for var P in Got do
+      if P.ChannelTvgId = 'npo1.nl' then
+        Assert.AreEqual(2, P.SourceId, 'the source with most upcoming programmes wins');
+    Assert.AreEqual(6 + 1, Got.Count, 'npo1.nl once (6 from source 2) + only1.nl');
+  finally
+    Got.Free;
   end;
 end;
 

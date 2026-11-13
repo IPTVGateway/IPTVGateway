@@ -37,7 +37,7 @@ const
   //          UFC channels' group), unless an exclude token names the group
   //   1.2.18 choose the bouquet Plex/Jellyfin get (plexListId); Media Servers group filter is
   //          Plex-only (boxes get their whole bouquet); XMLTV <channel> carries <icon> (Plex logos)
-  APP_VERSION = '1.2.28';
+  APP_VERSION = '1.2.29';
 
 type
   TAppConfig = record

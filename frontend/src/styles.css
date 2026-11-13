@@ -1443,6 +1443,30 @@ label.inline {
   min-width: 0;
 }
 
+/* Settings-style cards whose controls sit straight in the panel body (Media
+   Servers): stack them one per line like a fieldset, instead of letting labels,
+   checkboxes and hints run on as one paragraph. */
+.settings-form .settings-card > .panel-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.settings-form .settings-card > .panel-body > .hint {
+  display: block;
+  max-width: 900px;
+  margin: -2px 0 6px 22px; /* under the option it explains */
+}
+.settings-form .settings-card > .panel-body > label.inline {
+  white-space: normal; /* long checkbox texts wrap instead of overflowing */
+}
+.settings-form .settings-card > .panel-body > .form-actions,
+.settings-form .settings-card > .panel-body > .group-checks,
+.settings-form .settings-card > .panel-body > .tuner-urls,
+.settings-form .settings-card > .panel-body > fieldset {
+  align-self: stretch;
+}
+
 /* indented sub-option under a settings checkbox (e.g. Plex "via proxy") */
 .settings-form .inline.sub {
   margin-left: 22px;

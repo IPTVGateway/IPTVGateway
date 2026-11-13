@@ -2075,6 +2075,8 @@ begin
     end;
     Lo := Hi + 1;
   end;
+  // several providers deliver the same channel's guide: serve one, not all
+  KeepOneSourcePerChannel(Result, NowUtc);
 end;
 
 // ── Lists ──────────────────────────────────────────────────────────────────

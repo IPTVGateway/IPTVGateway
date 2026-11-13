@@ -109,6 +109,7 @@ begin
   Result.AddPair('userAgent', S.UserAgent);
   Result.AddPair('referer', S.Referer);
   Result.AddPair('forceHls', TJSONBool.Create(S.ForceHls));
+  Result.AddPair('preferOwnEpg', TJSONBool.Create(S.PreferOwnEpg));
   Result.AddPair('enabled', TJSONBool.Create(S.Enabled));
   Result.AddPair('contentTypes', ContentTypesToJson(S.ContentTypes));
   Result.AddPair('includeFilters', StrArrayToJson(S.IncludeFilters));
@@ -134,6 +135,7 @@ begin
   S.UserAgent := J.GetValue<string>('userAgent', S.UserAgent);
   S.Referer := J.GetValue<string>('referer', S.Referer);
   S.ForceHls := J.GetValue<Boolean>('forceHls', S.ForceHls);
+  S.PreferOwnEpg := J.GetValue<Boolean>('preferOwnEpg', S.PreferOwnEpg);
   S.Enabled := J.GetValue<Boolean>('enabled', S.Enabled);
   if J.GetValue('contentTypes') is TJSONArray then
     S.ContentTypes := ContentTypesFromJson(J.GetValue('contentTypes') as TJSONArray);

@@ -35,6 +35,18 @@ type
 
   TEpgProgrammeList = class(TObjectList<TEpgProgramme>);
 
+  /// A <channel> of an XMLTV guide (id + first display-name). Kept for the extra
+  /// (third-party) guides so list channels can be matched to them by id/name.
+  TEpgChannelInfo = record
+    Id: string;
+    Name: string;
+  end;
+
+const
+  /// Stored channel ids of an extra guide carry this prefix, so they can never
+  /// collide with a provider's own tvg-ids in the epg table.
+  EXTRA_EPG_PREFIX = 'extra:';
+
 /// Several providers often deliver a guide for the SAME tvg-id; served together
 /// every programme shows up 2-3 times (and slightly shifted copies overlap).
 /// Keep, per channel, the programmes of ONE source: the one covering the most

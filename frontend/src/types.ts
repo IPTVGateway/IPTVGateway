@@ -14,6 +14,7 @@ export interface Source {
   userAgent?: string // per-provider User-Agent override (empty => built-in default)
   referer?: string   // per-provider Referer header (some portals require it)
   forceHls?: boolean // live always handed to the box as .m3u8 (provider drops .ts)
+  preferOwnEpg?: boolean // this provider's own guide before the extra EPG source
   enabled: boolean
   contentTypes: ContentType[] // which types to ingest/offer
   includeFilters?: string[]   // keep only names matching a prefix/suffix (empty => all)
@@ -179,6 +180,7 @@ export interface AppConfig {
   plexToken?: string     // X-Plex-Token
   // media servers: global group filter + base URL (now editable) + dummy EPG
   visibleGroups?: string[] // only these group-titles are published (empty = all)
+  extraEpgUrls?: string[]  // extra (third-party) XMLTV guides, first = highest priority
   publicBaseUrl: string    // base URL boxes use; empty => request Host header
   dummyEpgEnabled?: boolean
   dummyEpgBlockMinutes?: number

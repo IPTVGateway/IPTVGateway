@@ -28,6 +28,12 @@ type
     function Read(const ASource: TSourceConfig; const AKeepTvgIds: TArray<string>): TEpgProgrammeList;
   end;
 
+/// Read a whole third-party XMLTV guide (an "extra EPG source", .xml or .xml.gz):
+/// every <channel> (id + first display-name) and every programme. Programme
+/// channel ids get EXTRA_EPG_PREFIX and SourceId = ASourceId (a negative slot id).
+function ReadExtraXmltv(const AUrl: string; ASourceId: Integer;
+  out AChannels: TArray<TEpgChannelInfo>): TEpgProgrammeList;
+
 implementation
 
 uses
@@ -265,6 +271,78 @@ begin
     until False;
   finally
     Keep.Free;
+  end;
+end;
+
+function ReadExtraXmltv(const AUrl: string; ASourceId: Integer;
+  out AChannels: TArray<TEpgChannelInfo>): TEpgProgrammeList;
+const
+  CH_OPEN = '<channel';
+  CH_CLOSE = '</channel>';
+  PROG_OPEN = '<programme';
+  PROG_CLOSE = '</programme>';
+var
+  Xml, Block: string;
+  PStart, PEnd, Cursor: Integer;
+  Info: TEpgChannelInfo;
+  Prog: TEpgProgramme;
+  Parser: TXmltvEpgReader;
+begin
+  AChannels := nil;
+  Result := TEpgProgrammeList.Create(True);
+  Xml := HttpGetText(AUrl, '', TimeoutBulkMs, ''); // gunzips .gz transparently
+  Parser := TXmltvEpgReader.Create; // only for ParseXmltvTime (no interface ref taken)
+  try
+    // channels: <channel id="NPO.1.nl"><display-name lang="nl">NPO 1</display-name>…
+    Cursor := 1;
+    repeat
+      PStart := PosEx(CH_OPEN, Xml, Cursor);
+      if PStart = 0 then
+        Break;
+      // "<channel" must be the tag, not the start of an attribute name
+      if (PStart + Length(CH_OPEN) <= Length(Xml)) and
+         not CharInSet(Xml[PStart + Length(CH_OPEN)], [' ', '>', #9, #10, #13]) then
+      begin
+        Cursor := PStart + 1;
+        Continue;
+      end;
+      PEnd := PosEx(CH_CLOSE, Xml, PStart);
+      if PEnd = 0 then
+        Break;
+      Block := Copy(Xml, PStart, PEnd - PStart);
+      Cursor := PEnd + Length(CH_CLOSE);
+      Info.Id := XmlDecode(AttrVal(Block, 'id'));
+      Info.Name := XmlDecode(TagText(Block, 'display-name'));
+      if Info.Id <> '' then
+        AChannels := AChannels + [Info];
+    until False;
+
+    Cursor := 1;
+    repeat
+      PStart := PosEx(PROG_OPEN, Xml, Cursor);
+      if PStart = 0 then
+        Break;
+      PEnd := PosEx(PROG_CLOSE, Xml, PStart);
+      if PEnd = 0 then
+        Break;
+      Cursor := PEnd + Length(PROG_CLOSE);
+      Block := Copy(Xml, PStart, PEnd - PStart);
+      Prog := TEpgProgramme.Create;
+      Prog.SourceId := ASourceId;
+      Prog.ChannelTvgId := EXTRA_EPG_PREFIX + XmlDecode(AttrVal(Block, 'channel'));
+      Prog.StartUtc := Parser.ParseXmltvTime(AttrVal(Block, 'start'));
+      Prog.StopUtc := Parser.ParseXmltvTime(AttrVal(Block, 'stop'));
+      if Prog.StartUtc = 0 then
+        Prog.Free
+      else
+      begin
+        Prog.Title := XmlDecode(TagText(Block, 'title'));
+        Prog.Description := XmlDecode(TagText(Block, 'desc'));
+        Result.Add(Prog);
+      end;
+    until False;
+  finally
+    Parser.Free;
   end;
 end;
 

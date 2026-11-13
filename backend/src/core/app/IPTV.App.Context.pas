@@ -48,6 +48,8 @@ type
       AHdhrProxy: Boolean; ATunerCount: Integer; const AServerUrl, AToken: string);
     /// Media-server config: the global group filter, the base URL boxes use, and the
     /// dummy-EPG settings. Persisted; read live by the output builders (no restart).
+    /// Extra (third-party) XMLTV guide URLs; persisted. Fetched on the next refresh.
+    procedure UpdateExtraEpgUrls(const AUrls: TArray<string>);
     procedure UpdateMediaConfig(const AVisibleGroups: TArray<string>;
       const ABaseUrl: string; ADummyEnabled: Boolean;
       ADummyBlockMinutes, ADummyHoursBack, ADummyHoursAhead: Integer;
@@ -137,6 +139,7 @@ begin
   FStore.Init;
 
   FIngest := TIngestService.Create(FStore, FLog);
+  FIngest.SetExtraEpgUrls(FConfig.ExtraEpgUrls);
 
   // a stable HDHomeRun device id for Plex (generated once, persisted)
   if FConfig.PlexDeviceId = '' then
@@ -285,6 +288,22 @@ begin
   Log(Format('Media config updated: %d visible groups, baseUrl=%s, dummyEpg=%s (%d min, -%d/+%dh)',
     [Length(AVisibleGroups), ABaseUrl, BoolToStr(ADummyEnabled, True),
      FConfig.DummyEpgBlockMinutes, FConfig.DummyEpgHoursBack, FConfig.DummyEpgHoursAhead]));
+end;
+
+procedure TAppContext.UpdateExtraEpgUrls(const AUrls: TArray<string>);
+var
+  L: TArray<string>;
+  U: string;
+begin
+  L := nil;
+  for U in AUrls do
+    if U.Trim <> '' then
+      L := L + [U.Trim];
+  FConfig.ExtraEpgUrls := L;
+  if Assigned(FIngest) then
+    FIngest.SetExtraEpgUrls(L);
+  FConfig.Save(FConfigPath);
+  Log(Format('Extra EPG sources: %d (fetched with the next refresh / EPG update)', [Length(L)]));
 end;
 
 function TAppContext.ResetPlexDeviceId: string;

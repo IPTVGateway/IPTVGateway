@@ -27,6 +27,16 @@ actually chose.
 
 ## Why
 
+- **Curate in a browser, not with a remote.** Setting up channels on a box means
+  typing URLs, usernames and passwords with the arrow keys, ticking channels one by
+  one and building favourites per device, all in a slow on-screen menu. With the
+  gateway you do this on a computer, tablet or phone. You can search, multi-select
+  and drag and drop channels and groups, rename them, choose what to show and hide,
+  and set the numbering in a few minutes. The box only needs a server address, a
+  username and a password, entered once.
+- **Hide what you never watch.** Providers deliver tens of thousands of channels,
+  most of them in languages or categories you will never use. You pick what goes
+  in the bouquet, so the box shows a short, tidy list instead of endless scrolling.
 - **Set up once, use on every box.** You arrange your channels, groups and
   numbers once, on one server. Every box that logs in with the same bouquet
   credentials gets exactly the same layout: same order, same numbers, same names,
@@ -38,9 +48,35 @@ actually chose.
 - **One change, everywhere.** Rename a channel, move it, or swap it to a better
   quality or another provider, and every box picks it up on its next refresh.
   Nothing has to be configured on the box again.
+- **A better TV guide than your provider gives you.** Provider guides are often
+  thin (a day or two ahead), patchy, or under different ids per provider, so the
+  same channel shows "No information" on one box and a full guide on another. Add
+  an extra guide source, such as a free country guide, and the gateway matches it to
+  your channels by name or tvg-id. Every channel then gets one consistent, complete
+  guide on every box and in Plex, without touching a single channel id.
 - **Different people, different line-ups.** Make several bouquets on the same
   sources, for example "Living room", "Kids" and "Plex". Each bouquet has its own
   login.
+
+### Why it is so light (native Delphi)
+
+- **One native binary, no runtime.** The Docker image is about 38 MB: Debian slim
+  plus a single 15 MB executable. There is no interpreter, no package manager, no
+  virtualenv and no node_modules at runtime. Comparable tools often need several
+  containers (app, worker, Redis, Postgres).
+- **Low memory and CPU use.** The gateway runs all day with a small memory
+  footprint; most of its memory goes to parsing the EPG during a refresh. That is
+  welcome on a NAS or Unraid server that also does other things.
+- **Real threads.** Stream relays, API requests, the scheduler and the ingest run
+  in parallel, without a global interpreter lock. That helps the relay and
+  concurrent box requests, even though the default mode is just a 302 redirect.
+- **Fast start, one process.** There is no separate worker, message broker or
+  database server; SQLite is built in.
+- **One codebase, three hosts.** The same core runs as a Linux daemon (Docker), as
+  a native Windows Service and as a desktop development app. No wrappers such as
+  NSSM are needed to run it as a Windows service.
+- **Errors caught at compile time.** Strict typing catches many mistakes when the
+  code is built instead of when it runs.
 
 ## Features
 
@@ -61,6 +97,25 @@ actually chose.
 - Per-provider User-Agent and Referer, and an "always HLS" option.
 - Account status, expiry date and connection limit shown per provider.
 - A daily automatic refresh of channels and EPG.
+
+**TV guide (EPG)**
+- The guide of every provider is fetched daily and served only for the channels in
+  your bouquet, one provider per channel, so no programme shows up twice.
+- **Extra EPG sources**: add one or more XMLTV guides (`.xml` or `.xml.gz`), for
+  example a country guide such as `epg_ripper_NL1.xml.gz` from epgshare01 or your own
+  [iptv-org/epg](https://github.com/iptv-org/epg) container.
+  - Channels are **matched automatically** by name or tvg-id. "NL | NPO 1 HD",
+    `npo1.nl` and `NPO.1.nl` are all the same channel, and quality tags, country
+    prefixes and decorative letters are ignored. When a match is ambiguous, nothing
+    is guessed.
+  - The extra guide **goes first by default**. Per provider you can turn this
+    around ("Own EPG before the extra EPG source"), so that provider's own guide is
+    used whenever it has data and the extra source only fills the gaps.
+  - When several guides overlap, the first one in the list wins.
+  - Channel ids and numbers never change, so Plex and your boxes keep their
+    channel mapping. Only the programmes get better.
+- Dummy EPG blocks for channels without any guide, so Plex never shows "Unknown
+  airing".
 
 **Curating**
 - Include and exclude name filters (prefix/suffix) that never delete anything.

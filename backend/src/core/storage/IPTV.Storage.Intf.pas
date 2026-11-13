@@ -171,6 +171,12 @@ type
 
     // ── EPG ──────────────────────────────────────────────────────────
     procedure ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgProgrammeList);
+    /// Store an extra (third-party) guide under a NEGATIVE source id (-1 = first
+    /// URL): its programmes (ids with EXTRA_EPG_PREFIX) and its channel list.
+    procedure ReplaceExtraEpg(ASourceId: Integer; const AChannels: TArray<TEpgChannelInfo>;
+      const AProgrammes: TEpgProgrammeList);
+    /// Drop extra-guide slots below AMinSourceId (URLs removed from the settings).
+    procedure ClearExtraEpgBelow(AMinSourceId: Integer);
     /// Load stored EPG for the given tvg-ids. AMaxDays > 0 caps the result to
     /// programmes starting within that many days from now (0 = no cap).
     function LoadEpgForTvgIds(const ATvgIds: TArray<string>; AMaxDays: Integer = 0): TEpgProgrammeList;

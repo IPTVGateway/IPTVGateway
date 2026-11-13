@@ -485,6 +485,12 @@ export const nl: Record<string, string> = {
     'Plex/Jellyfin-tuners, het zenderfilter en dummy EPG staan in het tabblad “Media Servers”.',
   // ── Quality probe (measure a channel in all qualities) ────────────────────
   'Measure quality': 'Kwaliteit meten',
+  'Extra EPG sources': 'Extra EPG-bronnen',
+  'One XMLTV address per line (.xml or .xml.gz), e.g. a country guide. Channels are matched by name or tvg-id and get these programmes instead of the provider’s own guide, unless that source has “Own EPG before the extra EPG source”. Channel ids and numbers stay the same. Fetched with every refresh or “Update EPG”. The first line wins when guides overlap.':
+    'Eén XMLTV-adres per regel (.xml of .xml.gz), bijvoorbeeld een landengids. Zenders worden gekoppeld op naam of tvg-id en krijgen deze programma’s in plaats van de eigen gids van de provider, tenzij die bron “Eigen EPG vóór de extra EPG-bron” heeft. Zender-id’s en -nummers blijven gelijk. Wordt opgehaald bij elke verversing of “EPG bijwerken”. Bij overlap wint de bovenste regel.',
+  'Own EPG before the extra EPG source': 'Eigen EPG vóór de extra EPG-bron',
+  'Use this provider’s own guide for its channels whenever it has data; the extra EPG source (Settings) then only fills gaps. Off: the extra EPG source goes first.':
+    'Gebruik de eigen gids van deze provider zodra die gegevens heeft; de extra EPG-bron (Instellingen) vult dan alleen gaten. Uit: de extra EPG-bron gaat voor.',
   'Catch-up: replay the past {n} days on boxes that support it':
     'Terugkijken: de afgelopen {n} dagen opnieuw bekijken op boxen die dat ondersteunen',
   'Measure quality: all variants of this channel': 'Kwaliteit meten: alle varianten van deze zender',

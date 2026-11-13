@@ -225,7 +225,7 @@ $LIB="D:\Program Files (x86)\Embarcadero\Studio\37.0\lib\Win32\release"
 $DCU="D:\Data\Delphi\DCU\37.0\IPTVPlayTests\Win32\Debug"; $EXE="W:\IPTVPlayLists\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "D:\Program Files (x86)\Embarcadero\Studio\37.0\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (151 tests as of 1.2.29)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (153 tests as of 1.2.31)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -368,6 +368,23 @@ unique, else fall back to the running position 1,2,3 (Plex rejects duplicates).
   relay port, whose `/timeshift/` relays it (no failover for archives). Only
   Xtream sources (`TimeshiftUpstreamUrl` returns '' otherwise → 404).
 - UI: `ArchiveBadge` "⟲ 3d" on catalog and bouquet rows.
+
+## Extra EPG sources (1.2.31)
+
+- `config.json` `extraEpgUrls[]` (Settings → "Extra EPG sources"): third-party
+  XMLTV guides (.xml/.xml.gz; `HttpGetText` gunzips by magic bytes). Fetched by
+  `TIngestService.RefreshExtraEpg` after RefreshAll / RefreshEpgAll. URL i is slot
+  source_id = -(i+1) in `epg` (channel ids prefixed `extra:`) + `epg_channels`
+  (id, display-name). Only guide channels matching some list channel are stored.
+- Matching (`TSQLiteStore.ApplyExtraGuides`, run inside LoadOutputChannels):
+  `EpgNameKey` of the channel's display name first, else `EpgIdKey` of its tvg-ids
+  (must agree). Only guide channels with upcoming programmes count; slot -1 beats
+  -2; a key mapping to two channels of one guide is ambiguous and unused. Sets
+  `TOutputChannel.ExtraGuideId`; every EPG reader uses `EpgReadIds` (extra id, else
+  upstream + override id). Published channel ids never change.
+- Per source `prefer_own_epg` (`PreferOwnEpg`): keep the provider's own guide
+  when it has upcoming programmes; the extra guide only fills gaps.
+- Several providers per tvg-id: `KeepOneSourcePerChannel` (most upcoming wins).
 
 ## MARS startup warm-up (1.2.20)
 

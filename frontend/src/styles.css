@@ -1009,6 +1009,12 @@ label.inline {
   padding: 0 4px;
 }
 
+.settings-form textarea.extra-epg {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
 .settings-form input[type='number'] {
   width: 64px;
 }

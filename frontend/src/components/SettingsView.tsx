@@ -197,6 +197,7 @@ function ServiceSettings() {
         proxyStreams: cfg.proxyStreams,
         proxyPort: cfg.proxyPort,
         streamFailover: cfg.streamFailover,
+        extraEpgUrls: (cfg.extraEpgUrls ?? []).map((u) => u.trim()).filter(Boolean),
       })
       setCfg(next)
       setSaved(true)
@@ -252,6 +253,20 @@ function ServiceSettings() {
             </label>
             <span className="hint">
               {t('Limit the generated guide to this many days ahead (0 = unlimited, takes everything the providers supply).')}
+            </span>
+          </fieldset>
+
+          <fieldset>
+            <legend>{t('Extra EPG sources')}</legend>
+            <textarea
+              className="extra-epg"
+              rows={3}
+              placeholder="https://…/guide.xml.gz"
+              value={(cfg.extraEpgUrls ?? []).join('\n')}
+              onChange={(e) => patch({ extraEpgUrls: e.target.value.split('\n') })}
+            />
+            <span className="hint">
+              {t('One XMLTV address per line (.xml or .xml.gz), e.g. a country guide. Channels are matched by name or tvg-id and get these programmes instead of the provider’s own guide, unless that source has “Own EPG before the extra EPG source”. Channel ids and numbers stay the same. Fetched with every refresh or “Update EPG”. The first line wins when guides overlap.')}
             </span>
           </fieldset>
 

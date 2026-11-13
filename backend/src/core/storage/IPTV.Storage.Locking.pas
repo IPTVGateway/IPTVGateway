@@ -69,6 +69,9 @@ type
     function GetState(const AKey: string): string;
     procedure SetState(const AKey, AValue: string);
     procedure ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgProgrammeList);
+    procedure ReplaceExtraEpg(ASourceId: Integer; const AChannels: TArray<TEpgChannelInfo>;
+      const AProgrammes: TEpgProgrammeList);
+    procedure ClearExtraEpgBelow(AMinSourceId: Integer);
     function LoadEpgForTvgIds(const ATvgIds: TArray<string>; AMaxDays: Integer = 0): TEpgProgrammeList;
     function LoadListTvgIds: TArray<string>;
     function LoadLists: TObjectList<TCustomList>;
@@ -212,6 +215,19 @@ procedure TLockingStore.ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgPr
 begin
   FWriteLock.Acquire;
   try FWrite.ReplaceEpg(ASourceId, AProgrammes); finally FWriteLock.Release; end;
+end;
+
+procedure TLockingStore.ReplaceExtraEpg(ASourceId: Integer;
+  const AChannels: TArray<TEpgChannelInfo>; const AProgrammes: TEpgProgrammeList);
+begin
+  FWriteLock.Acquire;
+  try FWrite.ReplaceExtraEpg(ASourceId, AChannels, AProgrammes); finally FWriteLock.Release; end;
+end;
+
+procedure TLockingStore.ClearExtraEpgBelow(AMinSourceId: Integer);
+begin
+  FWriteLock.Acquire;
+  try FWrite.ClearExtraEpgBelow(AMinSourceId); finally FWriteLock.Release; end;
 end;
 
 function TLockingStore.SaveList(const AList: TCustomList): Integer;

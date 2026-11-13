@@ -81,6 +81,15 @@ function NowUtc: TDateTime;
 // START = 'YYYY-MM-DD:HH-MM' in the PORTAL's clock. We tell boxes timezone=UTC,
 // so the start we receive is UTC and is shifted to the provider's clock.
 
+/// Matching keys between a channel and an extra (third-party) XMLTV guide.
+/// Name: decorative letters folded, lowercase, a leading country tag ("NL |")
+/// and quality/noise words (HD, 4K, ʀᴀᴡ, rec, (S), channel) dropped, separators
+/// removed: "NL | NPO 1 HD" -> "npo1", "Discovery Channel" -> "discovery".
+function EpgNameKey(const AName: string): string;
+/// Id: lowercase, "extra:" prefix and a trailing country suffix (.nl) dropped,
+/// separators removed: "NPO.1.nl" and "npo1.nl" -> "npo1".
+function EpgIdKey(const AId: string): string;
+
 /// Base64 of the UTF-8 text on ONE line, as Xtream portals send EPG title and
 /// description. The RTL's TNetEncoding.Base64 wraps every 76 chars with CR/LF,
 /// which some players reject (empty per-channel EPG on Formuler/MyTVOnline).
@@ -112,7 +121,7 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Character, System.DateUtils,
-  System.Generics.Collections, System.Hash, System.IOUtils, System.NetEncoding
+  System.Generics.Collections, System.Hash, System.IOUtils, System.NetEncoding, System.StrUtils
 {$IFDEF MSWINDOWS}
   , Winapi.Windows, Winapi.PsAPI
 {$ENDIF}
@@ -578,6 +587,80 @@ function NowUtc: TDateTime;
 begin
   Result := TTimeZone.Local.ToUniversalTime(Now);
 end;
+
+// -- matching keys for an extra (third-party) XMLTV guide --------------------
+
+function EpgKeyAlias(const AKey: string): string;
+begin
+  Result := AKey;
+  // a few common short forms providers use for the same channel
+  if Result.StartsWith('natgeo') then
+    Result := 'nationalgeographic' + Result.Substring(6);
+  // the unnumbered main channel is number 1 in the guides
+  if Result = 'ziggosport' then
+    Result := 'ziggosport1'
+  else if Result = 'espn1' then
+    Result := 'espn';
+end;
+
+function EpgNameKey(const AName: string): string;
+const
+  COUNTRIES: array[0..19] of string = ('nl', 'be', 'uk', 'gb', 'de', 'fr', 'us', 'es', 'it',
+    'pl', 'pt', 'tr', 'ca', 'au', 'dk', 'se', 'no', 'fi', 'at', 'ch');
+  NOISE: array[0..9] of string = ('rec', 's', 'hevc', 'h265', 'h264', '50fps', '60fps',
+    'backup', 'vip', 'channel');
+var
+  S, Tok: string;
+  Toks, Keep: TArray<string>;
+  I: Integer;
+  Ch: Char;
+  IsNoise: Boolean;
+begin
+  // fold decorative letters (ʀᴀᴡ, ʳᵉᶜ), lowercase, split on anything that is not
+  // a letter/digit/'+' (pipes, ┃, ⏺, brackets, dots, slashes …)
+  S := FoldDecorativeLetters(AName).ToLower;
+  for I := 1 to Length(S) do
+  begin
+    Ch := S[I];
+    if not (Ch.IsLetterOrDigit or (Ch = '+')) then
+      S[I] := ' ';
+  end;
+  Toks := S.Split([' '], TStringSplitOptions.ExcludeEmpty);
+  Keep := nil;
+  for I := 0 to High(Toks) do
+  begin
+    Tok := Toks[I];
+    // leading country tag ("NL | NPO 1", "┃NL┃ RTL 4") — only as the first word
+    if (I = 0) and (Length(Toks) > 1) and (IndexStr(Tok, COUNTRIES) >= 0) then
+      Continue;
+    IsNoise := (CanonicalQuality(Tok) <> '') or (IndexStr(Tok, NOISE) >= 0);
+    // keep a noise word when it is the whole name ("Channel 4" keeps 4 anyway)
+    if IsNoise and (Length(Toks) > 1) then
+      Continue;
+    Keep := Keep + [Tok];
+  end;
+  Result := EpgKeyAlias(string.Join('', Keep));
+end;
+
+function EpgIdKey(const AId: string): string;
+var
+  S: string;
+  Dot, I: Integer;
+begin
+  S := AId.Trim.ToLower;
+  if S.StartsWith('extra:') then
+    S := S.Substring(6);
+  // drop a trailing country suffix: "NPO.1.nl" / "npo1.nl" / "bbc.one.uk"
+  Dot := S.LastIndexOf('.');
+  if (Dot > 0) and (S.Length - Dot - 1 in [2, 3]) then
+    S := S.Substring(0, Dot);
+  Result := '';
+  for I := 1 to Length(S) do
+    if S[I].IsLetterOrDigit or (S[I] = '+') then
+      Result := Result + S[I];
+  Result := EpgKeyAlias(Result);
+end;
+
 
 function XtreamBase64(const S: string): string;
 var

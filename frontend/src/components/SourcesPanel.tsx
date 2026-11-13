@@ -25,6 +25,7 @@ interface SourceForm {
   userAgent: string
   referer: string
   forceHls: boolean
+  preferOwnEpg: boolean
   enabled: boolean
   contentTypes: ContentType[]
   includeFilters: string[]
@@ -52,6 +53,7 @@ const EMPTY_FORM: SourceForm = {
   userAgent: '',
   referer: '',
   forceHls: false,
+  preferOwnEpg: false,
   enabled: true,
   contentTypes: ['live'],
   includeFilters: [],
@@ -72,6 +74,7 @@ function toForm(s: Source): SourceForm {
     userAgent: s.userAgent ?? '',
     referer: s.referer ?? '',
     forceHls: s.forceHls ?? false,
+    preferOwnEpg: s.preferOwnEpg ?? false,
     enabled: s.enabled,
     contentTypes: [...s.contentTypes],
     includeFilters: [...(s.includeFilters ?? [])],
@@ -284,6 +287,7 @@ export function SourcesPanel({ onChanged }: Props) {
         userAgent: form.userAgent.trim() || undefined,
         referer: form.referer.trim() || undefined,
         forceHls: form.forceHls,
+        preferOwnEpg: form.preferOwnEpg,
         enabled: form.enabled,
         contentTypes: form.contentTypes,
         includeFilters: form.includeFilters,
@@ -337,6 +341,7 @@ export function SourcesPanel({ onChanged }: Props) {
         userAgent: f.userAgent.trim() || undefined,
         referer: f.referer.trim() || undefined,
         forceHls: f.forceHls,
+        preferOwnEpg: f.preferOwnEpg,
         enabled: f.enabled,
         contentTypes: f.contentTypes,
         includeFilters: f.includeFilters,
@@ -591,6 +596,17 @@ export function SourcesPanel({ onChanged }: Props) {
             onChange={(e) => setForm({ ...form, forceHls: e.target.checked })}
           />
           {t('Live always as HLS (m3u8)')}
+        </label>
+        <label
+          className="inline"
+          title={t('Use this provider’s own guide for its channels whenever it has data; the extra EPG source (Settings) then only fills gaps. Off: the extra EPG source goes first.')}
+        >
+          <input
+            type="checkbox"
+            checked={form.preferOwnEpg}
+            onChange={(e) => setForm({ ...form, preferOwnEpg: e.target.checked })}
+          />
+          {t('Own EPG before the extra EPG source')}
         </label>
         <div className="type-toggles">
           {CONTENT_TYPES.map((ct) => (

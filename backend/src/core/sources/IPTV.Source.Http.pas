@@ -61,7 +61,7 @@ const
 implementation
 
 uses
-  System.Classes, System.NetConsts, System.Net.URLClient,
+  System.Classes, System.NetConsts, System.Net.URLClient, System.ZLib,
   IdHTTP, IdGlobal, IdCookieManager;
 
 type
@@ -342,10 +342,48 @@ begin
     Result := IndyGetBytes(AUrl, AUserAgent, AReadTimeoutMs, AReferer);
 end;
 
+// A .gz download (e.g. a third-party XMLTV guide "guide.xml.gz") arrives as raw
+// gzip bytes (we ask for identity encoding, so it is the FILE that is gzipped).
+// Detect the gzip magic and inflate; anything else passes through unchanged.
+function GunzipIfNeeded(const ABytes: TBytes): TBytes;
+var
+  Src: TBytesStream;
+  Z: TZDecompressionStream;
+  Dst: TBytesStream;
+  Buf: TBytes;
+  N: Integer;
+begin
+  if (Length(ABytes) < 2) or (ABytes[0] <> $1F) or (ABytes[1] <> $8B) then
+    Exit(ABytes);
+  Src := TBytesStream.Create(ABytes);
+  try
+    Z := TZDecompressionStream.Create(Src, 15 + 16); // 15 + 16 = gzip header
+    try
+      Dst := TBytesStream.Create;
+      try
+        // read in chunks: a decompression stream has no known Size to CopyFrom
+        SetLength(Buf, 256 * 1024);
+        repeat
+          N := Z.Read(Buf[0], Length(Buf));
+          if N > 0 then
+            Dst.WriteBuffer(Buf[0], N);
+        until N <= 0;
+        Result := Copy(Dst.Bytes, 0, Dst.Size);
+      finally
+        Dst.Free;
+      end;
+    finally
+      Z.Free;
+    end;
+  finally
+    Src.Free;
+  end;
+end;
+
 function HttpGetText(const AUrl: string; const AUserAgent: string;
   AReadTimeoutMs: Integer; const AReferer: string): string;
 begin
-  Result := DecodeBytes(HttpGetBytes(AUrl, AUserAgent, AReadTimeoutMs, AReferer));
+  Result := DecodeBytes(GunzipIfNeeded(HttpGetBytes(AUrl, AUserAgent, AReadTimeoutMs, AReferer)));
 end;
 
 function HttpGetString(const AUrl: string; const AUserAgent: string;

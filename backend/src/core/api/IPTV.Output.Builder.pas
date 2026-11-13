@@ -147,7 +147,7 @@ function ChannelDisplayName(const AChannel: TOutputChannel;
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, System.DateUtils,
+  System.SysUtils, System.Classes, System.Generics.Collections, System.DateUtils, System.StrUtils,
   IPTV.Model.Types, IPTV.Model.Epg, IPTV.Model.Source, IPTV.Core.Utils;
 
 function TimeshiftUpstreamUrl(const AStore: IStore; const AStream: TStreamItem;
@@ -581,14 +581,15 @@ function BuildXmltvChannels(const AStore: IStore; const AChannels: TOutputChanne
 var
   C: TOutputChannel;
   Upstreams, SeenEff: TStringList;
-  EffById: TDictionary<string, string>; // upstream tvg-id -> published id
+  EffById: TDictionary<string, TArray<string>>; // upstream tvg-id -> published id
   GroupById: TDictionary<string, string>; // published id -> group-title (category)
   NameById: TDictionary<string, string>;  // published id -> display name (dummy title)
   GotEpg: TStringList;                     // published ids that received ≥1 real programme
   Progs: TEpgProgrammeList;
   P: TEpgProgramme;
   SB: TStringBuilder;
-  ChannelLabel, Gid, Grp, DName: string;
+  ChannelLabel, Gid, Grp, DName, RId: string;
+  Pubs: TArray<string>;
   I, Seq: Integer;
 begin
   Upstreams := TStringList.Create;
@@ -600,7 +601,7 @@ begin
   GotEpg := TStringList.Create;
   GotEpg.Sorted := True;
   GotEpg.Duplicates := dupIgnore;
-  EffById := TDictionary<string, string>.Create;
+  EffById := TDictionary<string, TArray<string>>.Create;
   GroupById := TDictionary<string, string>.Create;
   NameById := TDictionary<string, string>.Create;
   SB := TStringBuilder.Create;
@@ -616,16 +617,15 @@ begin
       else
         Gid := ChannelGuideId(C);
       // an override relabels the guide: advertise the published id, and pull EPG
-      // stored under EITHER the upstream id OR the effective id, re-keyed to it.
-      if C.UpstreamTvgId <> '' then
+      // stored under EITHER the upstream id OR the effective id (or the matched
+      // extra guide), re-keyed to it. One stored id can feed several channels.
+      for RId in C.EpgReadIds do
       begin
-        EffById.AddOrSetValue(C.UpstreamTvgId, Gid);
-        Upstreams.Add(C.UpstreamTvgId);
-      end;
-      if C.TvgId <> '' then
-      begin
-        EffById.AddOrSetValue(C.TvgId, Gid);
-        Upstreams.Add(C.TvgId);
+        if not EffById.TryGetValue(RId, Pubs) then
+          Pubs := nil;
+        if IndexStr(Gid, Pubs) < 0 then
+          EffById.AddOrSetValue(RId, Pubs + [Gid]);
+        Upstreams.Add(RId);
       end;
       // one <channel> per distinct published id; remember group + name (first seen)
       if SeenEff.IndexOf(Gid) < 0 then
@@ -653,9 +653,11 @@ begin
       for I := 0 to Progs.Count - 1 do
       begin
         P := Progs[I];
-        // re-key the stored (upstream-id) programme to the published id
-        if not EffById.TryGetValue(P.ChannelTvgId, ChannelLabel) then
-          ChannelLabel := P.ChannelTvgId;
+        // re-key the stored (upstream-id) programme to every published id using it
+        if not EffById.TryGetValue(P.ChannelTvgId, Pubs) then
+          Pubs := [P.ChannelTvgId];
+        for ChannelLabel in Pubs do
+        begin
         GotEpg.Add(ChannelLabel); // this published id has real data — no dummy for it
         SB.AppendFormat('  <programme start="%s" stop="%s" channel="%s"><title>%s</title><desc>%s</desc>',
           [XmltvTime(P.StartUtc), XmltvTime(P.StopUtc), XmlEscape(ChannelLabel),
@@ -669,6 +671,7 @@ begin
            not SameText(Grp, P.Category) then
           SB.AppendFormat('<category>%s</category>', [XmlEscape(Grp)]);
         SB.AppendLine('</programme>');
+        end;
       end;
     finally
       Progs.Free;

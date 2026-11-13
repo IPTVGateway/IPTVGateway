@@ -363,10 +363,7 @@ begin
       begin
         Tvg := Ch.TvgId; // effective (override-or-upstream)
         ArchiveDays := Ch.ArchiveDays;
-        if Ch.TvgId <> '' then
-          Tvgs := Tvgs + [Ch.TvgId];
-        if (Ch.UpstreamTvgId <> '') and (Ch.UpstreamTvgId <> Ch.TvgId) then
-          Tvgs := Tvgs + [Ch.UpstreamTvgId];
+        Tvgs := Ch.EpgReadIds; // own ids, or the matched extra guide
         Break;
       end;
   finally

@@ -35,6 +35,7 @@ type
     procedure RecomputeHidden(ASourceId: Integer; AForce: Boolean);
     procedure RepairSourceTokens;
     function StreamHash(const AItem: TStreamItem): string;
+    procedure ApplyExtraGuides(AChannels: TOutputChannelList);
     // row -> object
     function ReadSource(Q: TFDQuery): TSourceConfig;
     function ReadCategory(Q: TFDQuery): TCategory;
@@ -78,6 +79,9 @@ type
     procedure SetState(const AKey, AValue: string);
 
     procedure ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgProgrammeList);
+    procedure ReplaceExtraEpg(ASourceId: Integer; const AChannels: TArray<TEpgChannelInfo>;
+      const AProgrammes: TEpgProgrammeList);
+    procedure ClearExtraEpgBelow(AMinSourceId: Integer);
     function LoadEpgForTvgIds(const ATvgIds: TArray<string>; AMaxDays: Integer = 0): TEpgProgrammeList;
     function LoadListTvgIds: TArray<string>;
 
@@ -318,6 +322,12 @@ begin
   AddColumn('sources', 'max_connections INTEGER NOT NULL DEFAULT 0');
   // portal clock offset for catch-up/timeshift start times (minutes, local - UTC)
   AddColumn('sources', 'tz_offset_min INTEGER NOT NULL DEFAULT 0');
+  // this provider's own guide before the extra (third-party) EPG source
+  AddColumn('sources', 'prefer_own_epg INTEGER NOT NULL DEFAULT 0');
+  // channel list of the extra guides (negative source ids), to match channels by id/name
+  Exec('CREATE TABLE IF NOT EXISTS epg_channels (source_id INTEGER NOT NULL, ' +
+    'channel_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '''')');
+  Exec('CREATE INDEX IF NOT EXISTS idx_epgch_src ON epg_channels(source_id)');
   // per-item tvg-id override (empty => use the upstream stream's tvg-id)
   AddColumn('list_items', 'tvg_id_override TEXT NOT NULL DEFAULT ''''');
   // manual group drag-order (0 => unset, falls back to A→Z; favorites still first)
@@ -683,6 +693,7 @@ begin
   Result.ExpiresUtc := IsoUtcToDateTime(Q.FieldByName('expires_utc').AsString);
   Result.MaxConnections := Q.FieldByName('max_connections').AsInteger;
   Result.TzOffsetMin := Q.FieldByName('tz_offset_min').AsInteger;
+  Result.PreferOwnEpg := Q.FieldByName('prefer_own_epg').AsInteger <> 0;
 end;
 
 function TSQLiteStore.LoadSources: TObjectList<TSourceConfig>;
@@ -712,9 +723,9 @@ begin
     if ASource.Id = 0 then
       Q.SQL.Text :=
         'INSERT INTO sources(name,kind,url,username,password,epg_url,user_agent,referer,force_hls,enabled,content_types,' +
-        'include_filters,exclude_filters,strip_prefixes,strip_suffixes,last_refresh_utc,account_status,expires_utc,max_connections,tz_offset_min) ' +
+        'include_filters,exclude_filters,strip_prefixes,strip_suffixes,last_refresh_utc,account_status,expires_utc,max_connections,tz_offset_min,prefer_own_epg) ' +
         'VALUES(:name,:kind,:url,:username,:password,:epg_url,:user_agent,:referer,:force_hls,:enabled,:content_types,' +
-        ':include_filters,:exclude_filters,:strip_prefixes,:strip_suffixes,:last_refresh_utc,:account_status,:expires_utc,:max_connections,:tz_offset_min)'
+        ':include_filters,:exclude_filters,:strip_prefixes,:strip_suffixes,:last_refresh_utc,:account_status,:expires_utc,:max_connections,:tz_offset_min,:prefer_own_epg)'
     else
     begin
       Q.SQL.Text :=
@@ -722,7 +733,7 @@ begin
         'epg_url=:epg_url,user_agent=:user_agent,referer=:referer,force_hls=:force_hls,enabled=:enabled,content_types=:content_types,' +
         'include_filters=:include_filters,exclude_filters=:exclude_filters,strip_prefixes=:strip_prefixes,' +
         'strip_suffixes=:strip_suffixes,last_refresh_utc=:last_refresh_utc,account_status=:account_status,expires_utc=:expires_utc,' +
-        'max_connections=:max_connections,tz_offset_min=:tz_offset_min WHERE id=:id';
+        'max_connections=:max_connections,tz_offset_min=:tz_offset_min,prefer_own_epg=:prefer_own_epg WHERE id=:id';
       Q.ParamByName('id').AsInteger := ASource.Id;
     end;
     Q.ParamByName('name').AsWideString := ASource.Name;
@@ -745,6 +756,7 @@ begin
     Q.ParamByName('expires_utc').AsWideString := DateTimeToIsoUtc(ASource.ExpiresUtc);
     Q.ParamByName('max_connections').AsInteger := ASource.MaxConnections;
     Q.ParamByName('tz_offset_min').AsInteger := ASource.TzOffsetMin;
+    Q.ParamByName('prefer_own_epg').AsInteger := Ord(ASource.PreferOwnEpg);
     Q.ExecSQL;
 
     if ASource.Id = 0 then
@@ -1982,6 +1994,176 @@ begin
   end;
 end;
 
+procedure TSQLiteStore.ReplaceExtraEpg(ASourceId: Integer;
+  const AChannels: TArray<TEpgChannelInfo>; const AProgrammes: TEpgProgrammeList);
+var
+  Q: TFDQuery;
+  C: TEpgChannelInfo;
+begin
+  ReplaceEpg(ASourceId, AProgrammes);
+  Q := NewQuery;
+  try
+    FConn.StartTransaction;
+    try
+      FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id=:s', [ASourceId]);
+      Q.SQL.Text := 'INSERT INTO epg_channels(source_id,channel_id,display_name) VALUES(:s,:id,:n)';
+      for C in AChannels do
+      begin
+        Q.ParamByName('s').AsInteger := ASourceId;
+        Q.ParamByName('id').AsWideString := C.Id;
+        Q.ParamByName('n').AsWideString := C.Name;
+        Q.ExecSQL;
+      end;
+      FConn.Commit;
+    except
+      FConn.Rollback;
+      raise;
+    end;
+  finally
+    Q.Free;
+  end;
+end;
+
+procedure TSQLiteStore.ClearExtraEpgBelow(AMinSourceId: Integer);
+begin
+  // extra guides live under negative source ids -1, -2, ...; drop the slots of
+  // URLs that were removed from the settings
+  FConn.ExecSQL('DELETE FROM epg WHERE source_id < :m', [AMinSourceId]);
+  FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id < :m', [AMinSourceId]);
+end;
+
+// Point each live channel at a matching channel of an extra (third-party) guide:
+// by its display name first, else by its tvg-id(s). Only extra channels that
+// actually have upcoming programmes count; the first extra URL wins over later
+// ones; a key that maps to two different channels within one guide is ambiguous
+// and never used. A source with "prefer own EPG" keeps its own guide whenever
+// that has upcoming programmes. Channel ids/numbers are NOT touched - only where
+// the programmes are read from (TOutputChannel.ExtraGuideId).
+procedure TSQLiteStore.ApplyExtraGuides(AChannels: TOutputChannelList);
+type
+  TKeyHit = record
+    Id: string;   // stored id ('extra:...'); '' = ambiguous
+    Slot: Integer;
+  end;
+var
+  Q: TFDQuery;
+  NowS, Cand, K, IdA, IdB: string;
+  Keys: TDictionary<string, TKeyHit>;
+  PreferOwn: TDictionary<Integer, Byte>;
+  OwnFuture: TDictionary<string, Byte>;
+  C: TOutputChannel;
+  HasOwn: Boolean;
+
+  procedure AddKey(const AKey, AId: string; ASlot: Integer);
+  var
+    H: TKeyHit;
+  begin
+    if AKey = '' then
+      Exit;
+    if Keys.TryGetValue(AKey, H) then
+    begin
+      if (H.Slot = ASlot) and (H.Id <> AId) then
+      begin
+        H.Id := ''; // two channels of the same guide share the key: don't guess
+        Keys[AKey] := H;
+      end;
+      Exit; // an earlier (better) guide already owns this key
+    end;
+    H.Id := AId;
+    H.Slot := ASlot;
+    Keys.Add(AKey, H);
+  end;
+
+  function Hit(const AKey: string): string;
+  var
+    H: TKeyHit;
+  begin
+    if (AKey <> '') and Keys.TryGetValue(AKey, H) then
+      Result := H.Id
+    else
+      Result := '';
+  end;
+
+begin
+  if AChannels.Count = 0 then
+    Exit;
+  NowS := DateTimeToIsoUtc(NowUtc);
+  Keys := TDictionary<string, TKeyHit>.Create;
+  PreferOwn := TDictionary<Integer, Byte>.Create;
+  OwnFuture := TDictionary<string, Byte>.Create;
+  Q := NewQuery;
+  try
+    Q.Open(
+      'SELECT c.source_id AS sid, c.channel_id AS cid, c.display_name AS dn FROM epg_channels c ' +
+      'WHERE c.source_id < 0 AND EXISTS (SELECT 1 FROM epg e WHERE e.channel_tvg_id = :pfx || c.channel_id ' +
+      '  AND e.source_id = c.source_id AND e.stop_utc > :now) ' +
+      'ORDER BY c.source_id DESC', [EXTRA_EPG_PREFIX, NowS]);
+    while not Q.Eof do
+    begin
+      K := EXTRA_EPG_PREFIX + Q.FieldByName('cid').AsWideString;
+      AddKey(EpgIdKey(Q.FieldByName('cid').AsWideString), K, Q.FieldByName('sid').AsInteger);
+      AddKey(EpgNameKey(Q.FieldByName('dn').AsWideString), K, Q.FieldByName('sid').AsInteger);
+      Q.Next;
+    end;
+    Q.Close;
+    if Keys.Count = 0 then
+      Exit; // no extra guide configured / nothing upcoming in it
+
+    Q.Open('SELECT id FROM sources WHERE prefer_own_epg <> 0');
+    while not Q.Eof do
+    begin
+      PreferOwn.AddOrSetValue(Q.FieldByName('id').AsInteger, 0);
+      Q.Next;
+    end;
+    Q.Close;
+    if PreferOwn.Count > 0 then
+    begin
+      Q.Open('SELECT DISTINCT channel_tvg_id AS t FROM epg WHERE source_id > 0 AND stop_utc > :now', [NowS]);
+      while not Q.Eof do
+      begin
+        OwnFuture.AddOrSetValue(Q.FieldByName('t').AsWideString, 0);
+        Q.Next;
+      end;
+      Q.Close;
+    end;
+
+    for C in AChannels do
+    begin
+      if C.ContentType <> ctLive then
+        Continue;
+      // the name the operator sees decides first ...
+      Cand := Hit(EpgNameKey(C.Name));
+      // ... else the tvg-id(s), but only when they agree on one guide channel
+      if Cand = '' then
+      begin
+        IdA := Hit(EpgIdKey(C.TvgId));
+        IdB := Hit(EpgIdKey(C.UpstreamTvgId));
+        if (IdA <> '') and ((IdB = '') or (IdB = IdA)) then
+          Cand := IdA
+        else if (IdA = '') and (IdB <> '') then
+          Cand := IdB;
+      end;
+      if Cand = '' then
+        Continue;
+      if PreferOwn.ContainsKey(C.SourceId) then
+      begin
+        HasOwn := False;
+        for K in C.EpgReadIds do
+          if OwnFuture.ContainsKey(K) then
+            HasOwn := True;
+        if HasOwn then
+          Continue; // this provider's own guide goes first and it has data
+      end;
+      C.ExtraGuideId := Cand;
+    end;
+  finally
+    Q.Free;
+    OwnFuture.Free;
+    PreferOwn.Free;
+    Keys.Free;
+  end;
+end;
+
 function TSQLiteStore.LoadListTvgIds: TArray<string>;
 var
   Q: TFDQuery;
@@ -2379,6 +2561,7 @@ begin
   finally
     Q.Free;
   end;
+  ApplyExtraGuides(Result);
 end;
 
 function TSQLiteStore.SaveItem(const AItem: TCustomItem): Integer;

@@ -37,7 +37,7 @@ const
   //          UFC channels' group), unless an exclude token names the group
   //   1.2.18 choose the bouquet Plex/Jellyfin get (plexListId); Media Servers group filter is
   //          Plex-only (boxes get their whole bouquet); XMLTV <channel> carries <icon> (Plex logos)
-  APP_VERSION = '1.2.30';
+  APP_VERSION = '1.2.31';
 
 type
   TAppConfig = record
@@ -92,6 +92,10 @@ type
     // Plex/HDHomeRun playlist + guide + lineup): only these group-titles are
     // published. EMPTY => everything (current behaviour). Case-insensitive.
     VisibleGroups: TArray<string>;
+    /// Extra (third-party) XMLTV guides, e.g. a country file. First = highest
+    /// priority. Fetched with every refresh; used before a provider's own guide
+    /// unless that source has PreferOwnEpg.
+    ExtraEpgUrls: TArray<string>;
     // Dummy EPG: when a channel has NO real guide data, emit filler programmes so
     // Plex/Jellyfin show a proper line-up instead of "Unknown airing". Channels
     // WITH real EPG are untouched. Applied to the tuner + Plex/root XMLTV output.
@@ -160,6 +164,7 @@ begin
   Result.PlexServerUrl := '';
   Result.PlexToken := '';
   Result.VisibleGroups := [];
+  Result.ExtraEpgUrls := [];
   Result.DummyEpgEnabled := True;
   Result.DummyEpgBlockMinutes := 120;
   Result.DummyEpgHoursBack := 12;
@@ -215,6 +220,10 @@ begin
     for G in VisibleGroups do
       GroupArr.Add(G);
     Json.AddPair('visibleGroups', GroupArr);
+    GroupArr := TJSONArray.Create;
+    for G in ExtraEpgUrls do
+      GroupArr.Add(G);
+    Json.AddPair('extraEpgUrls', GroupArr);
     TFile.WriteAllText(APath, Json.Format(2));
   finally
     Json.Free;
@@ -310,6 +319,20 @@ begin
           if GV is TJSONString then
             Groups.Add(TJSONString(GV).Value);
         Result.VisibleGroups := Groups.ToArray;
+      finally
+        Groups.Free;
+      end;
+    end;
+    // extraEpgUrls[] — third-party XMLTV guides
+    GroupsVal := Json.GetValue('extraEpgUrls');
+    if GroupsVal is TJSONArray then
+    begin
+      Groups := TList<string>.Create;
+      try
+        for GV in TJSONArray(GroupsVal) do
+          if (GV is TJSONString) and (TJSONString(GV).Value.Trim <> '') then
+            Groups.Add(TJSONString(GV).Value.Trim);
+        Result.ExtraEpgUrls := Groups.ToArray;
       finally
         Groups.Free;
       end;

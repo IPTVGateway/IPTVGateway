@@ -33,6 +33,7 @@ type
     [Test] procedure PlexUsesUniqueBouquetNumbers;
     [Test] procedure CatchupFlowsFromCatalogToOutput;
     [Test] procedure EpgOfOneSourcePerChannel;
+    [Test] procedure ExtraGuideFirstUnlessSourcePrefersOwn;
   end;
 
 implementation
@@ -859,6 +860,105 @@ begin
     Assert.AreEqual(6 + 1, Got.Count, 'npo1.nl once (6 from source 2) + only1.nl');
   finally
     Got.Free;
+  end;
+end;
+
+// An extra (third-party) guide matched by NAME replaces the provider's guide for
+// the channel - the channel keeps its own id - unless its source prefers its own
+// EPG (and that has upcoming programmes).
+procedure TOutputBuilderTests.ExtraGuideFirstUnlessSourcePrefersOwn;
+var
+  Store: IStore;
+  Src: TSourceConfig;
+  Snap: TSourceSnapshot;
+  L: TEpgProgrammeList;
+  Chans: TOutputChannelList;
+  ListId, H: Integer;
+  Xml: string;
+
+  procedure Add(AList: TEpgProgrammeList; const ATvg, ATitle: string; AHours: Integer);
+  var
+    P: TEpgProgramme;
+  begin
+    P := TEpgProgramme.Create;
+    P.ChannelTvgId := ATvg;
+    P.StartUtc := IncHour(NowUtc, AHours);
+    P.StopUtc := IncHour(P.StartUtc, 1);
+    P.Title := ATitle;
+    AList.Add(P);
+  end;
+
+begin
+  Store := NewStore(FDbPath);
+  Src := TSourceConfig.Create;
+  try
+    Src.Name := 'P'; Src.Kind := skXtream; Src.Url := 'http://p'; Src.Enabled := True;
+    Store.SaveSource(Src); // id 1
+  finally
+    Src.Free;
+  end;
+  Snap := TSourceSnapshot.Create(1);
+  Snap.Streams.Add(MakeStream(ctLive, '1', 'NL | NPO 1 HD', 'npo1.nl', 'http://p/live/u/p/1.ts'));
+  Snap.Streams.Add(MakeStream(ctLive, '2', 'NL | UNKNOWN TV', 'unknown.nl', 'http://p/live/u/p/2.ts'));
+  Store.MergeSnapshot(Snap);
+  Snap.Free;
+  ListId := SeedListAll(Store);
+
+  L := TEpgProgrammeList.Create(True);
+  Add(L, 'npo1.nl', 'Provider show', 0);
+  Add(L, 'unknown.nl', 'Unknown show', 0);
+  Store.ReplaceEpg(1, L);
+  L.Free;
+
+  L := TEpgProgrammeList.Create(True);
+  for H := 0 to 3 do
+    Add(L, EXTRA_EPG_PREFIX + 'NPO.1.nl', 'Guide show', H);
+  var Info: TEpgChannelInfo;
+  Info.Id := 'NPO.1.nl';
+  Info.Name := 'NPO 1';
+  Store.ReplaceExtraEpg(-1, [Info], L);
+  L.Free;
+
+  Chans := Store.LoadOutputChannels(ListId);
+  try
+    for var C in Chans do
+      if C.TvgId = 'npo1.nl' then
+        Assert.AreEqual(EXTRA_EPG_PREFIX + 'NPO.1.nl', C.ExtraGuideId, 'matched by name')
+      else
+        Assert.AreEqual('', C.ExtraGuideId, 'no match -> own guide');
+    Xml := BuildXmltvChannels(Store, Chans, 0, TDummyEpgOptions.Off, nil, nil);
+    Assert.AreEqual(4, CountSubstr(Xml, '<title>Guide show</title>'), 'extra guide used');
+    Assert.IsFalse(Xml.Contains('Provider show'), 'provider guide replaced');
+    Assert.IsTrue(Xml.Contains('channel="npo1.nl"'), 'channel keeps its own id');
+    Assert.IsFalse(Xml.Contains('extra:'), 'storage prefix never leaks');
+    Assert.IsTrue(Xml.Contains('Unknown show'), 'unmatched channel keeps its own guide');
+  finally
+    Chans.Free;
+  end;
+
+  // the provider prefers its own guide -> own guide again (it has data)
+  var Srcs := Store.LoadSources;
+  try
+    Srcs[0].PreferOwnEpg := True;
+    Store.SaveSource(Srcs[0]);
+  finally
+    Srcs.Free;
+  end;
+  Chans := Store.LoadOutputChannels(ListId);
+  try
+    for var C in Chans do
+      Assert.AreEqual('', C.ExtraGuideId, 'prefer own EPG');
+  finally
+    Chans.Free;
+  end;
+
+  // removing the extra URL clears its slot
+  Store.ClearExtraEpgBelow(0);
+  L := Store.LoadEpgForTvgIds([EXTRA_EPG_PREFIX + 'NPO.1.nl']);
+  try
+    Assert.AreEqual(0, L.Count, 'slot cleared');
+  finally
+    L.Free;
   end;
 end;
 

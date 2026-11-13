@@ -45,6 +45,7 @@ type
     FLog: TLogProc;
     FStatus: TDictionary<Integer, TIngestStatus>;
     FStatusLock: TCriticalSection;
+    FExtraEpgUrls: TArray<string>; // extra (third-party) XMLTV guides, guarded by FStatusLock
     procedure Log(const AMsg: string);
     /// Run a DB write serialised against other refreshes (the slow network reads
     /// stay outside this so sources can refresh concurrently).
@@ -66,6 +67,10 @@ type
     /// Re-fetch EPG only (no catalog re-read) for the channels currently on a
     /// list — use after adding channels so their guide shows up without a full refresh.
     procedure RefreshEpgAll;
+    /// Re-fetch the extra (third-party) XMLTV guides; runs after RefreshAll/RefreshEpgAll.
+    procedure RefreshExtraEpg;
+    /// The extra guide URLs (from config.json extraEpgUrls), first = highest priority.
+    procedure SetExtraEpgUrls(const AUrls: TArray<string>);
     /// Snapshot of the per-source ingest progress (for the admin status endpoint).
     function GetStatus: TArray<TIngestStatus>;
   end;
@@ -74,8 +79,8 @@ implementation
 
 uses
   System.DateUtils,
-  IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
-  IPTV.Source.Intf, IPTV.Source.Factory, IPTV.Core.Utils;
+  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
+  IPTV.Source.Intf, IPTV.Source.Factory, IPTV.Source.Epg, IPTV.Core.Utils;
 
 constructor TIngestService.Create(const AStore: IStore; const ALog: TLogProc);
 begin
@@ -358,7 +363,119 @@ begin
   end;
   // Report the actual resident memory (the figure the operator watches) so its
   // trend is visible in the log after each refresh.
+  RefreshExtraEpg; // the extra guides last: their matching uses the fresh catalog
   Log(Format('Refresh done — process RSS: %d MB', [ProcessResidentBytes div (1024 * 1024)]));
+end;
+
+procedure TIngestService.SetExtraEpgUrls(const AUrls: TArray<string>);
+begin
+  FStatusLock.Acquire;
+  try
+    FExtraEpgUrls := Copy(AUrls);
+  finally
+    FStatusLock.Release;
+  end;
+end;
+
+// Fetch the extra (third-party) XMLTV guides from the settings. Each URL is a
+// slot with a negative source id (-1 = first URL = highest priority). Only the
+// guide channels that match a channel on some list (by name or id key) are
+// stored; the matching itself happens per request in the store.
+procedure TIngestService.RefreshExtraEpg;
+var
+  Urls: TArray<string>;
+  Lists: TObjectList<TCustomList>;
+  L: TCustomList;
+  Chans: TOutputChannelList;
+  C: TOutputChannel;
+  ListKeys, KeepIds: TDictionary<string, Byte>;
+  Guide: TArray<TEpgChannelInfo>;
+  Kept: TArray<TEpgChannelInfo>;
+  Info: TEpgChannelInfo;
+  Progs: TEpgProgrammeList;
+  I, J, Slot: Integer;
+
+  procedure AddKey(const AKey: string);
+  begin
+    if AKey <> '' then
+      ListKeys.AddOrSetValue(AKey, 0);
+  end;
+
+begin
+  FStatusLock.Acquire;
+  try
+    Urls := Copy(FExtraEpgUrls);
+  finally
+    FStatusLock.Release;
+  end;
+  // slots of removed URLs go away (also when the list is now empty)
+  WriteLocked(procedure begin FStore.ClearExtraEpgBelow(-Length(Urls)); end);
+  if Length(Urls) = 0 then
+    Exit;
+
+  ListKeys := TDictionary<string, Byte>.Create;
+  KeepIds := TDictionary<string, Byte>.Create;
+  try
+    Lists := FStore.LoadLists;
+    try
+      for L in Lists do
+      begin
+        Chans := FStore.LoadOutputChannels(L.Id);
+        try
+          for C in Chans do
+            if C.ContentType = ctLive then
+            begin
+              AddKey(EpgNameKey(C.Name));
+              AddKey(EpgIdKey(C.TvgId));
+              AddKey(EpgIdKey(C.UpstreamTvgId));
+            end;
+        finally
+          Chans.Free;
+        end;
+      end;
+    finally
+      Lists.Free;
+    end;
+
+    for I := 0 to High(Urls) do
+    begin
+      Slot := -(I + 1);
+      FEpgLock.Acquire; // one guide parse at a time (memory)
+      try
+        try
+          Log(Format('Extra EPG %d: %s', [I + 1, Urls[I]]));
+          Progs := ReadExtraXmltv(Urls[I], Slot, Guide);
+          try
+            KeepIds.Clear;
+            Kept := nil;
+            for Info in Guide do
+              if ListKeys.ContainsKey(EpgIdKey(Info.Id)) or ListKeys.ContainsKey(EpgNameKey(Info.Name)) then
+              begin
+                Kept := Kept + [Info];
+                KeepIds.AddOrSetValue(EXTRA_EPG_PREFIX + Info.Id, 0);
+              end;
+            for J := Progs.Count - 1 downto 0 do
+              if not KeepIds.ContainsKey(Progs[J].ChannelTvgId) then
+                Progs.Delete(J);
+            WriteLocked(procedure begin FStore.ReplaceExtraEpg(Slot, Kept, Progs); end);
+            Log(Format('  %d guide channels, %d match a list channel, %d programmes stored',
+              [Length(Guide), Length(Kept), Progs.Count]));
+          finally
+            Progs.Free;
+          end;
+        except
+          on E: Exception do
+            Log(Format('Extra EPG %d failed: %s', [I + 1, E.Message]));
+        end;
+      finally
+        FEpgLock.Release;
+      end;
+    end;
+  finally
+    KeepIds.Free;
+    ListKeys.Free;
+  end;
+  TrimProcessMemory;
 end;
 
 procedure TIngestService.RefreshEpgAll;
@@ -401,6 +518,7 @@ begin
   finally
     Sources.Free;
   end;
+  RefreshExtraEpg;
   TrimProcessMemory; // release the EPG parse memory back to the OS
 end;
 

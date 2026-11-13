@@ -641,6 +641,7 @@ begin
   Result.AddPair('nameShowSource', TJSONBool.Create(App.Config.NameShowSource));
   Result.AddPair('idSortPrefix', TJSONBool.Create(App.Config.IdSortPrefix));
   Result.AddPair('visibleGroups', StrArrayToJson(App.Config.VisibleGroups));
+  Result.AddPair('extraEpgUrls', StrArrayToJson(App.Config.ExtraEpgUrls));
   // read-only context (shown but not editable from the UI)
   Result.AddPair('httpPort', TJSONNumber.Create(App.Config.HttpPort));
   Result.AddPair('useHttps', TJSONBool.Create(App.Config.UseHttps));
@@ -689,6 +690,10 @@ begin
     ABody.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
     ABody.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
     ABody.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
+  // extra (third-party) XMLTV guides: only when the body carries the field
+  GArr := ABody.GetValue('extraEpgUrls');
+  if GArr is TJSONArray then
+    App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(GArr)));
   Result := GetConfig;
 end;
 
@@ -846,6 +851,7 @@ var
   P: TEpgProgramme;
   Total, Real_, I: Integer;
   HasReal: Boolean;
+  Eff: string;
 begin
   RequireApp;
   Result := TJSONObject.Create;
@@ -861,10 +867,8 @@ begin
       Ids.Sorted := True; Ids.Duplicates := dupIgnore;
       GotEpg.Sorted := True; GotEpg.Duplicates := dupIgnore;
       for C in Channels do
-      begin
-        if C.UpstreamTvgId <> '' then Ids.Add(C.UpstreamTvgId);
-        if C.TvgId <> '' then Ids.Add(C.TvgId);
-      end;
+        for Eff in C.EpgReadIds do
+          Ids.Add(Eff);
       Progs := App.Store.LoadEpgForTvgIds(Ids.ToStringArray, 0);
       try
         for I := 0 to Progs.Count - 1 do
@@ -875,8 +879,10 @@ begin
       Total := Channels.Count;
       for C in Channels do
       begin
-        HasReal := ((C.TvgId <> '') and (GotEpg.IndexOf(C.TvgId) >= 0)) or
-                   ((C.UpstreamTvgId <> '') and (GotEpg.IndexOf(C.UpstreamTvgId) >= 0));
+        HasReal := False;
+        for Eff in C.EpgReadIds do
+          if GotEpg.IndexOf(Eff) >= 0 then
+            HasReal := True;
         if HasReal then
           Inc(Real_);
       end;
@@ -921,15 +927,11 @@ begin
       // remember the effective (override) id to re-key them to on the way out
       for C in Channels do
         if C.TvgId <> '' then
-        begin
-          if C.UpstreamTvgId <> '' then
+          for Eff in C.EpgReadIds do
           begin
-            Upstreams.Add(C.UpstreamTvgId);
-            EffById.AddOrSetValue(C.UpstreamTvgId, C.TvgId);
+            Upstreams.Add(Eff);
+            EffById.AddOrSetValue(Eff, C.TvgId);
           end;
-          Upstreams.Add(C.TvgId);
-          EffById.AddOrSetValue(C.TvgId, C.TvgId);
-        end;
     finally
       Channels.Free;
     end;

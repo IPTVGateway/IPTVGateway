@@ -35,6 +35,7 @@ type
     FAccountStatus: string;    // e.g. 'Active', 'Expired'; '' = unknown (never fetched / not Xtream)
     FExpiresUtc: TDateTime;    // 0 = no end date (or unknown when AccountStatus = '')
     FMaxConnections: Integer;  // 0 = unknown
+    FPreferOwnEpg: Boolean;    // own guide before the extra (third-party) EPG source
     FTzOffsetMin: Integer;     // portal clock - UTC in minutes (Xtream server_info); timeshift
                                // start times are in the portal's local time
   public
@@ -67,6 +68,9 @@ type
     property ExpiresUtc: TDateTime read FExpiresUtc write FExpiresUtc;
     property MaxConnections: Integer read FMaxConnections write FMaxConnections;
     property TzOffsetMin: Integer read FTzOffsetMin write FTzOffsetMin;
+    /// Use this provider's own guide for its channels when it has data; the extra
+    /// EPG source only fills gaps. Default (False): the extra source goes first.
+    property PreferOwnEpg: Boolean read FPreferOwnEpg write FPreferOwnEpg;
   end;
 
 const
@@ -261,6 +265,7 @@ begin
   FExpiresUtc := ASrc.FExpiresUtc;
   FMaxConnections := ASrc.FMaxConnections;
   FTzOffsetMin := ASrc.FTzOffsetMin;
+  FPreferOwnEpg := ASrc.FPreferOwnEpg;
 end;
 
 function TSourceConfig.EnabledFor(AType: TContentType): Boolean;

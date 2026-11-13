@@ -35,6 +35,7 @@ type
     [Test] procedure Timeshift_PortalOffsetFromServerInfo;
     [Test] procedure Timeshift_UrlShiftsStartToPortalClock;
     [Test] procedure XtreamBase64_IsOneLine;
+    [Test] procedure EpgKeys_MatchProviderAndGuideNames;
   end;
 
 implementation
@@ -285,6 +286,25 @@ begin
   Assert.IsFalse(B.Contains(#13) or B.Contains(#10), 'no line breaks');
   Assert.AreEqual(Long, TEncoding.UTF8.GetString(TNetEncoding.Base64.DecodeStringToBytes(B)), 'round-trips');
   Assert.AreEqual('w6k=', XtreamBase64(#$00E9), 'UTF-8');
+end;
+
+procedure TUtilsTests.EpgKeys_MatchProviderAndGuideNames;
+begin
+  Assert.AreEqual('npo1', EpgNameKey('NL | NPO 1 HD'));
+  Assert.AreEqual('npo1', EpgNameKey('NPO 1'));
+  Assert.AreEqual('npo1', EpgIdKey('NPO.1.nl'));
+  Assert.AreEqual('npo1', EpgIdKey('npo1.nl'));
+  Assert.AreEqual('npo1', EpgIdKey('extra:NPO.1.nl'));
+  // decorative record tag + heavy-bar country prefix
+  Assert.AreEqual('nationalgeographic', EpgNameKey(#$2503'NL'#$2503' NATIONAL GEOGRAPHIC HD '#$23FA#$02B3#$1D49#$1D9C));
+  Assert.AreEqual('nationalgeographic', EpgIdKey('natgeo.nl'), 'alias');
+  Assert.AreEqual('nationalgeographicwild', EpgNameKey('NAT GEO WILD'));
+  Assert.AreEqual('discovery', EpgNameKey('DISCOVERY CHANNEL'));
+  Assert.AreEqual('ziggosport6', EpgNameKey('ZIGGO SPORT 6 HD'));
+  Assert.AreEqual('ziggosport6', EpgIdKey('Ziggo.Sport.6.nl'));
+  Assert.AreEqual('rtlz', EpgNameKey('NL| RTL Z'), 'single letter kept');
+  Assert.AreEqual('bbcnl', EpgNameKey('BBC NL 8K'), 'trailing NL is part of the name');
+  Assert.AreEqual('animalplanet', EpgNameKey('ANIMAL PLANET '#$0280#$1D00#$1D21' (S)'));
 end;
 
 initialization

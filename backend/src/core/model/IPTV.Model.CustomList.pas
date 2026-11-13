@@ -123,7 +123,11 @@ type
     FIsFavoriteGroup: Boolean;
     FUpstreamId: string;
     FArchiveDays: Integer;
+    FExtraGuideId: string;
   public
+    /// The stored channel ids whose programmes make up this channel's guide: the
+    /// matched extra guide when set, else the upstream id and the override id.
+    function EpgReadIds: TArray<string>;
     property StreamItemId: Integer read FStreamItemId write FStreamItemId;
     /// Source (provider) this channel's stream came from — for the per-source
     /// letter prefix on the Plex surfaces.
@@ -143,11 +147,28 @@ type
     property UpstreamId: string read FUpstreamId write FUpstreamId;
     /// Provider catch-up window in days (0 = no archive).
     property ArchiveDays: Integer read FArchiveDays write FArchiveDays;
+    /// Stored id (with EXTRA_EPG_PREFIX) of the extra guide channel this channel
+    /// reads its programmes from; '' = the provider's own guide.
+    property ExtraGuideId: string read FExtraGuideId write FExtraGuideId;
   end;
 
   TOutputChannelList = class(TObjectList<TOutputChannel>);
 
 implementation
+
+function TOutputChannel.EpgReadIds: TArray<string>;
+begin
+  Result := nil;
+  if FExtraGuideId <> '' then
+  begin
+    Result := [FExtraGuideId];
+    Exit;
+  end;
+  if FUpstreamTvgId <> '' then
+    Result := Result + [FUpstreamTvgId];
+  if (FTvgId <> '') and (FTvgId <> FUpstreamTvgId) then
+    Result := Result + [FTvgId];
+end;
 
 constructor TCustomList.Create;
 begin

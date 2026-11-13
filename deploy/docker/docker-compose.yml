@@ -13,8 +13,9 @@
 #   - Ideally only the output portal is public; keep admin/proxy behind firewall/VPN.
 services:
   iptvplay:
-    build: .
-    image: iptvplay:latest
+    # published image (`docker compose pull` updates it). Offline / self-built:
+    # `docker load -i iptvplay.tar.gz` and use `image: iptvplay:latest` instead.
+    image: ghcr.io/iptvgateway/iptvgateway:latest
     container_name: iptvplay
     restart: unless-stopped
     # give the clean shutdown room to finish (the service drains an in-flight

@@ -88,3 +88,6 @@ frontend/*.tsbuildinfo
 
 # local publish target for deploy/docker/build.ps1
 *.local.txt
+
+# maintainer-specific notes for Claude Code (paths, deploy targets, agreements)
+CLAUDE.local.md

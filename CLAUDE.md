@@ -1,6 +1,8 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Machine- and maintainer-specific notes (paths, deploy targets, working agreements)
+live in a local, git-ignored `CLAUDE.local.md`.
 
 ## What this project is
 
@@ -150,10 +152,8 @@ The backend is implemented end-to-end (no remaining `ENotImplemented`/501 stubs)
 - **hosts**: VCL dev form + console daemon + native Windows Service, all via `TAppRunner`.
 - **project files**: `.dproj` exist for all four (`IPTVPlayDev` Win32,
   `IPTVPlayService` Win32+Linux64, `IPTVGateway_svc` Win32, `IPTVPlayTests`). On
-  Windows everything is **Win32** (the user's choice — 32-bit is enough); the
-  daemon's other target is Linux64. All set DCU/EXE output per the user convention
-  (see Commands). Verified: full backend + all hosts compile (Delphi 13.1);
-  26 tests pass, incl. a live Xtream fetch.
+  Windows everything is **Win32** (32-bit is enough); the daemon's other target is
+  Linux64. Verified: full backend + all hosts compile (Delphi 13.1).
 - **frontend**: 3-panel workbench + an **EPG view** (Workbench/EPG header tabs) —
   source EPG per channel (`/api/epg?tvgId`) and curated EPG (`/api/lists/:id/epg`).
 - **deploy**: `deploy/iptvplay.service` (systemd) and `deploy/docker/` (Dockerfile +
@@ -217,26 +217,22 @@ HTTP readers go through `IPTV.Source.Http.NewHttpClient` (browser User-Agent +
 redirects + timeouts) — portals often reject default UAs with WinHTTP error 12152.
 Build/run via the IDE, or from the CLI (run from **PowerShell** in `backend\tests`,
 not Git-Bash — MSYS mangles `D:/…` args; no MARS needed, storage links SQLite
-statically). DCUs follow the DCU convention, never a repo `__out`; the unit path
-must include `ingest` + `scheduler`; pass `-U` as ONE quoted `;`-list (separate
-`-U..\x` args get misparsed by PowerShell):
+statically). The unit path must include `ingest` + `scheduler`; pass `-U` as ONE
+quoted `;`-list (separate `-U..\x` args get misparsed by PowerShell):
 ```powershell
-$LIB="D:\Program Files (x86)\Embarcadero\Studio\37.0\lib\Win32\release"
-$DCU="D:\Data\Delphi\DCU\37.0\IPTVPlayTests\Win32\Debug"; $EXE="W:\IPTVPlayLists\.Output\Win32\Debug"
+$BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
+$DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
-& "D:\Program Files (x86)\Embarcadero\Studio\37.0\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (154 tests as of 1.2.32)
+& "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (154 tests as of 1.2.34)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
 
-**Never start the service/host exe from tools** (Bitdefender on the dev laptop);
-the user starts it. To test store logic against real data, build a small scratch
-console program that uses `TSQLiteStore` on a COPY of the NAS DB
-(`\\<nas>\appdata\iptv-gateway\data\iptvplay.sqlite`) — never the live file.
+**Testing against real data:** don't point tools at a live database; build a
+small scratch console program that uses `TSQLiteStore` on a COPY of it.
 
-**Frontend** (`frontend/`; Node is at `C:\Program Files\nodejs` — prepend it to
-`PATH` in the shell):
+**Frontend** (`frontend/`; Node.js 20+):
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
@@ -245,18 +241,20 @@ npm run build      # tsc -b && vite build
 ```
 
 **Release / deploy:** bump `APP_VERSION` in `backend\src\core\app\IPTV.App.Config.pas`,
-then `deploy\docker\build.ps1` (Linux64 build + Docker image in WSL + publishes
-`iptvplay.tar.gz` to the share named in `deploy\docker\publish-target.local.txt`
-(gitignored; or `$env:IPTV_PUBLISH_TO`),
-MD5-verified, previous release archived in `backups\`). Publishing overwrites the
-NAS release — only on the user's go-ahead. On Unraid the user runs
-`docker load -i …/iptvplay.tar.gz` and recreates the container ("0B pulled" is
-normal). Production config: `\\<nas>\appdata\iptv-gateway\config.json`.
+then `deploy\docker\build.ps1`: Linux64 build (with a neutral temp dir, so no Windows
+user path ends up in the binary) + Docker image (via WSL when docker isn't on PATH)
++ `iptvplay.tar.gz` bundle. Optional: copy the bundle to a share
+(`-PublishTo` / gitignored `deploy\docker\publish-target.local.txt`, MD5-verified,
+previous release archived in `backups\`) and push `:latest` + `:<version>` to a
+registry (`-Repo` / gitignored `deploy\docker\push-registry.local.txt`). Push
+**Docker v2** manifests: Unraid's update check can't read OCI ("not available"), so
+the Docker used for builds must not use the containerd image store.
 
 ## Project files (.dproj)
 
 All four `.dproj` exist and set, in their Base PropertyGroup:
-- `DCC_DcuOutput` = `D:\Data\Delphi\DCU\$(ProductVersion)\$(ProjectName)\$(Platform)\$(Config)`
+- `DCC_DcuOutput` = a DCU folder outside the repo (per project/platform/config;
+  adjust it to your machine)
 - `DCC_ExeOutput` = a shared repo-root `.Output\$(Platform)\$(Config)` (relative
   prefix per project depth: `..\..\..` for `host_*`, `..\..` for `tests`)
 - `DCC_UnitSearchPath` (+ `DCC_IncludePath`) for the `core` subfolders and the
@@ -394,7 +392,7 @@ unique, else fall back to the running position 1,2,3 (Plex rejects duplicates).
   `Source\JOSE`) are kept. Pins + what was taken: `backend/3thParty/DEPENDENCIES.md`.
 - Upgrade ONLY with `tools/update-mars.ps1 -Tag v.x.y.z` (fetches the pinned jose
   submodule commit too - it is empty in a release tarball), read the printed
-  upgrade notes, rebuild Win32 + Linux64 (clear `D:\Data\Delphi\DCU.0\<proj>`
+  upgrade notes, rebuild Win32 + Linux64 (clear the project's DCU folder
   first so no stale MARS DCUs are linked), commit the upgrade on its own.
 - MARS 2.x: invalid/empty typed params give 400 -> box-facing params are `string`
   (e.g. player_api `limit`); string results need `[Produces]` (all ours have it).
@@ -415,10 +413,10 @@ streams/sources (not EPG/seen/state). A zap never waits on the DB connection.
 
 ## Docker image format
 
-WSL Docker 29 defaulted to the containerd image store, which pushes OCI manifests;
-Unraid's update check asks ghcr.io for Docker v2 only (404 -> "not available").
-`/etc/docker/daemon.json` in WSL now has `"features": {"containerd-snapshotter": false}`
-(classic store -> v2 schema 2 on push). Keep it that way.
+Push **Docker v2 schema 2** manifests. Docker 29's containerd image store pushes OCI
+manifests; Unraid's update check asks the registry for v2 only (404 → "not
+available"). Disable it in the build Docker's `/etc/docker/daemon.json`:
+`"features": {"containerd-snapshotter": false}`.
 
 ## MARS startup warm-up (1.2.20)
 

@@ -103,7 +103,19 @@ if (-not $SkipBuild) {
   if (-not (Test-Path $rsvars)) { throw "rsvars.bat not found at $rsvars - pass -Bds <RAD Studio dir>" }
   if (-not (Test-Path $dproj))  { throw "project not found: $dproj" }
   Write-Host "==> Building Linux64 ($Config) ..." -ForegroundColor Cyan
-  cmd /c "`"$rsvars`" && msbuild `"$dproj`" /t:Build /p:Config=$Config /p:Platform=Linux64 /p:ProductVersion=37.0 /v:m /nologo"
+  # The Delphi linker records the path of its temp file in the binary; with the
+  # default %TEMP% that is C:\Users\<you>\AppData\Local\Temp - i.e. your Windows
+  # user name ends up in every published image. Build with a neutral temp dir.
+  $buildTmp = Join-Path $env:SystemDrive 'BuildTmp'
+  New-Item -ItemType Directory -Force $buildTmp | Out-Null
+  $oldTemp = $env:TEMP; $oldTmp = $env:TMP
+  $env:TEMP = $buildTmp; $env:TMP = $buildTmp
+  try {
+    cmd /c "`"$rsvars`" && msbuild `"$dproj`" /t:Build /p:Config=$Config /p:Platform=Linux64 /p:ProductVersion=37.0 /v:m /nologo"
+  }
+  finally {
+    $env:TEMP = $oldTemp; $env:TMP = $oldTmp
+  }
   if ($LASTEXITCODE -ne 0) { throw "Linux64 build failed (see linker output above)." }
   if (-not (Test-Path $elf)) { throw "expected binary not found at $elf" }
   Copy-Item $elf $staged -Force

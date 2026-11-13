@@ -23,6 +23,9 @@ actually chose.
 
 <sub>Screenshots use fictional demo data. No real provider is shown.</sub>
 
+> **New here?** Install it (see [Getting started](#getting-started) below), then follow the
+> **[step-by-step guide](docs/GETTING-STARTED.md)** to add a source, build a bouquet and connect your box.
+
 ---
 
 ## Why
@@ -199,13 +202,22 @@ The image packages the prebuilt Linux64 daemon and the admin UI on Debian slim.
 See [deploy/docker/README.md](deploy/docker/README.md) and
 [deploy/docker/PUBLISH-UNRAID.md](deploy/docker/PUBLISH-UNRAID.md).
 
+**Unraid:** add the container with the template
+[`deploy/docker/iptv-gateway.xml`](deploy/docker/iptv-gateway.xml) (Repository
+`ghcr.io/iptvgateway/iptvgateway:latest`). New versions then show up as **update ready**.
+
+**Docker:**
 ```bash
-docker load -i iptvplay.tar.gz
+docker pull ghcr.io/iptvgateway/iptvgateway:latest
 docker compose -f deploy/docker/docker-compose.yml up -d
 # admin UI: http://<host>:7777/
 ```
+Offline: `docker load -i iptvplay.tar.gz` from a [release](https://github.com/IPTVGateway/IPTVGateway/releases).
 
 Use host networking if you want Plex to discover the HDHomeRun tuner over SSDP.
+
+**Then follow the [step-by-step guide](docs/GETTING-STARTED.md)**: add a source,
+build a bouquet with its own login, set up the guide and connect your box.
 
 ### Build from source
 
@@ -233,6 +245,7 @@ cd frontend; npx vitest run          # frontend (Vitest + Testing Library)
 
 ## Documentation
 
+- **[Getting started](docs/GETTING-STARTED.md)**: step by step from installation to a box showing your line-up.
 - [User guide](docs/USER-GUIDE.md): every screen, connecting a box, Plex, ports.
 - [CLAUDE.md](CLAUDE.md): architecture, domain rules and developer notes.
 

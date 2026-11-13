@@ -32,7 +32,7 @@
   <Category>MediaServer:Video Tools:</Category>
   <WebUI>http://[IP]:[PORT:7777]/</WebUI>
   <TemplateURL/>
-  <Icon/>
+  <Icon>https://raw.githubusercontent.com/IPTVGateway/IPTVGateway/main/frontend/public/icon.png</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>

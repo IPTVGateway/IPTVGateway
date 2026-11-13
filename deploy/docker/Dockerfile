@@ -57,7 +57,10 @@ ENV MALLOC_ARENA_MAX=2 \
 # the container was added via `docker run` (not the template). Unraid applies its
 # own [IP]/[PORT:xxxx] substitution to the value.
 LABEL net.unraid.docker.webui="http://[IP]:[PORT:7777]/" \
-      org.opencontainers.image.title="IPTV Gateway"
+      net.unraid.docker.icon="https://raw.githubusercontent.com/IPTVGateway/IPTVGateway/main/frontend/public/icon.png" \
+      org.opencontainers.image.title="IPTV Gateway" \
+      org.opencontainers.image.source="https://github.com/IPTVGateway/IPTVGateway" \
+      org.opencontainers.image.licenses="MIT"
 
 # console daemon: SIGTERM (docker stop) shuts it down cleanly
 ENTRYPOINT ["/opt/iptvplay/IPTVPlayService"]

@@ -1,3 +1,5 @@
+<p align="center"><img src="frontend/public/icon.png" width="96" alt="IPTV Gateway icon"></p>
+
 # IPTV Gateway
 
 [![frontend](https://github.com/IPTVGateway/IPTVGateway/actions/workflows/frontend.yml/badge.svg)](https://github.com/IPTVGateway/IPTVGateway/actions/workflows/frontend.yml)

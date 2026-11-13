@@ -178,8 +178,36 @@ uses
   IPTV.Model.Epg, IPTV.Core.Utils;
 
 const
+  // stream extensions
   cExtTs = 'ts';
   cExtHls = 'm3u8';
+
+  /// how PathCred writes an empty login field into a URL path
+  cPathCredEmpty = '-';
+  // RFC 3986 unreserved characters: written as-is by PathCred, all else %XX
+  cUrlUnreserved = ['A'..'Z', 'a'..'z', '0'..'9', '-', '.', '_', '~'];
+  cAsciiLimit = 128;
+
+  // published guide id of a channel without tvg-id: iptv-<streamItemId>
+  cSyntheticGuideIdPrefix = 'iptv-';
+
+  // XMLTV timestamps (we always publish UTC)
+  cXmltvTimeFormat = 'yyyymmddhhnnss';
+  cXmltvUtcOffset = ' +0000';
+  cXmlEscapeHeadroom = 16;             // extra builder capacity for entities
+
+  // display-name decoration
+  cGroupSeparator = #$B7;              // middle dot; a code point keeps the source ASCII-safe
+  cLetterCount = 26;                   // source letters A..Z, then AA, AB, ...
+
+  // content types per output surface
+  cLinearContentTypes = [ctLive, ctRadio];          // guide + Plex/Jellyfin tuner
+  cBoxContentTypes = [ctLive, ctRadio, ctMovie];    // box M3U (series = container)
+  cIdSort = True;                      // ComputeGuideIds: prefix the sort number
+
+  // dummy EPG
+  cDummyDescription = 'Live programma';
+  cDummyMaxBlocks = 100000;            // guard against a runaway window
 
 function UrlExt(const AUrl: string): string;
 var
@@ -330,7 +358,7 @@ var
 begin
   // control characters (other than tab/CR/LF) are not allowed in XML 1.0 at all:
   // one stray #1 in a provider title made strict guide parsers reject the file
-  SB := TStringBuilder.Create(S.Length + 16);
+  SB := TStringBuilder.Create(S.Length + cXmlEscapeHeadroom);
   try
     for Ch in S do
       case Ch of
@@ -349,13 +377,7 @@ begin
   end;
 end;
 
-const
-  /// how PathCred writes an empty login field into a URL path
-  cPathCredEmpty = '-';
-
 function PathCred(const S: string): string;
-const
-  Unreserved = ['A'..'Z', 'a'..'z', '0'..'9', '-', '.', '_', '~'];
 var
   B: TBytes;
   I: Integer;
@@ -365,7 +387,7 @@ begin
   Result := '';
   B := TEncoding.UTF8.GetBytes(S);
   for I := 0 to High(B) do
-    if (B[I] < 128) and CharInSet(Char(B[I]), Unreserved) then
+    if (B[I] < cAsciiLimit) and CharInSet(Char(B[I]), cUrlUnreserved) then
       Result := Result + Char(B[I])
     else
       Result := Result + '%' + IntToHex(B[I], 2);
@@ -408,7 +430,7 @@ function XmltvTime(const ADtUtc: TDateTime): string;
 begin
   if ADtUtc = 0 then
     Exit('');
-  Result := FormatDateTime('yyyymmddhhnnss', ADtUtc) + ' +0000';
+  Result := FormatDateTime(cXmltvTimeFormat, ADtUtc) + cXmltvUtcOffset;
 end;
 
 // Make a value safe to drop inside a double-quoted #EXTINF attribute (and the
@@ -426,7 +448,7 @@ begin
   if AChannel.TvgId <> '' then
     Result := AChannel.TvgId
   else
-    Result := 'iptv-' + AChannel.StreamItemId.ToString;
+    Result := cSyntheticGuideIdPrefix + AChannel.StreamItemId.ToString;
 end;
 
 function ChannelDisplayName(const AChannel: TOutputChannel;
@@ -450,9 +472,8 @@ begin
     if Result.StartsWith(NumStr + ' ') then
       NumStr := '';
   end;
-  // #$B7 = middle dot (·); kept as a code point so the source stays ASCII-safe
   if AShowGroup and (AChannel.GroupName <> '') then
-    Result := AChannel.GroupName + ' ' + #$B7 + ' ' + Result;
+    Result := AChannel.GroupName + ' ' + cGroupSeparator + ' ' + Result;
   // zero-padded running number FIRST, so a name-sort yields the output order
   if NumStr <> '' then
     Result := NumStr + ' ' + Result;
@@ -467,8 +488,8 @@ begin
   while AIndex > 0 do
   begin
     Dec(AIndex);
-    Result := Chr(Ord('A') + (AIndex mod 26)) + Result;
-    AIndex := AIndex div 26;
+    Result := Chr(Ord('A') + (AIndex mod cLetterCount)) + Result;
+    AIndex := AIndex div cLetterCount;
   end;
 end;
 
@@ -690,7 +711,7 @@ begin
         [M3uSafe(TvgId), Chno, M3uSafe(DName), M3uSafe(C.Logo),
          M3uSafe(C.GroupName), Catchup, M3uSafe(DName)]);
       if AStreamUrlPrefix <> '' then
-        SB.AppendLine(AStreamUrlPrefix + C.StreamItemId.ToString + '.ts') // via our proxy
+        SB.AppendLine(AStreamUrlPrefix + C.StreamItemId.ToString + '.' + cExtTs) // via our proxy
       else
         SB.AppendLine(C.UpstreamUrl); // RAW upstream URL — box talks straight to the provider
     end;
@@ -718,15 +739,15 @@ begin
     // a series item is a container (get_series_info), not a playable file; the
     // Plex/Jellyfin tuner (sequential numbers) only takes linear channels
     if ASequentialChno then
-      KeepContentTypes(Channels, [ctLive, ctRadio])
+      KeepContentTypes(Channels, cLinearContentTypes)
     else
-      KeepContentTypes(Channels, [ctLive, ctRadio, ctMovie]);
+      KeepContentTypes(Channels, cBoxContentTypes);
     Names := nil;
     if ANames.AnyName then
       Names := ComputeDisplayNames(AStore, Channels, ANames);
     Ids := nil;
     if ANames.IdSort then
-      Ids := ComputeGuideIds(Channels, True);
+      Ids := ComputeGuideIds(Channels, cIdSort);
     Result := BuildM3UChannels(Channels, AStreamUrlPrefix, ASequentialChno, Names, Ids);
   finally
     Channels.Free;
@@ -736,7 +757,7 @@ end;
 // floor a local TDateTime to the whole hour
 function FloorToHour(const ADt: TDateTime): TDateTime;
 begin
-  Result := Int(ADt * 24) / 24;
+  Result := Int(ADt * HoursPerDay) / HoursPerDay;
 end;
 
 // Emit dummy <programme> blocks for one channel across the configured window.
@@ -751,18 +772,18 @@ begin
   if ADummy.BlockMinutes <= 0 then
     Exit;
   NowU := NowUtc;
-  BlockDays := ADummy.BlockMinutes / (24 * 60);
+  BlockDays := ADummy.BlockMinutes / MinsPerDay;
   B := FloorToHour(IncHour(NowU, -ADummy.HoursBack));
   EndU := IncHour(NowU, ADummy.HoursAhead);
   Guard := 0;
-  while (B < EndU) and (Guard < 100000) do
+  while (B < EndU) and (Guard < cDummyMaxBlocks) do
   begin
     Inc(Guard);
     StopU := B + BlockDays;
     ASB.AppendFormat(
       '  <programme start="%s" stop="%s" channel="%s"><title>%s</title><desc>%s</desc><category>%s</category></programme>'#10,
       [XmltvTime(B), XmltvTime(StopU),
-       XmlEscape(AGuideId), XmlEscape(AName), XmlEscape('Live programma'), XmlEscape(ACategory)]);
+       XmlEscape(AGuideId), XmlEscape(AName), XmlEscape(cDummyDescription), XmlEscape(ACategory)]);
     B := StopU;
   end;
 end;
@@ -906,13 +927,13 @@ var
 begin
   Channels := SelectOutputChannels(AStore, AListId, AGroups);
   try
-    KeepContentTypes(Channels, [ctLive, ctRadio]); // a guide is for linear channels only
+    KeepContentTypes(Channels, cLinearContentTypes); // a guide is for linear channels only
     Names := nil;
     if ANames.AnyName then
       Names := ComputeDisplayNames(AStore, Channels, ANames);
     Ids := nil;
     if ANames.IdSort then
-      Ids := ComputeGuideIds(Channels, True);
+      Ids := ComputeGuideIds(Channels, cIdSort);
     Result := BuildXmltvChannels(AStore, Channels, AMaxDays, ADummy, Names, Ids);
   finally
     Channels.Free;

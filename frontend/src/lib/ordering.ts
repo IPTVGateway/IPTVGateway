@@ -1,4 +1,4 @@
-import type { CustomGroup, CustomItem } from '../types'
+import type { ContentType, CustomGroup, CustomItem } from '../types'
 
 /** Case-insensitive A→Z comparator for plain names. */
 export function byNameCI(a: string, b: string): number {
@@ -54,6 +54,20 @@ export function reorderByDrag(ids: number[], draggedId: number, targetId: number
 }
 
 export const CONTENT_TYPES = ['live', 'movie', 'series', 'radio'] as const
+/** Live TV: the default content type, and the only one that can be quality-probed. */
+export const CONTENT_LIVE: ContentType = 'live'
+
+/** Bouquet sort modes: by name A→Z or by channel number. */
+export type SortMode = 'name' | 'number'
+export const SORT_BY_NAME: SortMode = 'name'
+export const SORT_BY_NUMBER: SortMode = 'number'
+/** localStorage key of the bouquet panel's sort mode (also read by the EPG view). */
+export const SORT_MODE_STORAGE_KEY = 'iptv.list.sortMode'
+
+/** Bouquet renumber: a group starts on the next hundred... */
+export const NUMBER_BLOCK = 100
+/** ...or on the next thousand when it has more channels than a hundred-block holds. */
+export const NUMBER_BLOCK_LARGE = 1000
 
 /** One group's block in a bouquet-wide renumber plan. */
 export interface RenumberBlock {
@@ -79,7 +93,7 @@ export function planBouquetNumbers(groups: { groupId: number; itemIds: number[] 
   for (const g of groups) {
     const n = g.itemIds.length
     if (n === 0) continue
-    const block = n > 99 ? 1000 : 100
+    const block = n >= NUMBER_BLOCK ? NUMBER_BLOCK_LARGE : NUMBER_BLOCK
     const first = Math.ceil(next / block) * block
     g.itemIds.forEach((itemId, i) => numbers.push({ itemId, channelNumber: first + i }))
     blocks.push({ groupId: g.groupId, first, last: first + n - 1, count: n })
@@ -102,14 +116,14 @@ export function itemDisplayName(it: CustomItem): string {
 export function bouquetOrder(
   groups: CustomGroup[],
   items: CustomItem[],
-  mode: 'name' | 'number' = 'name',
+  mode: SortMode = SORT_BY_NAME,
 ): CustomItem[] {
   const rank = new Map<number, number>()
   ;[...groups].sort(compareGroups).forEach((g, i) => rank.set(g.id, i))
   const upstream = groups.length // the upstream group sits after every custom group
   const groupRank = (id: number) => rank.get(id) ?? (id === 0 ? upstream : upstream + 1)
   const cmp =
-    mode === 'number'
+    mode === SORT_BY_NUMBER
       ? (a: CustomItem, b: CustomItem) =>
           byChannelNumber(a.channelNumber, itemDisplayName(a), b.channelNumber, itemDisplayName(b))
       : (a: CustomItem, b: CustomItem) => byNameCI(itemDisplayName(a), itemDisplayName(b))

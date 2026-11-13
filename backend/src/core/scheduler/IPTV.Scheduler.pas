@@ -36,10 +36,18 @@ implementation
 uses
   System.DateUtils;
 
+const
+  // TEvent.Create / TThread.Create arguments
+  cAutoReset = False;             // ManualReset argument: FWake is auto-reset
+  cInitiallyNonSignaled = False;
+  cCreateSuspended = False;       // the thread starts right away
+  // the thread re-checks the clock at least this often
+  cWakeSliceMs = 30000;
+
 constructor TDailyScheduler.Create(AHour, AMinute: Word; const AOnFire: TThreadProcedure);
 begin
-  FWake := TEvent.Create(nil, False, False, ''); // auto-reset
-  inherited Create(False);
+  FWake := TEvent.Create(nil, cAutoReset, cInitiallyNonSignaled, '');
+  inherited Create(cCreateSuspended);
   FreeOnTerminate := False;
   FHour := AHour;
   FMinute := AMinute;
@@ -92,8 +100,8 @@ begin
           // swallowed on purpose: keep scheduling
         end;
     end;
-    // wait up to 30s; Terminate signals FWake so shutdown returns immediately
-    FWake.WaitFor(30000);
+    // wait up to one slice; Terminate signals FWake so shutdown returns immediately
+    FWake.WaitFor(cWakeSliceMs);
   end;
 end;
 

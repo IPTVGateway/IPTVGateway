@@ -3,6 +3,12 @@ import { api, type SettingsBundle } from '../api/client'
 import type { AppConfig, CustomList } from '../types'
 import { useI18n, useT } from '../i18n'
 
+// valid TCP port range for the relay (proxy) port
+const PORT_MIN = 1
+const PORT_MAX = 65535
+// EPG retention: input range and the shown default when unset
+const EPG_MAX_DAYS = { min: 0, max: 31, def: 7 }
+
 interface Props {
   lists: CustomList[]
   /** Refresh the app-level lists after a create/edit/delete. */
@@ -220,7 +226,7 @@ function ServiceSettings() {
     // the port field may still hold an in-progress value: validate it now
     let proxyPort = cfg.proxyPort
     if (portText != null) {
-      if (portText.trim() !== '') proxyPort = clamp(portText, 1, 65535)
+      if (portText.trim() !== '') proxyPort = clamp(portText, PORT_MIN, PORT_MAX)
       setPortText(null)
       patch({ proxyPort })
     }
@@ -294,10 +300,10 @@ function ServiceSettings() {
               {t('EPG max days')}
               <input
                 type="number"
-                min={0}
-                max={31}
-                value={cfg.epgMaxDays ?? 7}
-                onChange={(e) => patch({ epgMaxDays: clamp(e.target.value, 0, 31) })}
+                min={EPG_MAX_DAYS.min}
+                max={EPG_MAX_DAYS.max}
+                value={cfg.epgMaxDays ?? EPG_MAX_DAYS.def}
+                onChange={(e) => patch({ epgMaxDays: clamp(e.target.value, EPG_MAX_DAYS.min, EPG_MAX_DAYS.max) })}
               />
             </label>
             <span className="hint">
@@ -347,15 +353,15 @@ function ServiceSettings() {
               {t('Proxy port')}
               <input
                 type="number"
-                min={1}
-                max={65535}
+                min={PORT_MIN}
+                max={PORT_MAX}
                 value={portText ?? String(cfg.proxyPort)}
                 disabled={!cfg.proxyStreams}
                 onChange={(e) => {
                   // keep the raw text so the field can be cleared and retyped;
                   // only a non-empty value updates the setting
                   setPortText(e.target.value)
-                  if (e.target.value.trim() !== '') patch({ proxyPort: clamp(e.target.value, 1, 65535) })
+                  if (e.target.value.trim() !== '') patch({ proxyPort: clamp(e.target.value, PORT_MIN, PORT_MAX) })
                 }}
                 onBlur={() => setPortText(null)}
               />

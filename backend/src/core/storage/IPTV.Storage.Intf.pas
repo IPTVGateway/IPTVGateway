@@ -14,6 +14,9 @@ const
   /// Series episodes handed to boxes get ids from this base up (cEpisodeIdBase +
   /// series_episodes.id), so they never collide with catalog stream ids.
   cEpisodeIdBase = 1000000000;
+  /// app_state key: stamp of the last bouquet edit (Plex-rescan reminder); written
+  /// by the store (TouchLineup), read by the app context.
+  cStateLineupChanged = 'lineup_changed_utc';
 
 type
   /// A name-prefix discovered in a source's ingested streams, with how many

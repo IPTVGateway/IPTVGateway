@@ -119,9 +119,9 @@ begin
   // NameFilterSql so strip/filter/match all treat the same chars as boundaries.
   Result := S
     .Replace('|', ' ').Replace('-', ' ').Replace(':', ' ').Replace(#9, ' ')
-    .Replace(#$00A6, ' ').Replace(#$2502, ' ').Replace(#$2503, ' ')
-    .Replace(#$2506, ' ').Replace(#$2507, ' ').Replace(#$250A, ' ')
-    .Replace(#$250B, ' ').Replace(#$FF5C, ' ')
+    .Replace(cSepBrokenBar, ' ').Replace(cSepBoxLight, ' ').Replace(cSepBoxHeavy, ' ')
+    .Replace(cSepTripleDashLight, ' ').Replace(cSepTripleDashHeavy, ' ').Replace(cSepQuadDashLight, ' ')
+    .Replace(cSepQuadDashHeavy, ' ').Replace(cSepFullwidthBar, ' ')
     .Trim;
 end;
 

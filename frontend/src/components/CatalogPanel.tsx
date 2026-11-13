@@ -8,8 +8,8 @@ import type {
   Source,
   StreamItem,
 } from '../types'
-import { useDebounced } from '../hooks/useDebounced'
-import { CONTENT_TYPES, byNameCI, compareGroups } from '../lib/ordering'
+import { SEARCH_DEBOUNCE_MS, useDebounced } from '../hooks/useDebounced'
+import { CONTENT_LIVE, CONTENT_TYPES, byNameCI, compareGroups } from '../lib/ordering'
 import { useT } from '../i18n'
 import { QualityProbeModal } from './QualityProbeModal'
 import { ArchiveBadge } from './ArchiveBadge'
@@ -25,18 +25,19 @@ interface Props {
 }
 
 const PAGE_SIZES = [50, 100, 200] as const
+const DEFAULT_PAGE_SIZE = 100
 
 export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdded }: Props) {
   const t = useT()
   // --- filter bar -----------------------------------------------------------
   const [search, setSearch] = useState('')
   const [prefix, setPrefix] = useState('')
-  const [type, setType] = useState<ContentType>('live')
+  const [type, setType] = useState<ContentType>(CONTENT_LIVE)
   const [sourceId, setSourceId] = useState<number | ''>('')
   const [onlyNew, setOnlyNew] = useState(false)
 
-  const debSearch = useDebounced(search, 300)
-  const debPrefix = useDebounced(prefix, 300)
+  const debSearch = useDebounced(search, SEARCH_DEBOUNCE_MS)
+  const debPrefix = useDebounced(prefix, SEARCH_DEBOUNCE_MS)
   const searchTerm = debSearch.trim()
   const prefixTerm = debPrefix.trim()
 
@@ -44,7 +45,7 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   const [drill, setDrill] = useState<Category | null>(null)
 
   // --- paging ---------------------------------------------------------------
-  const [pageSize, setPageSize] = useState<number>(100)
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE)
   const [page, setPage] = useState(0) // zero-based
 
   // --- data -----------------------------------------------------------------
@@ -492,7 +493,7 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
                   <td className="muted">{s.contentType}</td>
                   <td className="muted">{sourceName.get(s.sourceId) ?? s.sourceId}</td>
                   <td>
-                    {s.contentType === 'live' && (
+                    {s.contentType === CONTENT_LIVE && (
                       <button
                         type="button"
                         className="probe-btn"

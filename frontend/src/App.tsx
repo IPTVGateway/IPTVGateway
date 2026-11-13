@@ -12,6 +12,20 @@ import { MediaServersView } from './components/MediaServersView'
 import { Splitter } from './components/Splitter'
 import { useI18n, useT } from './i18n'
 
+// Resizable workbench columns: localStorage keys, defaults and drag limits (px).
+const LEFT_W_KEY = 'iptvplay_leftW'
+const RIGHT_W_KEY = 'iptvplay_rightW'
+const LEFT_W_DEFAULT = 320
+const RIGHT_W_DEFAULT = 380
+const LEFT_W_MIN = 240
+const LEFT_W_MAX = 640
+const RIGHT_W_MIN = 280
+const RIGHT_W_MAX = 900
+// how often the header re-checks whether a Plex rescan is due
+const PLEX_STATUS_POLL_MS = 20_000
+// /api/health status of a healthy backend
+const HEALTH_OK = 'ok'
+
 const clampW = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 function loadW(key: string, def: number): number {
   const v = Number(localStorage.getItem(key))
@@ -70,10 +84,10 @@ export function App() {
   }, [])
 
   // Resizable workbench columns (persisted), so the curated list can be widened.
-  const [leftW, setLeftW] = useState(() => loadW('iptvplay_leftW', 320))
-  const [rightW, setRightW] = useState(() => loadW('iptvplay_rightW', 380))
-  useEffect(() => localStorage.setItem('iptvplay_leftW', String(leftW)), [leftW])
-  useEffect(() => localStorage.setItem('iptvplay_rightW', String(rightW)), [rightW])
+  const [leftW, setLeftW] = useState(() => loadW(LEFT_W_KEY, LEFT_W_DEFAULT))
+  const [rightW, setRightW] = useState(() => loadW(RIGHT_W_KEY, RIGHT_W_DEFAULT))
+  useEffect(() => localStorage.setItem(LEFT_W_KEY, String(leftW)), [leftW])
+  useEffect(() => localStorage.setItem(RIGHT_W_KEY, String(rightW)), [rightW])
 
   // any 401 during the session drops us back to the login gate
   useEffect(() => {
@@ -138,7 +152,7 @@ export function App() {
   useEffect(() => {
     if (authed !== true) return
     refreshPlex()
-    const t = setInterval(refreshPlex, 20000)
+    const t = setInterval(refreshPlex, PLEX_STATUS_POLL_MS)
     return () => clearInterval(t)
   }, [authed, refreshPlex])
 
@@ -337,7 +351,7 @@ export function App() {
             {t('↻ Refresh Plex')}
           </button>
         )}
-        <span className={health === 'ok' ? 'health ok' : 'health bad'}>
+        <span className={health === HEALTH_OK ? 'health ok' : 'health bad'}>
           {t('backend: {status}').replace('{status}', t(health))}
         </span>
         {adminAuth.get() !== '' && (
@@ -401,7 +415,7 @@ export function App() {
                 }}
               />
             </div>
-            <Splitter onDrag={(dx) => setLeftW((w) => clampW(w + dx, 240, 640))} />
+            <Splitter onDrag={(dx) => setLeftW((w) => clampW(w + dx, LEFT_W_MIN, LEFT_W_MAX))} />
 
             <div className="wb-pane wb-catalog">
               <CatalogPanel
@@ -413,7 +427,7 @@ export function App() {
               />
             </div>
 
-            <Splitter onDrag={(dx) => setRightW((w) => clampW(w - dx, 280, 900))} />
+            <Splitter onDrag={(dx) => setRightW((w) => clampW(w - dx, RIGHT_W_MIN, RIGHT_W_MAX))} />
             <div className="wb-pane wb-list">
               <ListPanel
                 lists={lists}

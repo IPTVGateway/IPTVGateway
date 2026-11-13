@@ -14,6 +14,10 @@ uses
   IPTV.App.Config, IPTV.Storage.Intf, IPTV.Ingest.Service, IPTV.Model.CustomList,
   IPTV.Scheduler, IPTV.Api.Server;
 
+const
+  /// Lines kept by the in-memory log ring (the web app's Log tab).
+  cLogRingCapacity = 2000;
+
 type
   /// One captured log line (for the web app's Log tab).
   TLogLine = record
@@ -31,7 +35,7 @@ type
     FCount: Integer;
     FNextSeq: Int64;
   public
-    constructor Create(ACapacity: Integer = 2000);
+    constructor Create(ACapacity: Integer = cLogRingCapacity);
     destructor Destroy; override;
     procedure Add(const AText: string);
     /// Lines with Seq > ASince, oldest first (at most the buffer).
@@ -120,14 +124,27 @@ const
   // host part of the image's config.json template value (http://your-unraid-host:7777)
   cPublicUrlPlaceholder = 'your-unraid-host';
 
+  // smallest log ring a caller may ask for
+  cLogRingMinCapacity = 10;
+
+  // TSQLiteStore AUseWal argument (separateReadConnection mode)
+  cUseWal = True;
+
+  // HDHomeRun DeviceID: the first 8 hex digits of a fresh GUID
+  cPlexDeviceIdLength = 8;
+
+  // Stop: how long to wait for detached background ops, polled in slices
+  cBgOpsMaxWaitMs = 30000;
+  cBgOpsPollMs = 50;
+
 { TLogRing }
 
 constructor TLogRing.Create(ACapacity: Integer);
 begin
   inherited Create;
   FLock := TObject.Create;
-  if ACapacity < 10 then
-    ACapacity := 10;
+  if ACapacity < cLogRingMinCapacity then
+    ACapacity := cLogRingMinCapacity;
   SetLength(FLines, ACapacity);
 end;
 
@@ -204,7 +221,7 @@ begin
   if AConfigPath <> '' then
     FConfigPath := AConfigPath
   else
-    FConfigPath := TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), 'config.json');
+    FConfigPath := TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), cConfigFileName);
 end;
 
 destructor TAppContext.Destroy;
@@ -236,8 +253,8 @@ begin
     Log('storage: separate read connection (WAL) enabled — ensure the DB is on a ' +
         'non-FUSE path (e.g. /mnt/cache/...), else reads will hang.');
     FStore := TLockingStore.Create(
-      TSQLiteStore.Create(FConfig.DatabasePath, True),   // writer (WAL)
-      TSQLiteStore.Create(FConfig.DatabasePath, True));  // reader (WAL)
+      TSQLiteStore.Create(FConfig.DatabasePath, cUseWal),   // writer (WAL)
+      TSQLiteStore.Create(FConfig.DatabasePath, cUseWal));  // reader (WAL)
   end
   else
   begin
@@ -254,7 +271,7 @@ begin
   // a stable HDHomeRun device id for Plex (generated once, persisted)
   if FConfig.PlexDeviceId = '' then
   begin
-    FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1, 8);
+    FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1, cPlexDeviceIdLength);
     // not over a config.json that failed to load: we run on defaults then, and
     // saving would replace the operator's file (port, password, ...) with them
     if FConfig.LoadWarning = '' then
@@ -460,7 +477,7 @@ end;
 function TAppContext.ResetPlexDeviceId: string;
 begin
   // fresh 8-hex id (same shape as the one minted on first start) — a NEW device to Plex
-  FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1, 8);
+  FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1, cPlexDeviceIdLength);
   if Assigned(FServer) then
     FServer.SyncPlex(FConfig); // refresh the server's config copy (discover.json reads App.Config live)
   FConfig.Save(FConfigPath);
@@ -525,10 +542,10 @@ begin
   // wait for detached admin refreshes to finish so they don't touch App/FIngest
   // after we free them. Bounded so a stuck network read can't hang shutdown forever.
   var Waited := 0;
-  while (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) and (Waited < 30000) do
+  while (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) and (Waited < cBgOpsMaxWaitMs) do
   begin
-    Sleep(50);
-    Inc(Waited, 50);
+    Sleep(cBgOpsPollMs);
+    Inc(Waited, cBgOpsPollMs);
   end;
 
   if App = Self then
@@ -539,7 +556,7 @@ begin
 end;
 
 initialization
-  LogRing := TLogRing.Create(2000);
+  LogRing := TLogRing.Create(cLogRingCapacity);
 
 finalization
   FreeAndNil(LogRing);

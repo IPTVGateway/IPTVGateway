@@ -57,6 +57,33 @@ uses
   System.Net.HttpClient, System.NetEncoding,
   IPTV.Model.Types, IPTV.Source.Http;
 
+const
+  // XMLTV tags / attributes
+  cTagProgrammeOpen = '<programme';
+  cTagProgrammeClose = '</programme>';
+  cTagChannelOpen = '<channel';
+  cTagChannelClose = '</channel>';
+  cTagTitle = 'title';
+  cTagDesc = 'desc';
+  cTagDisplayName = 'display-name';
+  cAttrChannel = 'channel';
+  cAttrStart = 'start';
+  cAttrStop = 'stop';
+  cAttrId = 'id';
+
+  // XMLTV timestamp zone suffix ("+HH" / "+HHMM", colon already removed)
+  cTzHoursLen = 3;
+  cTzFullLen = 5;
+
+  // a programme without stop that is the last of its channel lasts this long
+  cDefaultLastProgrammeHours = 1;
+
+  // numeric character references (&#233; / &#xE9;)
+  cCharRefPrefix = '&#';
+  cUnicodeMax = $10FFFF;
+  cSurrogateFirst = $D800;
+  cSurrogateLast = $DFFF;
+
 function TXmltvEpgReader.ResolveUrl(const ASource: TSourceConfig): string;
 begin
   if ASource.EpgUrl.Trim <> '' then
@@ -120,14 +147,14 @@ begin
   if not TryEncodeDateTime(Y, Mo, D, H, Mi, Se, 0, Local) then
     Exit(0);
   Result := Local;
-  if (TzPart.Length >= 3) and CharInSet(TzPart.Chars[0], ['+', '-']) then
+  if (TzPart.Length >= cTzHoursLen) and CharInSet(TzPart.Chars[0], ['+', '-']) then
   begin
     if TzPart.Chars[0] = '-' then OffSign := 1 else OffSign := -1; // to UTC
     OffH := StrToIntDef(TzPart.Substring(1, 2), 0);
     OffM := 0;
-    if TzPart.Length >= 5 then
+    if TzPart.Length >= cTzFullLen then
       OffM := StrToIntDef(TzPart.Substring(3, 2), 0);
-    Result := IncMinute(Local, OffSign * (OffH * 60 + OffM));
+    Result := IncMinute(Local, OffSign * (OffH * MinsPerHour + OffM));
   end;
 end;
 
@@ -229,13 +256,14 @@ begin
   // strip CDATA wrappers, keep the inner text (titles/descs often arrive in CDATA)
   Result := Result.Replace('<![CDATA[', '', [rfReplaceAll]).Replace(']]>', '', [rfReplaceAll]);
   // numeric character references: &#233;  and hex  &#xE9;  (very common in XMLTV)
-  P := Pos('&#', Result);
+  P := Pos(cCharRefPrefix, Result);
   while P > 0 do
   begin
     SemiPos := PosEx(';', Result, P);
     if SemiPos = 0 then
       Break;
-    Token := Copy(Result, P + 2, SemiPos - (P + 2)); // chars between "&#" and ";"
+    Token := Copy(Result, P + Length(cCharRefPrefix),
+      SemiPos - (P + Length(cCharRefPrefix))); // chars between "&#" and ";"
     if (Token <> '') and ((Token[1] = 'x') or (Token[1] = 'X')) then
       Code := StrToIntDef('$' + Copy(Token, 2, MaxInt), -1)
     else
@@ -245,15 +273,16 @@ begin
     // surrogate range ($D800..$DFFF): emitting a lone surrogate produces an invalid
     // string that can break our own xmltv.php re-serialization / the JSON output.
     Decoded := '';
-    if (Code > 0) and (Code <= $10FFFF) and not ((Code >= $D800) and (Code <= $DFFF)) then
+    if (Code > 0) and (Code <= cUnicodeMax) and
+      not ((Code >= cSurrogateFirst) and (Code <= cSurrogateLast)) then
       Decoded := Char.ConvertFromUtf32(Code);
     if Decoded <> '' then
     begin
       Result := Copy(Result, 1, P - 1) + Decoded + Copy(Result, SemiPos + 1, MaxInt);
-      P := PosEx('&#', Result, P + Decoded.Length);
+      P := PosEx(cCharRefPrefix, Result, P + Decoded.Length);
     end
     else
-      P := PosEx('&#', Result, P + 2); // malformed / lone surrogate — skip past it
+      P := PosEx(cCharRefPrefix, Result, P + Length(cCharRefPrefix)); // malformed / lone surrogate — skip past it
   end;
   // named entities — &amp; LAST so an already-decoded '&' isn't re-processed
   Result := Result.Replace('&lt;', '<').Replace('&gt;', '>').Replace('&quot;', '"')
@@ -261,9 +290,6 @@ begin
 end;
 
 function TXmltvEpgReader.Read(const ASource: TSourceConfig; const AKeepTvgIds: TArray<string>): TEpgProgrammeList;
-const
-  PROG_OPEN = '<programme';
-  PROG_CLOSE = '</programme>';
 var
   Url, Xml, Block, Channel, lWanted: string;
   Keep: TDictionary<string, string>; // lower-case id -> the id as the list spells it
@@ -291,18 +317,18 @@ begin
 
     Cursor := 1;
     repeat
-      PStart := PosEx(PROG_OPEN, Xml, Cursor);
+      PStart := PosEx(cTagProgrammeOpen, Xml, Cursor);
       if PStart = 0 then
         Break;
-      PEnd := PosEx(PROG_CLOSE, Xml, PStart);
+      PEnd := PosEx(cTagProgrammeClose, Xml, PStart);
       if PEnd = 0 then
         Break;
-      Cursor := PEnd + Length(PROG_CLOSE);
+      Cursor := PEnd + Length(cTagProgrammeClose);
 
       // read the channel id WITHOUT copying the block; only materialise the block
       // for programmes we actually keep (most are discarded for unlisted channels)
       // decoded: an id like "Sky&amp;Co.uk" is "Sky&Co.uk" on the M3U side
-      Channel := XmlDecode(AttrValIn(Xml, 'channel', PStart, PEnd));
+      Channel := XmlDecode(AttrValIn(Xml, cAttrChannel, PStart, PEnd));
       if KeepAll or Keep.TryGetValue(LowerCase(Channel), lWanted) then
       begin
         // stored under the list's spelling: matching is case-insensitive, but the
@@ -313,8 +339,8 @@ begin
         Prog := TEpgProgramme.Create;
         Prog.SourceId := ASource.Id;
         Prog.ChannelTvgId := Channel;
-        Prog.StartUtc := ParseXmltvTime(AttrVal(Block, 'start'));
-        Prog.StopUtc := ParseXmltvTime(AttrVal(Block, 'stop'));
+        Prog.StartUtc := ParseXmltvTime(AttrVal(Block, cAttrStart));
+        Prog.StopUtc := ParseXmltvTime(AttrVal(Block, cAttrStop));
         // ParseXmltvTime returns 0 on an unparseable timestamp; skip such a
         // programme rather than storing it pinned to 1899-12-30 (the comment in
         // ParseXmltvTime promises the caller skips — this is where).
@@ -322,8 +348,8 @@ begin
           Prog.Free
         else
         begin
-          Prog.Title := XmlDecode(TagText(Block, 'title'));
-          Prog.Description := XmlDecode(TagText(Block, 'desc'));
+          Prog.Title := XmlDecode(TagText(Block, cTagTitle));
+          Prog.Description := XmlDecode(TagText(Block, cTagDesc));
           Result.Add(Prog);
         end;
       end;
@@ -356,7 +382,7 @@ begin
         Open.AddOrSetValue(P.ChannelTvgId, P);
     end;
     for P in Open.Values do
-      P.StopUtc := IncHour(P.StartUtc, 1);
+      P.StopUtc := IncHour(P.StartUtc, cDefaultLastProgrammeHours);
   finally
     Open.Free;
   end;
@@ -365,11 +391,6 @@ end;
 function ReadExtraXmltv(const AUrl: string; ASourceId: Integer;
   out AChannels: TArray<TEpgChannelInfo>;
   const AKeepChannel: TFunc<TEpgChannelInfo, Boolean>): TEpgProgrammeList;
-const
-  CH_OPEN = '<channel';
-  CH_CLOSE = '</channel>';
-  PROG_OPEN = '<programme';
-  PROG_CLOSE = '</programme>';
 var
   Xml, Block, Channel: string;
   PStart, PEnd, Cursor: Integer;
@@ -390,23 +411,23 @@ begin
     // channels: <channel id="NPO.1.nl"><display-name lang="nl">NPO 1</display-name>…
     Cursor := 1;
     repeat
-      PStart := PosEx(CH_OPEN, Xml, Cursor);
+      PStart := PosEx(cTagChannelOpen, Xml, Cursor);
       if PStart = 0 then
         Break;
       // "<channel" must be the tag, not the start of an attribute name
-      if (PStart + Length(CH_OPEN) <= Length(Xml)) and
-         not CharInSet(Xml[PStart + Length(CH_OPEN)], [' ', '>', #9, #10, #13]) then
+      if (PStart + Length(cTagChannelOpen) <= Length(Xml)) and
+         not CharInSet(Xml[PStart + Length(cTagChannelOpen)], [' ', '>', #9, #10, #13]) then
       begin
         Cursor := PStart + 1;
         Continue;
       end;
-      PEnd := PosEx(CH_CLOSE, Xml, PStart);
+      PEnd := PosEx(cTagChannelClose, Xml, PStart);
       if PEnd = 0 then
         Break;
       Block := Copy(Xml, PStart, PEnd - PStart);
-      Cursor := PEnd + Length(CH_CLOSE);
-      Info.Id := XmlDecode(AttrVal(Block, 'id'));
-      Info.Name := XmlDecode(TagText(Block, 'display-name'));
+      Cursor := PEnd + Length(cTagChannelClose);
+      Info.Id := XmlDecode(AttrVal(Block, cAttrId));
+      Info.Name := XmlDecode(TagText(Block, cTagDisplayName));
       if Info.Id <> '' then
       begin
         lChans.Add(Info);
@@ -417,29 +438,29 @@ begin
 
     Cursor := 1;
     repeat
-      PStart := PosEx(PROG_OPEN, Xml, Cursor);
+      PStart := PosEx(cTagProgrammeOpen, Xml, Cursor);
       if PStart = 0 then
         Break;
-      PEnd := PosEx(PROG_CLOSE, Xml, PStart);
+      PEnd := PosEx(cTagProgrammeClose, Xml, PStart);
       if PEnd = 0 then
         Break;
-      Cursor := PEnd + Length(PROG_CLOSE);
+      Cursor := PEnd + Length(cTagProgrammeClose);
       // skip unwanted channels without copying their block
-      Channel := XmlDecode(AttrValIn(Xml, 'channel', PStart, PEnd));
+      Channel := XmlDecode(AttrValIn(Xml, cAttrChannel, PStart, PEnd));
       if not Keep.ContainsKey(Channel) then
         Continue;
       Block := Copy(Xml, PStart, PEnd - PStart);
       Prog := TEpgProgramme.Create;
       Prog.SourceId := ASourceId;
       Prog.ChannelTvgId := EXTRA_EPG_PREFIX + Channel;
-      Prog.StartUtc := Parser.ParseXmltvTime(AttrVal(Block, 'start'));
-      Prog.StopUtc := Parser.ParseXmltvTime(AttrVal(Block, 'stop'));
+      Prog.StartUtc := Parser.ParseXmltvTime(AttrVal(Block, cAttrStart));
+      Prog.StopUtc := Parser.ParseXmltvTime(AttrVal(Block, cAttrStop));
       if Prog.StartUtc = 0 then
         Prog.Free
       else
       begin
-        Prog.Title := XmlDecode(TagText(Block, 'title'));
-        Prog.Description := XmlDecode(TagText(Block, 'desc'));
+        Prog.Title := XmlDecode(TagText(Block, cTagTitle));
+        Prog.Description := XmlDecode(TagText(Block, cTagDesc));
         Result.Add(Prog);
       end;
     until False;

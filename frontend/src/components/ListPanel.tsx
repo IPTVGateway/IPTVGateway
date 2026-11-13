@@ -5,9 +5,14 @@ import {
   byChannelNumber,
   byNameCI,
   compareGroups,
+  CONTENT_LIVE,
   CONTENT_TYPES,
   planBouquetNumbers,
   reorderByDrag,
+  SORT_BY_NAME,
+  SORT_BY_NUMBER,
+  SORT_MODE_STORAGE_KEY,
+  type SortMode,
 } from '../lib/ordering'
 import { suggestTvgId } from '../lib/epgMatch'
 import { Modal } from './Modal'
@@ -15,8 +20,6 @@ import { QualityProbeModal } from './QualityProbeModal'
 import { ArchiveBadge } from './ArchiveBadge'
 import { useT } from '../i18n'
 
-type SortMode = 'name' | 'number'
-const SORT_KEY = 'iptv.list.sortMode'
 const COLLAPSE_KEY = 'iptv.list.collapsed'
 // collapsed-groups are persisted PER LIST — group ids are list-specific, so a
 // single shared key would carry one list's collapsed ids into another.
@@ -69,17 +72,17 @@ export function ListPanel({
   const t = useT()
   const [newGroupName, setNewGroupName] = useState('')
   const [newGroupFav, setNewGroupFav] = useState(false)
-  const [newGroupType, setNewGroupType] = useState<ContentType>('live')
+  const [newGroupType, setNewGroupType] = useState<ContentType>(CONTENT_LIVE)
   const [localError, setLocalError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [confirmEmptyUpstream, setConfirmEmptyUpstream] = useState(false)
   const [sortMode, setSortMode] = useState<SortMode>(
-    () => (localStorage.getItem(SORT_KEY) === 'number' ? 'number' : 'name'),
+    () => (localStorage.getItem(SORT_MODE_STORAGE_KEY) === SORT_BY_NUMBER ? SORT_BY_NUMBER : SORT_BY_NAME),
   )
 
   function changeSortMode(m: SortMode) {
     setSortMode(m)
-    localStorage.setItem(SORT_KEY, m)
+    localStorage.setItem(SORT_MODE_STORAGE_KEY, m)
   }
 
   // collapsed groups (persisted per list) — keyed by group id; the upstream group is 0
@@ -123,7 +126,7 @@ export function ListPanel({
       m.set(it.customGroupId, arr)
     }
     const cmp =
-      sortMode === 'number'
+      sortMode === SORT_BY_NUMBER
         ? (a: CustomItem, b: CustomItem) =>
             byChannelNumber(a.channelNumber, displayNameOf(a), b.channelNumber, displayNameOf(b))
         : (a: CustomItem, b: CustomItem) => byNameCI(displayNameOf(a), displayNameOf(b))
@@ -238,7 +241,7 @@ export function ListPanel({
   // doesn't scroll while dragging from it); we hit-test the row/group under the
   // finger with elementFromPoint. Channel reorder rewrites channel numbers (1,2,3…)
   // to match the new visual order; only meaningful in channel-number sort mode.
-  const dragEnabled = sortMode === 'number'
+  const dragEnabled = sortMode === SORT_BY_NUMBER
 
   const [dragId, setDragId] = useState<number | null>(null)
   const [overId, setOverId] = useState<number | null>(null)
@@ -781,24 +784,24 @@ export function ListPanel({
               <span className="muted">{t('Sort:')}</span>
               <button
                 type="button"
-                className={sortMode === 'name' ? 'active' : ''}
-                aria-pressed={sortMode === 'name'}
-                onClick={() => changeSortMode('name')}
+                className={sortMode === SORT_BY_NAME ? 'active' : ''}
+                aria-pressed={sortMode === SORT_BY_NAME}
+                onClick={() => changeSortMode(SORT_BY_NAME)}
                 title={t('Order channels A→Z by name')}
               >
                 {t('Name')}
               </button>
               <button
                 type="button"
-                className={sortMode === 'number' ? 'active' : ''}
-                aria-pressed={sortMode === 'number'}
-                onClick={() => changeSortMode('number')}
+                className={sortMode === SORT_BY_NUMBER ? 'active' : ''}
+                aria-pressed={sortMode === SORT_BY_NUMBER}
+                onClick={() => changeSortMode(SORT_BY_NUMBER)}
                 title={t('Order channels by channel number (lowest first; unset last)')}
               >
                 {t('No.')}
               </button>
             </span>
-            {sortMode === 'number' && (
+            {sortMode === SORT_BY_NUMBER && (
               <span className="muted hint">{t('⠿ drag channels to set the numbering')}</span>
             )}
             {!isEmpty && (
@@ -1621,7 +1624,7 @@ function ItemRow({ item, sourceName, groups, onSave, onDelete, onProbe, drag }: 
           </option>
         ))}
       </select>
-      {onProbe && item.contentType === 'live' && !!item.streamSourceId && (
+      {onProbe && item.contentType === CONTENT_LIVE && !!item.streamSourceId && (
         <button
           type="button"
           className="probe-btn"

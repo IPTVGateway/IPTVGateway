@@ -119,6 +119,11 @@ type
 
 implementation
 
+const
+  // zap-cache keys: 'listId:streamId' and 'user#0pass' (#0 can't occur in a login)
+  cZapStreamKeySep = ':';
+  cZapCredKeySep = #0;
+
 constructor TLockingStore.Create(const AWrite, ARead: IStore);
 begin
   inherited Create;
@@ -478,7 +483,7 @@ var
   Hit: TStreamItem;
   Gen: Integer;
 begin
-  Key := AListId.ToString + ':' + AStreamItemId.ToString;
+  Key := AListId.ToString + cZapStreamKeySep + AStreamItemId.ToString;
   FCacheLock.Acquire;
   try
     if FZapStreams.TryGetValue(Key, Hit) then
@@ -617,9 +622,9 @@ begin
   // an empty username ignores the password (login-free bouquet): one cache entry,
   // not one per random password a client tries
   if AUser = '' then
-    Key := #0
+    Key := cZapCredKeySep
   else
-    Key := AUser + #0 + APass;
+    Key := AUser + cZapCredKeySep + APass;
   FCacheLock.Acquire;
   try
     if FZapLists.TryGetValue(Key, Hit) then

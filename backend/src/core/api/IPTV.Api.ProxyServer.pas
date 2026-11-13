@@ -45,9 +45,61 @@ uses
   IPTV.Core.Utils, IPTV.Output.Builder, IPTV.Model.Types;
 
 const
-  UA = 'VLC/3.0.20 LibVLC/3.0.20';
-  // Cap concurrent relays so a burst of zapping can't spawn unbounded threads.
-  ProxyMaxThreads = 200;
+  // upstream client
+  cRelayUserAgent = 'VLC/3.0.20 LibVLC/3.0.20';
+  cMaxRedirects = 5;
+  cTimeoutConnectMs = 8000;            // fail fast on a dead node (A3)
+  cTimeoutReadMs = 30000;
+
+  // thread pool: cap concurrent relays so a burst of zapping can't spawn
+  // unbounded threads
+  cProxyPoolSize = 20;                 // pre-created workers
+  cProxyMaxThreads = 200;
+
+  // HTTP status codes
+  cHttpStatusOk = 200;
+  cHttpStatusPartialContent = 206;
+  cHttpStatusRedirectMin = 300;
+  cHttpStatusErrorMin = 400;
+  cHttpStatusBadRequest = 400;
+  cHttpStatusUnauthorized = 401;
+  cHttpStatusNotFound = 404;
+  cHttpStatusServiceUnavailable = 503;
+
+  // headers / MIME
+  cHeaderContentType = 'Content-Type';
+  cHeaderContentRange = 'Content-Range';
+  cHeaderContentLength = 'Content-Length';
+  cHeaderRange = 'Range';
+  cHeaderIfRange = 'If-Range';
+  cMimeMpegTs = 'video/mp2t';
+  cMethodHead = 'HEAD';
+
+  // stream extensions
+  cExtTs = 'ts';
+  cExtHls = 'm3u8';
+
+  // request path: /{kind}/{user}/{pass}/{id}
+  //   catch-up:   /timeshift/{user}/{pass}/{minutes}/{YYYY-MM-DD:HH-MM}/{id}.ts
+  //   query form: /streaming/timeshift.php?username=&password=&stream=&start=&duration=
+  cPathStreaming = 'streaming';
+  cPathTimeshiftPhp = 'timeshift.php';
+  cPathTimeshift = 'timeshift';
+  cQueryUsername = 'username';
+  cQueryPassword = 'password';
+  cQueryDuration = 'duration';
+  cQueryStart = 'start';
+  cQueryStream = 'stream';
+  cSegKind = 1;                        // Parts[0] is the '' before the leading '/'
+  cSegUser = 2;
+  cSegPass = 3;
+  cSegId = 4;
+  cSegTsMinutes = 4;
+  cSegTsStart = 5;
+  cSegTsId = 6;
+  cSegCountTimeshiftPhp = 3;           // '', streaming, timeshift.php
+  cSegCountMin = cSegId + 1;
+  cSegCountTimeshift = cSegTsId + 1;
 
 // Mask credentials before logging an upstream URL. Providers embed creds both as
 // Xtream path segments (/live/{user}/{pass}/) and as query params
@@ -162,11 +214,11 @@ var
 begin
   VContinue := True;
   Code := TIdHTTP(Sender).ResponseCode;
-  if (Code >= 300) and (Code < 400) then
+  if (Code >= cHttpStatusRedirectMin) and (Code < cHttpStatusErrorMin) then
     Exit; // intermediate redirect — wait for the final response
   if FWritten then
     Exit;
-  if (Code >= 400) and FAllowFailover then
+  if (Code >= cHttpStatusErrorMin) and FAllowFailover then
   begin
     // nothing written yet: let the caller fail over to another source
     FFailedCode := Code;
@@ -175,7 +227,7 @@ begin
   end;
   FWritten := True;
 
-  if Code >= 400 then
+  if Code >= cHttpStatusErrorMin then
   begin
     // upstream error: tell the client and stop reading the error body
     FIO.Write(Format('HTTP/1.1 %d Upstream Error'#13#10'Connection: close'#13#10#13#10, [Code]));
@@ -186,26 +238,26 @@ begin
   // STRIP CR/LF from upstream header values before we concatenate them into our
   // own raw response header — an upstream (or a host it 302-redirects to) could
   // otherwise inject extra headers / a split response (HTTP response splitting).
-  CT := AHeaders.Values['Content-Type'].Replace(#13, '').Replace(#10, '');
+  CT := AHeaders.Values[cHeaderContentType].Replace(#13, '').Replace(#10, '');
   if CT = '' then
-    CT := 'video/mp2t';
-  CR := AHeaders.Values['Content-Range'].Replace(#13, '').Replace(#10, '');
-  CL := AHeaders.Values['Content-Length'].Replace(#13, '').Replace(#10, '');
+    CT := cMimeMpegTs;
+  CR := AHeaders.Values[cHeaderContentRange].Replace(#13, '').Replace(#10, '');
+  CL := AHeaders.Values[cHeaderContentLength].Replace(#13, '').Replace(#10, '');
   // Content-Length must be a plain number; ignore anything else (defence in depth)
   if (CL <> '') and (StrToInt64Def(CL, -1) < 0) then
     CL := '';
 
-  if Code = 206 then
+  if Code = cHttpStatusPartialContent then
     Hdr := 'HTTP/1.1 206 Partial Content'#13#10
   else
     Hdr := 'HTTP/1.1 200 OK'#13#10;
-  Hdr := Hdr + 'Content-Type: ' + CT + #13#10 + 'Accept-Ranges: bytes'#13#10 +
+  Hdr := Hdr + cHeaderContentType + ': ' + CT + #13#10 + 'Accept-Ranges: bytes'#13#10 +
     // allow the in-browser Speler (mpegts.js) to fetch the relayed stream
     'Access-Control-Allow-Origin: *'#13#10;
   if CR <> '' then
-    Hdr := Hdr + 'Content-Range: ' + CR + #13#10;
+    Hdr := Hdr + cHeaderContentRange + ': ' + CR + #13#10;
   if CL <> '' then
-    Hdr := Hdr + 'Content-Length: ' + CL + #13#10;
+    Hdr := Hdr + cHeaderContentLength + ': ' + CL + #13#10;
   Hdr := Hdr + 'Connection: close'#13#10#13#10;
   FIO.Write(Hdr);
 end;
@@ -241,8 +293,8 @@ begin
   // Bounded thread pool instead of Indy's default thread-per-connection, so a
   // zapping storm can't exhaust the machine (A4 of the proxy hardening spec).
   var Sched := TIdSchedulerOfThreadPool.Create(FServer);
-  Sched.PoolSize := 20;       // pre-created workers
-  Sched.MaxThreads := ProxyMaxThreads;
+  Sched.PoolSize := cProxyPoolSize;
+  Sched.MaxThreads := cProxyMaxThreads;
   FServer.Scheduler := Sched;
   FServer.KeepAlive := False; // streams are close-delimited; no server keep-alive
 end;
@@ -294,7 +346,7 @@ begin
   lHlsUrl := '';
   if App = nil then
   begin
-    AResponseInfo.ResponseNo := 503;
+    AResponseInfo.ResponseNo := cHttpStatusServiceUnavailable;
     Exit;
   end;
   // Hold a local interface ref to the store: a relay can run for minutes/hours, and
@@ -308,39 +360,41 @@ begin
   Parts := RawPathSegments(ARequestInfo.URI);
   // catch-up, query flavour: /streaming/timeshift.php?username=&password=&stream=&start=&duration=
   // -> rewritten to the path form below
-  if (Length(Parts) = 3) and SameText(Parts[1], 'streaming') and SameText(Parts[2], 'timeshift.php') then
-    Parts := ['', 'timeshift', ARequestInfo.Params.Values['username'], ARequestInfo.Params.Values['password'],
-      ARequestInfo.Params.Values['duration'], ARequestInfo.Params.Values['start'],
-      ARequestInfo.Params.Values['stream']];
-  if Length(Parts) < 5 then
+  if (Length(Parts) = cSegCountTimeshiftPhp) and SameText(Parts[1], cPathStreaming) and
+    SameText(Parts[2], cPathTimeshiftPhp) then
+    Parts := ['', cPathTimeshift, ARequestInfo.Params.Values[cQueryUsername],
+      ARequestInfo.Params.Values[cQueryPassword],
+      ARequestInfo.Params.Values[cQueryDuration], ARequestInfo.Params.Values[cQueryStart],
+      ARequestInfo.Params.Values[cQueryStream]];
+  if Length(Parts) < cSegCountMin then
   begin
-    AResponseInfo.ResponseNo := 400;
+    AResponseInfo.ResponseNo := cHttpStatusBadRequest;
     Exit;
   end;
   // catch-up: /timeshift/{user}/{pass}/{minutes}/{YYYY-MM-DD:HH-MM}/{id}.ts
-  IsTimeshift := SameText(Parts[1], 'timeshift');
+  IsTimeshift := SameText(Parts[cSegKind], cPathTimeshift);
   TsDur := 0;
   TsStart := 0;
   if IsTimeshift then
   begin
-    if (Length(Parts) < 7) or not ParseTimeshiftStart(Parts[5], TsStart) then
+    if (Length(Parts) < cSegCountTimeshift) or not ParseTimeshiftStart(Parts[cSegTsStart], TsStart) then
     begin
-      AResponseInfo.ResponseNo := 400;
+      AResponseInfo.ResponseNo := cHttpStatusBadRequest;
       Exit;
     end;
-    TsDur := StrToIntDef(Parts[4], 0);
+    TsDur := StrToIntDef(Parts[cSegTsMinutes], 0);
     if TsDur <= 0 then
     begin
-      AResponseInfo.ResponseNo := 400;
+      AResponseInfo.ResponseNo := cHttpStatusBadRequest;
       Exit;
     end;
   end;
-  User := Parts[2];
-  Pass := Parts[3];
+  User := Parts[cSegUser];
+  Pass := Parts[cSegPass];
   if IsTimeshift then
-    IdPart := Parts[6]
+    IdPart := Parts[cSegTsId]
   else
-    IdPart := Parts[4];
+    IdPart := Parts[cSegId];
   S := IdPart;
   Dot := S.IndexOf('.');
   if Dot >= 0 then
@@ -350,7 +404,7 @@ begin
   List := FindListForPath(LStore, User, Pass); // '-' = empty login, %-encoding
   if List = nil then
   begin
-    AResponseInfo.ResponseNo := 401;
+    AResponseInfo.ResponseNo := cHttpStatusUnauthorized;
     Exit;
   end;
   try
@@ -358,17 +412,17 @@ begin
     Stream := LStore.LoadListStreamById(List.Id, StreamId);
     if Stream = nil then
     begin
-      AResponseInfo.ResponseNo := 404;
+      AResponseInfo.ResponseNo := cHttpStatusNotFound;
       Exit;
     end;
     try
       if IsTimeshift then
       begin
         Upstream := TimeshiftUpstreamUrl(LStore, Stream, TsDur, TsStart,
-          IfThen(IdPart.Contains('.'), IdPart.Substring(IdPart.LastIndexOf('.') + 1), 'ts'));
+          IfThen(IdPart.Contains('.'), IdPart.Substring(IdPart.LastIndexOf('.') + 1), cExtTs));
         if Upstream = '' then
         begin
-          AResponseInfo.ResponseNo := 404; // source isn't an Xtream portal
+          AResponseInfo.ResponseNo := cHttpStatusNotFound; // source isn't an Xtream portal
           Exit;
         end;
       end
@@ -381,12 +435,12 @@ begin
         begin
           lSource := FindSourceById(LStore, Stream.SourceId);
           try
-            if SameText(UrlExt(IdPart), 'm3u8') or ((lSource <> nil) and lSource.ForceHls) then
-              lHlsUrl := LiveUpstreamUrl(LStore, Stream, 'm3u8');
+            if SameText(UrlExt(IdPart), cExtHls) or ((lSource <> nil) and lSource.ForceHls) then
+              lHlsUrl := LiveUpstreamUrl(LStore, Stream, cExtHls);
           finally
             FreeAndNil(lSource);
           end;
-          if not SameText(UrlExt(lHlsUrl), 'm3u8') then
+          if not SameText(UrlExt(lHlsUrl), cExtHls) then
             lHlsUrl := '';
         end;
       end;
@@ -400,10 +454,10 @@ begin
 
   // HEAD (players probing the URL): answer the headers, never start a relay that
   // would pull the whole stream from the provider
-  if SameText(ARequestInfo.Command, 'HEAD') then
+  if SameText(ARequestInfo.Command, cMethodHead) then
   begin
-    AResponseInfo.ResponseNo := 200;
-    AResponseInfo.ContentType := 'video/mp2t';
+    AResponseInfo.ResponseNo := cHttpStatusOk;
+    AResponseInfo.ContentType := cMimeMpegTs;
     Exit;
   end;
 
@@ -435,11 +489,11 @@ begin
     Fwd := TForwardStream.Create(IO);
     Up := TIdHTTP.Create(nil);
     try
-      Up.Request.UserAgent := UA;
+      Up.Request.UserAgent := cRelayUserAgent;
       Up.HandleRedirects := True; // follow the provider's own 302(s)
-      Up.RedirectMaximum := 5;
-      Up.ConnectTimeout := 8000;  // fail fast on a dead node (A3)
-      Up.ReadTimeout := 30000;
+      Up.RedirectMaximum := cMaxRedirects;
+      Up.ConnectTimeout := cTimeoutConnectMs;
+      Up.ReadTimeout := cTimeoutReadMs;
       // don't raise on 4xx/5xx; TRelaySession maps the status to the client
       Up.HTTPOptions := Up.HTTPOptions + [hoNoProtocolErrorException];
       Up.OnHeadersAvailable := Session.HeadersAvailable;
@@ -453,10 +507,10 @@ begin
       SSL.SSLOptions.SSLVersions := [sslvTLSv1_2];
       Up.IOHandler := SSL;
       // pass the box's Range / If-Range through so VOD seeking works (A6)
-      if ARequestInfo.RawHeaders.Values['Range'] <> '' then
-        Up.Request.CustomHeaders.AddValue('Range', ARequestInfo.RawHeaders.Values['Range']);
-      if ARequestInfo.RawHeaders.Values['If-Range'] <> '' then
-        Up.Request.CustomHeaders.AddValue('If-Range', ARequestInfo.RawHeaders.Values['If-Range']);
+      if ARequestInfo.RawHeaders.Values[cHeaderRange] <> '' then
+        Up.Request.CustomHeaders.AddValue(cHeaderRange, ARequestInfo.RawHeaders.Values[cHeaderRange]);
+      if ARequestInfo.RawHeaders.Values[cHeaderIfRange] <> '' then
+        Up.Request.CustomHeaders.AddValue(cHeaderIfRange, ARequestInfo.RawHeaders.Values[cHeaderIfRange]);
       if Assigned(FLog) then
         FLog(Format('proxy relay %s -> provider "%s" %s%s',
           [IdPart, ProviderName(LStore, SrcId), MaskCreds(Candidates[Idx]),

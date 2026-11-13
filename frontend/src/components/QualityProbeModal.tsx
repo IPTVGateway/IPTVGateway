@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
+import { DEFAULT_PROBE_SECONDS } from '../lib/constants'
 import type { CustomItem, ProbeResult, Source, StreamVariant } from '../types'
 import { Modal } from './Modal'
 import { useT } from '../i18n'
@@ -22,15 +23,23 @@ type RowState = ProbeResult | 'busy' | undefined
 
 const SECONDS = [5, 8, 15] as const
 
+// probe hints (rules of thumb): a picture this tall counts as UHD/2160p...
+const UHD_MIN_HEIGHT = 2000
+// ...and below these bitrates (kbps) a real UHD feed is unlikely -> probably upscaled
+const UHD_MIN_KBPS_HEVC = 10_000
+const UHD_MIN_KBPS_OTHER = 16_000
+// a first byte later than this (ms) is a "slow start"
+const SLOW_START_MS = 3000
+
 /** Warnings derived from a measurement (rules of thumb, not proof). */
 export function probeHints(r: ProbeResult): string[] {
   const h: string[] = []
   if (!r.ok) return h
   // 2160p at a bitrate a real UHD feed can't live with -> most likely an upscale
-  const uhdFloor = r.videoCodec === 'HEVC' ? 10000 : 16000
-  if (r.height >= 2000 && r.bitrateKbps > 0 && r.bitrateKbps < uhdFloor) h.push('possibly upscaled')
+  const uhdFloor = r.videoCodec === 'HEVC' ? UHD_MIN_KBPS_HEVC : UHD_MIN_KBPS_OTHER
+  if (r.height >= UHD_MIN_HEIGHT && r.bitrateKbps > 0 && r.bitrateKbps < uhdFloor) h.push('possibly upscaled')
   if (r.realtime > 0 && r.realtime < 1) h.push('slower than real time')
-  if (r.firstByteMs > 3000) h.push('slow start')
+  if (r.firstByteMs > SLOW_START_MS) h.push('slow start')
   if (r.error) h.push(r.error)
   return h
 }
@@ -53,7 +62,7 @@ export function formatMbps(kbps: number): string {
 export function QualityProbeModal({ streamId, title, sources, listId, item, onReplaced, onClose }: Props) {
   const t = useT()
   const [allSources, setAllSources] = useState(false)
-  const [seconds, setSeconds] = useState<number>(8)
+  const [seconds, setSeconds] = useState<number>(DEFAULT_PROBE_SECONDS)
   const [variants, setVariants] = useState<StreamVariant[] | null>(null)
   const [results, setResults] = useState<Record<number, RowState>>({})
   const [running, setRunning] = useState(false)

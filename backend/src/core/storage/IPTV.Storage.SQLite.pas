@@ -143,6 +143,72 @@ const
       (',' || REPLACE(src.content_types, ' ', '') || ',') LIKE ('%,' || s.content_type || ',%')))
     ''';
 
+  // connection setup (FireDAC driver + params, SQLite pragmas)
+  cDriverSQLite = 'SQLite';
+  cParamLockingModeNormal = 'LockingMode=Normal';
+  cParamSynchronousNormal = 'Synchronous=Normal';
+  cParamStringFormat = 'StringFormat';
+  cStringFormatUnicode = 'Unicode';
+  cBusyTimeoutMs = 5000; // PRAGMA busy_timeout: wait (not error) on a brief lock
+
+  // schema migration
+  cErrDuplicateColumn = 'duplicate column'; // SQLite error fragment (lower case) of ADD COLUMN on an existing column
+  cVacuumAboveBytes = 64 * 1024 * 1024;     // VACUUM after the token repair when this much is free
+  cStateM3uStreamIdV2 = 'm3u_stream_id_v2'; // app_state flag: M3U stream ids re-keyed once
+
+  // precomputed hidden flags (RecomputeHidden)
+  cRecomputeForce = True;       // recompute even when the filters didn't change
+  cRecomputeIfChanged = False;  // skip when the filter signature is unchanged
+  cHiddenOn = 1;                // streams.hidden / categories.hidden values
+  cHiddenOff = 0;
+  cHiddenUpdateChunk = 500;     // ids per UPDATE ... WHERE id IN (...)
+  cStateHiddenSigPrefix = 'hidden_sig_'; // app_state key + source id
+  // bump the version to recompute every source once after an upgrade
+  cHiddenSigVersion = 'v2';
+  cHiddenSigVersionSep = #3;
+  cHiddenSigListSep = #2;
+  cHiddenSigItemSep = #1;
+
+  // tables scanned by name (RecomputeHidden, MergeSnapshot, DiscoverPrefixes)
+  cTableStreams = 'streams';
+  cTableCategories = 'categories';
+
+  // in-memory composite keys ('content_type|upstream_id') and the stream hash fields
+  cKeySep = '|';
+  cHashFieldSep = '|';
+
+  // strip prefixes/suffixes are stored ';'-separated (a token may contain spaces/commas/pipes)
+  cStripTokenSep = ';';
+
+  // a bare (delimiter-less) leading token counts as a prefix up to this length ("NL", "UK")
+  cMaxBarePrefixLen = 4;
+
+  // M3U url query parameters holding the account credentials
+  cUrlParamUsername = 'username';
+  cUrlParamPassword = 'password';
+
+  // container extension of a series episode when the portal gives none
+  cDefaultEpisodeExt = 'mp4';
+
+  // quality variants: Full-HD is also written FULLHD / FULL-HD
+  cFullHdLikePattern = '%FULL%';
+  // FindStreamVariants: shortest head token worth a LIKE prefilter; the two passes
+  cMinPrefilterTokenLen = 2;
+  cPassByName = 1;
+  cPassByTvg = 2;
+  // TStreamVariant.MatchedBy values
+  cMatchedBySelf = 'self';
+  cMatchedByName = 'name';
+  cMatchedByTvg = 'tvg';
+
+  // bound parameters per IN (...) query, so a very large list never hits SQLite's
+  // SQLITE_MAX_VARIABLE_NUMBER (historically 999)
+  cOwnEpgParamChunk = 500;   // ApplyExtraGuides: prefer-own channels' guide ids
+  cEpgTvgIdParamChunk = 800; // LoadEpgForTvgIds: tvg-ids
+
+  // channel numbering of a group without numbers starts here
+  cDefaultGroupNumberBase = 1;
+
 // Strong IPTV group/name delimiters. We deliberately exclude '-' and '.' since
 // VOD titles use them freely, which would explode the discovered-prefix list.
 // Includes the Unicode vertical bars providers decorate names with (┃ │ ¦ ｜ …) —
@@ -181,7 +247,7 @@ begin
     Token := Copy(S, 1, I - 1)
   else
     Token := S;
-  if (Length(Token) <= 4) and (Token = UpperCase(Token)) and (Token <> '') then
+  if (Length(Token) <= cMaxBarePrefixLen) and (Token = UpperCase(Token)) and (Token <> '') then
     Result := Token
   else
     Result := '';
@@ -266,10 +332,10 @@ constructor TSQLiteStore.Create(const ADatabasePath: string; AUseWal: Boolean);
 begin
   inherited Create;
   FConn := TFDConnection.Create(nil);
-  FConn.DriverName := 'SQLite';
+  FConn.DriverName := cDriverSQLite;
   FConn.Params.Database := ADatabasePath;
-  FConn.Params.Add('LockingMode=Normal');
-  FConn.Params.Add('Synchronous=Normal');
+  FConn.Params.Add(cParamLockingModeNormal);
+  FConn.Params.Add(cParamSynchronousNormal);
   // SQLite stores TEXT as UTF-8. Two rules make non-CP1252 text (emoji, Cyrillic,
   // "NL| ODIDO SPORT ⚽", …) round-trip losslessly on the static Win32 wrapper —
   // both verified empirically (tests\probe\Utf8Probe + Test.Storage):
@@ -280,10 +346,10 @@ begin
   //      forces a CP1252 param and stores '?'; AsWideString stores real UTF-8.
   // Reads via TField.AsString are already correct (UTF-8 -> UnicodeString), so
   // only the write side needed the AsWideString switch.
-  FConn.Params.Values['StringFormat'] := 'Unicode';
+  FConn.Params.Values[cParamStringFormat] := cStringFormatUnicode;
   FConn.Connected := True;
   // busy_timeout FIRST so any later statement waits (not errors) on a brief lock.
-  Exec('PRAGMA busy_timeout=5000');
+  Exec('PRAGMA busy_timeout=' + IntToStr(cBusyTimeoutMs));
   Exec('PRAGMA foreign_keys=ON');
   // WAL is OPT-IN (the separate-read-connection mode). It needs a shared-memory
   // file (-shm, mmap'd) which an Unraid FUSE share (/mnt/user) can't provide — and
@@ -320,7 +386,7 @@ end;
 function TSQLiteStore.StreamHash(const AItem: TStreamItem): string;
 begin
   Result := THashSHA2.GetHashString(
-    string.Join('|', [AItem.Name, AItem.Logo, AItem.GroupTitle,
+    string.Join(cHashFieldSep, [AItem.Name, AItem.Logo, AItem.GroupTitle,
                       AItem.CategoryUpstreamId, AItem.TvgId, AItem.UpstreamUrl]));
 end;
 
@@ -335,7 +401,7 @@ procedure TSQLiteStore.Init;
         // the column already exists - expected (SQLite has no ADD COLUMN IF NOT
         // EXISTS). Anything else (locked / IO on a FUSE share) must surface now,
         // not later as "no such column".
-        if not E.Message.ToLower.Contains('duplicate column') then
+        if not E.Message.ToLower.Contains(cErrDuplicateColumn) then
           raise;
     end;
   end;
@@ -435,15 +501,13 @@ begin
     Q.Free;
   end;
   for SrcId in Ids do
-    RecomputeHidden(SrcId, False);
+    RecomputeHidden(SrcId, cRecomputeIfChanged);
 end;
 
 // Undo the quote-doubling of old StrArrayToCsv (see IPTV.Core.Utils) and drop
 // unusable (>200 char) filter items. The '"' removal runs in SQLite (C speed on a
 // multi-hundred-MB value); then VACUUM once if that freed a lot of space.
 procedure TSQLiteStore.RepairSourceTokens;
-const
-  VacuumAboveBytes = 64 * 1024 * 1024;
 var
   Q: TFDQuery;
   Ids: TArray<Integer>;
@@ -501,7 +565,7 @@ begin
         SELECT (SELECT freelist_count FROM pragma_freelist_count) *
         (SELECT page_size FROM pragma_page_size)
         ''');
-      if Q.Fields[0].AsLargeInt > VacuumAboveBytes then
+      if Q.Fields[0].AsLargeInt > cVacuumAboveBytes then
       begin
         Q.Close;
         Exec('VACUUM');
@@ -513,8 +577,6 @@ begin
 end;
 
 procedure TSQLiteStore.RecomputeHidden(ASourceId: Integer; AForce: Boolean);
-const
-  Chunk = 500;
 var
   Q: TFDQuery;
   Src: TSourceConfig;
@@ -534,7 +596,7 @@ var
     begin
       SB := TStringBuilder.Create;
       try
-        for J := I to Min(I + Chunk, AIds.Count) - 1 do
+        for J := I to Min(I + cHiddenUpdateChunk, AIds.Count) - 1 do
         begin
           if J > I then
             SB.Append(',');
@@ -544,7 +606,7 @@ var
       finally
         SB.Free;
       end;
-      Inc(I, Chunk);
+      Inc(I, cHiddenUpdateChunk);
     end;
   end;
 
@@ -559,9 +621,10 @@ begin
     Q.Close;
     // 'v2': groups with a visible channel stay visible — bumping it recomputes
     // every source once after an upgrade
-    Sig := THashBobJenkins.GetHashString('v2' + #3 +
-      StrArrayToCsv(Src.IncludeFilters, #1) + #2 + StrArrayToCsv(Src.ExcludeFilters, #1));
-    Key := 'hidden_sig_' + ASourceId.ToString;
+    Sig := THashBobJenkins.GetHashString(cHiddenSigVersion + cHiddenSigVersionSep +
+      StrArrayToCsv(Src.IncludeFilters, cHiddenSigItemSep) + cHiddenSigListSep +
+      StrArrayToCsv(Src.ExcludeFilters, cHiddenSigItemSep));
+    Key := cStateHiddenSigPrefix + ASourceId.ToString;
     if (not AForce) and (GetState(Key) = Sig) then
       Exit;
     PF := PrepareNameFilter(Src.IncludeFilters, Src.ExcludeFilters);
@@ -574,11 +637,11 @@ begin
         // streams FIRST: a group stays visible when it holds a visible channel
         // (e.g. include "UFC" keeps the UFC channels AND their "WORLD SPORTS"
         // group), unless an exclude token matches the group name itself
-        for Table in TArray<string>.Create('streams', 'categories') do
+        for Table in TArray<string>.Create(cTableStreams, cTableCategories) do
         begin
           ToHide.Clear;
           ToShow.Clear;
-          if Table = 'categories' then
+          if Table = cTableCategories then
           begin
             Q.Open('''
               SELECT DISTINCT content_type, category_upstream_id FROM streams
@@ -586,7 +649,7 @@ begin
               ''', [ASourceId]);
             while not Q.Eof do
             begin
-              WithVisible.Add(Q.Fields[0].AsString + '|' + Q.Fields[1].AsString);
+              WithVisible.Add(Q.Fields[0].AsString + cKeySep + Q.Fields[1].AsString);
               Q.Next;
             end;
             Q.Close;
@@ -597,8 +660,8 @@ begin
           while not Q.Eof do
           begin
             Passes := PreparedNamePasses(PF, Q.Fields[1].AsWideString);
-            if (not Passes) and (Table = 'categories') and
-               WithVisible.Contains(Q.Fields[3].AsString + '|' + Q.Fields[4].AsString) and
+            if (not Passes) and (Table = cTableCategories) and
+               WithVisible.Contains(Q.Fields[3].AsString + cKeySep + Q.Fields[4].AsString) and
                not PreparedNameExcluded(PF, Q.Fields[1].AsWideString) then
               Passes := True;
             if Passes then
@@ -611,8 +674,8 @@ begin
             Q.Next;
           end;
           Q.Close;
-          Apply(ToHide, 1);
-          Apply(ToShow, 0);
+          Apply(ToHide, cHiddenOn);
+          Apply(ToShow, cHiddenOff);
         end;
         FConn.Commit;
       except
@@ -637,8 +700,6 @@ procedure TSQLiteStore.MigrateM3uStreamIds;
 // and detached the curated list_items. Re-key existing M3U streams to the
 // credential-insensitive id (M3uStreamId) so current curation survives and the
 // NEXT refresh matches in place. Guarded by an app_state flag so it runs once.
-const
-  FLAG = 'm3u_stream_id_v2';
 type
   TSrcInfo = record Id: Integer; User, Pass: string; end;
 var
@@ -652,7 +713,7 @@ var
 begin
   Q := NewQuery;
   try
-    Q.Open('SELECT value FROM app_state WHERE key=:k', [FLAG]);
+    Q.Open('SELECT value FROM app_state WHERE key=:k', [cStateM3uStreamIdV2]);
     if not Q.Eof then
       Exit; // already migrated
   finally
@@ -673,9 +734,9 @@ begin
         NewSi.User := Q.FieldByName('username').AsString;
         NewSi.Pass := Q.FieldByName('password').AsString;
         if NewSi.User = '' then
-          NewSi.User := UrlQueryParam(Q.FieldByName('url').AsString, 'username');
+          NewSi.User := UrlQueryParam(Q.FieldByName('url').AsString, cUrlParamUsername);
         if NewSi.Pass = '' then
-          NewSi.Pass := UrlQueryParam(Q.FieldByName('url').AsString, 'password');
+          NewSi.Pass := UrlQueryParam(Q.FieldByName('url').AsString, cUrlParamPassword);
         Srcs.Add(NewSi);
         Q.Next;
       end;
@@ -722,7 +783,7 @@ begin
       Upd.Free;
     end;
 
-    Exec('INSERT OR REPLACE INTO app_state(key,value) VALUES(''' + FLAG + ''',''1'')');
+    Exec('INSERT OR REPLACE INTO app_state(key,value) VALUES(''' + cStateM3uStreamIdV2 + ''',''1'')');
   finally
     Srcs.Free;
     Ids.Free;
@@ -750,8 +811,8 @@ begin
   Result.IncludeFilters := CsvToStrArray(Q.FieldByName('include_filters').AsString);
   Result.ExcludeFilters := CsvToStrArray(Q.FieldByName('exclude_filters').AsString);
   // strip prefixes use ';' so a token may itself contain spaces/commas/pipes
-  Result.StripPrefixes := CsvToStrArray(Q.FieldByName('strip_prefixes').AsString, ';');
-  Result.StripSuffixes := CsvToStrArray(Q.FieldByName('strip_suffixes').AsString, ';');
+  Result.StripPrefixes := CsvToStrArray(Q.FieldByName('strip_prefixes').AsString, cStripTokenSep);
+  Result.StripSuffixes := CsvToStrArray(Q.FieldByName('strip_suffixes').AsString, cStripTokenSep);
   Result.LastRefreshUtc := IsoUtcToDateTime(Q.FieldByName('last_refresh_utc').AsString);
   Result.AccountStatus := Q.FieldByName('account_status').AsString;
   Result.ExpiresUtc := IsoUtcToDateTime(Q.FieldByName('expires_utc').AsString);
@@ -811,8 +872,8 @@ begin
     Q.ParamByName('content_types').AsWideString := ContentTypesToStr(ASource.ContentTypes);
     Q.ParamByName('include_filters').AsWideString := StrArrayToCsv(ASource.IncludeFilters);
     Q.ParamByName('exclude_filters').AsWideString := StrArrayToCsv(ASource.ExcludeFilters);
-    Q.ParamByName('strip_prefixes').AsWideString := StrArrayToCsv(ASource.StripPrefixes, ';');
-    Q.ParamByName('strip_suffixes').AsWideString := StrArrayToCsv(ASource.StripSuffixes, ';');
+    Q.ParamByName('strip_prefixes').AsWideString := StrArrayToCsv(ASource.StripPrefixes, cStripTokenSep);
+    Q.ParamByName('strip_suffixes').AsWideString := StrArrayToCsv(ASource.StripSuffixes, cStripTokenSep);
     Q.ParamByName('last_refresh_utc').AsWideString := DateTimeToIsoUtc(ASource.LastRefreshUtc);
     Q.ParamByName('account_status').AsWideString := ASource.AccountStatus;
     Q.ParamByName('expires_utc').AsWideString := DateTimeToIsoUtc(ASource.ExpiresUtc);
@@ -829,7 +890,7 @@ begin
   finally
     Q.Free;
   end;
-  RecomputeHidden(Result, False); // filters may have changed (no-op otherwise)
+  RecomputeHidden(Result, cRecomputeIfChanged); // filters may have changed (no-op otherwise)
 end;
 
 procedure TSQLiteStore.DeleteSource(AId: Integer);
@@ -884,7 +945,7 @@ var
       [ASnapshot.SourceId]);
     while not LoadQ.Eof do
     begin
-      Result.AddOrSetValue(LoadQ.FieldByName('content_type').AsString + '|' +
+      Result.AddOrSetValue(LoadQ.FieldByName('content_type').AsString + cKeySep +
         LoadQ.FieldByName('upstream_id').AsString, True);
       LoadQ.Next;
     end;
@@ -906,14 +967,14 @@ begin
   try
     // one read each instead of a SELECT per row; lets us decide insert vs update
     // (and so flag is_new) in memory.
-    CatKeys := LoadKeys('categories');
-    StrKeys := LoadKeys('streams');
+    CatKeys := LoadKeys(cTableCategories);
+    StrKeys := LoadKeys(cTableStreams);
     lTypeByUid := TDictionary<string, string>.Create;
     for Key in StrKeys.Keys do
-      lTypeByUid.AddOrSetValue(Key.Substring(Key.IndexOf('|') + 1), Key.Substring(0, Key.IndexOf('|')));
+      lTypeByUid.AddOrSetValue(Key.Substring(Key.IndexOf(cKeySep) + 1), Key.Substring(0, Key.IndexOf(cKeySep)));
     lSnapKeys := TDictionary<string, Boolean>.Create;
     for S in ASnapshot.Streams do
-      lSnapKeys.AddOrSetValue(ContentTypeNames[S.ContentType] + '|' + S.UpstreamId, True);
+      lSnapKeys.AddOrSetValue(ContentTypeNames[S.ContentType] + cKeySep + S.UpstreamId, True);
     LoadQ.Close;
     LoadQ.Open('SELECT kind FROM sources WHERE id=:s', [ASnapshot.SourceId]);
     lIsM3U := (not LoadQ.IsEmpty) and SameText(LoadQ.Fields[0].AsString, SourceKindNames[skM3U]);
@@ -935,7 +996,7 @@ begin
     try
       for Cat in ASnapshot.Categories do
       begin
-        Key := ContentTypeNames[Cat.ContentType] + '|' + Cat.UpstreamId;
+        Key := ContentTypeNames[Cat.ContentType] + cKeySep + Cat.UpstreamId;
         if CatKeys.ContainsKey(Key) then
         begin
           CatUpd.ParamByName('n').AsWideString := Cat.Name;
@@ -957,7 +1018,7 @@ begin
 
       for S in ASnapshot.Streams do
       begin
-        Key := ContentTypeNames[S.ContentType] + '|' + S.UpstreamId;
+        Key := ContentTypeNames[S.ContentType] + cKeySep + S.UpstreamId;
         // The same upstream item now arrives as another content type (the reader's
         // classification changed, e.g. Xtream radio_streams live -> radio, or an M3U
         // "NL| FILM" group movie -> live): re-key the stored row in place, so the
@@ -967,8 +1028,8 @@ begin
         // the live stream ids - a VOD id 123 is not live channel 123).
         if (not StrKeys.ContainsKey(Key)) and lTypeByUid.TryGetValue(S.UpstreamId, lOldCt) and
            (lOldCt <> ContentTypeNames[S.ContentType]) and
-           not lSnapKeys.ContainsKey(lOldCt + '|' + S.UpstreamId) and
-           (lIsM3U or (MatchText(lOldCt, ['live', 'radio']) and (S.ContentType in [ctLive, ctRadio]))) then
+           not lSnapKeys.ContainsKey(lOldCt + cKeySep + S.UpstreamId) and
+           (lIsM3U or (MatchText(lOldCt, [ContentTypeNames[ctLive], ContentTypeNames[ctRadio]]) and (S.ContentType in [ctLive, ctRadio]))) then
         begin
           lReKey.SQL.Text := '''
             UPDATE list_items SET content_type = :n
@@ -982,7 +1043,7 @@ begin
             ''';
           BindReKey(ContentTypeNames[S.ContentType], lOldCt, S.UpstreamId);
           lReKey.ExecSQL;
-          StrKeys.Remove(lOldCt + '|' + S.UpstreamId);
+          StrKeys.Remove(lOldCt + cKeySep + S.UpstreamId);
           StrKeys.AddOrSetValue(Key, True);
           lTypeByUid.AddOrSetValue(S.UpstreamId, ContentTypeNames[S.ContentType]);
         end;
@@ -1032,7 +1093,7 @@ begin
     lReKey.Free; StrUpd.Free; StrIns.Free; CatUpd.Free; CatIns.Free; LoadQ.Free;
   end;
   // new rows arrive with hidden=0: re-apply this source's filters to them
-  RecomputeHidden(ASnapshot.SourceId, True);
+  RecomputeHidden(ASnapshot.SourceId, cRecomputeForce);
 end;
 
 function TSQLiteStore.ReadCategory(Q: TFDQuery): TCategory;
@@ -1488,7 +1549,7 @@ begin
         Result.UpstreamUrl := Format('%s/series/%s/%s/%s.%s',
           [Q.FieldByName('surl').AsString.Trim.TrimRight(['/']), Q.FieldByName('su').AsString.Trim,
            Q.FieldByName('sp').AsString.Trim, Result.UpstreamId,
-           System.StrUtils.IfThen(Q.FieldByName('ext').AsString = '', 'mp4', Q.FieldByName('ext').AsString)]);
+           System.StrUtils.IfThen(Q.FieldByName('ext').AsString = '', cDefaultEpisodeExt, Q.FieldByName('ext').AsString)]);
       end;
       Exit;
     end;
@@ -1608,7 +1669,7 @@ begin
     // either, and groups often use a different prefix scheme than their channels
     // (e.g. group "AL| ALBANIA" while channels are "ALB| ..."). Surfacing both
     // lets a single exclude token hide the matching groups AND channels.
-    for var Tbl in ['streams', 'categories'] do
+    for var Tbl in [cTableStreams, cTableCategories] do
     begin
       if ASourceId > 0 then
         Q.Open(Format('SELECT name FROM %s WHERE source_id=:s', [Tbl]), [ASourceId])
@@ -1769,8 +1830,8 @@ begin
       Q.Open('SELECT id, strip_prefixes, strip_suffixes FROM sources');
       while not Q.Eof do
       begin
-        R.Prefixes := CsvToStrArray(Q.Fields[1].AsString, ';');
-        R.Suffixes := CsvToStrArray(Q.Fields[2].AsString, ';');
+        R.Prefixes := CsvToStrArray(Q.Fields[1].AsString, cStripTokenSep);
+        R.Suffixes := CsvToStrArray(Q.Fields[2].AsString, cStripTokenSep);
         Rules.AddOrSetValue(Q.Fields[0].AsInteger, R);
         Q.Next;
       end;
@@ -1851,7 +1912,7 @@ begin
         ''';
       Q.ParamByName('q1').AsWideString := '%' + EscapeLikeLiteral(Target) + '%';
       if Target = cQualityFhd then
-        Q.ParamByName('q2').AsWideString := '%FULL%' // FULLHD / FULL-HD
+        Q.ParamByName('q2').AsWideString := cFullHdLikePattern // FULLHD / FULL-HD
       else
         Q.ParamByName('q2').AsWideString := '%' + EscapeLikeLiteral(Target) + '%';
       Q.Open;
@@ -1966,8 +2027,8 @@ begin
       Q.Open('SELECT id, strip_prefixes, strip_suffixes FROM sources');
       while not Q.Eof do
       begin
-        R.Prefixes := CsvToStrArray(Q.Fields[1].AsString, ';');
-        R.Suffixes := CsvToStrArray(Q.Fields[2].AsString, ';');
+        R.Prefixes := CsvToStrArray(Q.Fields[1].AsString, cStripTokenSep);
+        R.Suffixes := CsvToStrArray(Q.Fields[2].AsString, cStripTokenSep);
         Rules.AddOrSetValue(Q.Fields[0].AsInteger, R);
         Q.Next;
       end;
@@ -2009,19 +2070,19 @@ begin
       // must contain it), pass 2 only rows carrying one of the collected tvg-ids
       Tok := '';
       for T in Head.Split([' ']) do
-        if (Length(T) > Length(Tok)) and (Length(T) >= 2) and IsPlainAscii(T) then
+        if (Length(T) > Length(Tok)) and (Length(T) >= cMinPrefilterTokenLen) and IsPlainAscii(T) then
           Tok := T;
-      for Pass := 1 to 2 do
+      for Pass := cPassByName to cPassByTvg do
       begin
-        if (Pass = 2) and (Tvgs.Count = 0) then
+        if (Pass = cPassByTvg) and (Tvgs.Count = 0) then
           Break;
         Q.Close;
         Extra := IfThen(AAllSources, '', ' AND source_id = :s');
         TvgArr := Tvgs.Keys.ToArray;
-        if (Pass = 1) and (Tok <> '') then
+        if (Pass = cPassByName) and (Tok <> '') then
           // (a non-ASCII name may carry the token in decorative letters)
           Extra := Extra + ' AND (id = :self OR name LIKE :tok OR name GLOB ''*[^ -~]*'')'
-        else if Pass = 2 then
+        else if Pass = cPassByTvg then
         begin
           Extra := Extra + ' AND tvg_id <> '''' AND lower(tvg_id) IN (';
           for K := 0 to High(TvgArr) do
@@ -2032,12 +2093,12 @@ begin
         Q.ParamByName('ct').AsString := Ct;
         if not AAllSources then
           Q.ParamByName('s').AsInteger := SrcId;
-        if (Pass = 1) and (Tok <> '') then
+        if (Pass = cPassByName) and (Tok <> '') then
         begin
           Q.ParamByName('self').AsInteger := AStreamId;
           Q.ParamByName('tok').AsWideString := '%' + Tok + '%';
         end
-        else if Pass = 2 then
+        else if Pass = cPassByTvg then
           for K := 0 to High(TvgArr) do
             Q.ParamByName('t' + IntToStr(K)).AsWideString := TvgArr[K];
         Q.Open;
@@ -2063,21 +2124,21 @@ begin
           ByName := ((Base <> '') and (CBase = Base)) or
                     ((Head <> '') and (CHead = Head) and (Qual <> '') and (CQual <> ''));
           // same tvg-id (EPG id) + a quality word: a variant named differently
-          ByTvg := (Pass = 2) and (V.TvgId <> '') and Tvgs.ContainsKey(V.TvgId.ToLower) and
+          ByTvg := (Pass = cPassByTvg) and (V.TvgId <> '') and Tvgs.ContainsKey(V.TvgId.ToLower) and
                    (CQual <> '');
-          if Pass = 2 then
+          if Pass = cPassByTvg then
             ByName := False;
-          if ((Pass = 1) and (V.IsSelf or ByName)) or ByTvg then
+          if ((Pass = cPassByName) and (V.IsSelf or ByName)) or ByTvg then
           begin
             Seen.AddOrSetValue(V.StreamId, True);
-            if (Pass = 1) and (V.TvgId <> '') then
+            if (Pass = cPassByName) and (V.TvgId <> '') then
               Tvgs.AddOrSetValue(V.TvgId.ToLower, True);
             if V.IsSelf then
-              V.MatchedBy := 'self'
+              V.MatchedBy := cMatchedBySelf
             else if ByName then
-              V.MatchedBy := 'name'
+              V.MatchedBy := cMatchedByName
             else
-              V.MatchedBy := 'tvg';
+              V.MatchedBy := cMatchedByTvg;
             V.OnList := InList.ContainsKey(V.StreamId);
             L.Add(V);
           end;
@@ -2236,7 +2297,7 @@ begin
   // any bouquet edit (add/remove/rename/regroup/number/tvg/group/restrip) bumps
   // this; the Plex-rescan reminder compares it to the last rescan stamp. A daily
   // catalog refresh does NOT call this (it would nag after every refresh).
-  SetState('lineup_changed_utc', DateTimeToIsoUtc(NowUtc));
+  SetState(cStateLineupChanged, DateTimeToIsoUtc(NowUtc));
 end;
 
 // ── EPG ──────────────────────────────────────────────────────────────────
@@ -2434,7 +2495,7 @@ begin
         Lo := 0;
         while Lo < Wanted.Count do
         begin
-          Hi := Min(Lo + 500, Wanted.Count) - 1;
+          Hi := Min(Lo + cOwnEpgParamChunk, Wanted.Count) - 1;
           Q.SQL.Text := '''
             SELECT DISTINCT channel_tvg_id AS t FROM epg WHERE source_id > 0 AND stop_utc > :now
             AND channel_tvg_id IN (
@@ -2543,10 +2604,6 @@ end;
 
 function TSQLiteStore.LoadEpgForTvgIds(const ATvgIds: TArray<string>;
   AMaxDays: Integer): TEpgProgrammeList;
-const
-  // bind tvg-ids in batches so a very large list never hits SQLite's
-  // SQLITE_MAX_VARIABLE_NUMBER (historically 999) on the IN(...) clause
-  CHUNK = 800;
 var
   Q: TFDQuery;
   Placeholders, Cutoff: string;
@@ -2560,7 +2617,7 @@ begin
   Lo := 0;
   while Lo <= High(ATvgIds) do
   begin
-    Hi := Lo + CHUNK - 1;
+    Hi := Lo + cEpgTvgIdParamChunk - 1;
     if Hi > High(ATvgIds) then
       Hi := High(ATvgIds);
     Q := NewQuery;
@@ -3019,8 +3076,8 @@ begin
         // strip_prefixes is ';'-delimited (a token may contain spaces/commas/pipes,
         // e.g. "┃F1 TV┃") — split with ';', NOT the default ',' (that would treat the
         // whole "a;b;c" string as one token and match nothing for multi-prefix sources).
-        Stripped := CleanChannelName(Name, CsvToStrArray(Sel.FieldByName('sp').AsString, ';'),
-          CsvToStrArray(Sel.FieldByName('ss').AsString, ';'));
+        Stripped := CleanChannelName(Name, CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep),
+          CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep));
 
         Ins.ParamByName('l').AsInteger := AListId;
         Ins.ParamByName('sid').AsInteger := Sid;
@@ -3159,8 +3216,8 @@ begin
       Name := Sel.FieldByName('nm').AsString;
       Dn := Sel.FieldByName('dn').AsString;
       // ';'-delimited (see AddItems): a token may itself contain ',' or pipes.
-      Prefixes := CsvToStrArray(Sel.FieldByName('sp').AsString, ';');
-      Suffixes := CsvToStrArray(Sel.FieldByName('ss').AsString, ';');
+      Prefixes := CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep);
+      Suffixes := CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep);
       if (Length(Prefixes) > 0) or (Length(Suffixes) > 0) then
       begin
         Stripped := CleanChannelName(Name, Prefixes, Suffixes);
@@ -3257,8 +3314,8 @@ begin
         Dn := Sel.FieldByName('dn').AsString;
         OldCt := Sel.FieldByName('ct').AsString;
         OldName := Sel.FieldByName('nm').AsString;
-        OldSp := CsvToStrArray(Sel.FieldByName('sp').AsString, ';');
-        OldSs := CsvToStrArray(Sel.FieldByName('ss').AsString, ';');
+        OldSp := CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep);
+        OldSs := CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep);
 
         Sel.Close;
         Sel.SQL.Text :=
@@ -3277,8 +3334,8 @@ begin
         if not SameText(NewCt, OldCt) then
           Continue;
         NewName := Sel.FieldByName('nm').AsString;
-        NewSp := CsvToStrArray(Sel.FieldByName('sp').AsString, ';');
-        NewSs := CsvToStrArray(Sel.FieldByName('ss').AsString, ';');
+        NewSp := CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep);
+        NewSs := CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep);
 
         // auto-managed name (empty, upstream name, or the stripped form of it) ->
         // follow the new channel; otherwise keep the operator's own name
@@ -3341,8 +3398,8 @@ begin
       else
         Shown := Up;
       NewName := CleanChannelName(Shown,
-        CsvToStrArray(Sel.FieldByName('sp').AsString, ';') + AExtraPrefixes,
-        CsvToStrArray(Sel.FieldByName('ss').AsString, ';') + AExtraSuffixes);
+        CsvToStrArray(Sel.FieldByName('sp').AsString, cStripTokenSep) + AExtraPrefixes,
+        CsvToStrArray(Sel.FieldByName('ss').AsString, cStripTokenSep) + AExtraSuffixes);
       if NewName <> Shown.Trim then
       begin
         C.ItemId := Sel.FieldByName('iid').AsInteger;
@@ -3556,7 +3613,7 @@ begin
     Q.Free;
   end;
   if Result <= 0 then
-    Result := 1;
+    Result := cDefaultGroupNumberBase;
 end;
 
 function TSQLiteStore.SetItemNumbers(AListId: Integer; const ANumbers: TArray<TItemNumber>): Integer;

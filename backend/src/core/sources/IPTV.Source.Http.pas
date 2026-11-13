@@ -35,17 +35,19 @@ const
   // playlist/EPG downloads can legitimately take much longer.
   TimeoutPortalMs = 15000;
   TimeoutBulkMs   = 60000;
+  // read timeout when the caller names none (also the THTTPClient response timeout)
+  cTimeoutDefaultReadMs = 30000;
 
 function NewHttpClient(const AUserAgent: string = ''): THTTPClient;
 /// GET the URL as text (http via Indy, https via the OS HTTP client). Raises on
 /// a transport/HTTP error, or EProviderBlocked on a Cloudflare challenge.
 /// AReferer sets a per-provider Referer header (some portals require it, #8).
 function HttpGetString(const AUrl: string; const AUserAgent: string = '';
-  AReadTimeoutMs: Integer = 30000; const AReferer: string = ''): string;
+  AReadTimeoutMs: Integer = cTimeoutDefaultReadMs; const AReferer: string = ''): string;
 /// GET the URL as raw bytes, then decode honouring BOM/UTF-8/CP1251 — use for
 /// playlists where the panel's charset is unknown.
 function HttpGetText(const AUrl: string; const AUserAgent: string = '';
-  AReadTimeoutMs: Integer = 30000; const AReferer: string = ''): string;
+  AReadTimeoutMs: Integer = cTimeoutDefaultReadMs; const AReferer: string = ''): string;
 /// Decode bytes: honour a BOM; else accept valid UTF-8; else fall back to
 /// Windows-1251 (common on RU/UA panels).
 function DecodeBytes(const ABytes: TBytes): string;
@@ -65,6 +67,68 @@ uses
   IdHTTP, IdGlobal, IdCookieManager,
   IPTV.Core.Utils;
 
+const
+  // connection setup
+  cTimeoutConnectMs = 15000;
+  cMaxRedirects = 5;              // cap redirect chains (#3)
+  cAcceptEncodingIdentity = 'identity';
+  cAcceptAny = '*/*';
+  cConnectionClose = 'close';
+  cSchemeHttps = 'https';
+  cIgnoreCase = True;             // string.StartsWith AIgnoreCase
+  cHeaderServer = 'Server';
+  cHeaderReferer = 'Referer';
+
+  // HTTP status codes
+  cHttpStatusErrorMin = 400;
+  cHttpStatusForbidden = 403;
+  cHttpStatusTooManyRequests = 429;
+  cHttpStatusServiceUnavailable = 503;
+
+  // retry with exponential backoff on 429/503 (#14): 1s, 2s, 4s
+  cMaxRetries = 3;
+  cBackoffBaseMs = 500;
+
+  // debug proxy (#18): env IPTV_DEBUG_PROXY=host:port
+  cEnvDebugProxy = 'IPTV_DEBUG_PROXY';
+  cDebugProxyDefaultPort = 8080;
+
+  // charset detection
+  cCodePageWestern = 1252;  // superset of ISO-8859-1 (Latin-1)
+  cCodePageCyrillic = 1251;
+  cCodePageLatin9 = 28605;  // ISO-8859-15
+  cDeclScanBytes = 256;     // the XML prolog sits at the very start
+  cXmlEncodingAttr = 'encoding=';
+  // share of high (>= $C0) bytes among letters above which a non-UTF-8 text is
+  // taken as Cyrillic: Russian text is nearly all high bytes, Western text only
+  // has a few accented letters between ASCII
+  cCyrillicHighShare = 0.3;
+  cLegacyHighLetterMin = $C0; // CP1251: the Cyrillic letters are $C0..$FF
+
+  // UTF-8 lead/continuation byte masks
+  cUtf8AsciiMax = $80;        // below: a 1-byte (ASCII) sequence
+  cUtf8Lead2Mask = $E0;
+  cUtf8Lead2Bits = $C0;
+  cUtf8Lead3Mask = $F0;
+  cUtf8Lead3Bits = $E0;
+  cUtf8Lead4Mask = $F8;
+  cUtf8Lead4Bits = $F0;
+  cUtf8ContMask = $C0;
+  cUtf8ContBits = $80;
+
+  // Decode only the HEAD of a response for the challenge scan. A Cloudflare
+  // interstitial is a few KB; a real playlist/EPG can be hundreds of MB, and a
+  // Delphi UTF-16 string of it is ~2x that — never decode the whole body just to
+  // look for a token (this is the main per-fetch memory spike).
+  cCloudflareScanBytes = 32 * 1024;
+  cServerCloudflare = 'cloudflare';
+
+  // gzip (.xml.gz guides)
+  cGzipMagic1 = $1F;
+  cGzipMagic2 = $8B;
+  cZlibWindowBitsGzip = 15 + 16; // 15 + 16 = gzip header
+  cGunzipChunkBytes = 256 * 1024;
+
 type
   // IPVersion is protected on TIdHTTP in this Indy; a same-unit descendant cast
   // exposes it so we can force IPv4 (#11).
@@ -79,10 +143,10 @@ begin
     Result.UserAgent := DefaultUserAgent;
   Result.Accept := DefaultAccept;
   Result.AcceptLanguage := DefaultAcceptLanguage;
-  Result.AcceptEncoding := 'identity';
+  Result.AcceptEncoding := cAcceptEncodingIdentity;
   Result.HandleRedirects := True;
-  Result.ConnectionTimeout := 15000; // ms
-  Result.ResponseTimeout := 30000;   // ms
+  Result.ConnectionTimeout := cTimeoutConnectMs;
+  Result.ResponseTimeout := cTimeoutDefaultReadMs;
 end;
 
 // ── charset detection ──────────────────────────────────────────────────────
@@ -95,13 +159,13 @@ begin
   N := Length(B);
   while I < N do
   begin
-    if B[I] < $80 then
+    if B[I] < cUtf8AsciiMax then
       Extra := 0
-    else if (B[I] and $E0) = $C0 then
+    else if (B[I] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
       Extra := 1
-    else if (B[I] and $F0) = $E0 then
+    else if (B[I] and cUtf8Lead3Mask) = cUtf8Lead3Bits then
       Extra := 2
-    else if (B[I] and $F8) = $F0 then
+    else if (B[I] and cUtf8Lead4Mask) = cUtf8Lead4Bits then
       Extra := 3
     else
       Exit(False);
@@ -110,7 +174,7 @@ begin
     while Extra > 0 do
     begin
       Inc(I);
-      if (B[I] and $C0) <> $80 then
+      if (B[I] and cUtf8ContMask) <> cUtf8ContBits then
         Exit(False);
       Dec(Extra);
     end;
@@ -118,16 +182,6 @@ begin
   end;
   Result := True;
 end;
-
-const
-  cCodePageWestern = 1252;  // superset of ISO-8859-1 (Latin-1)
-  cCodePageCyrillic = 1251;
-  cCodePageLatin9 = 28605;  // ISO-8859-15
-  cDeclScanBytes = 256;     // the XML prolog sits at the very start
-  // share of high (>= $C0) bytes among letters above which a non-UTF-8 text is
-  // taken as Cyrillic: Russian text is nearly all high bytes, Western text only
-  // has a few accented letters between ASCII
-  cCyrillicHighShare = 0.3;
 
 // code page named by an XML prolog (<?xml ... encoding="ISO-8859-1"?>), 0 if none / unknown
 function DeclaredCodePage(const ABytes: TBytes): Integer;
@@ -139,10 +193,10 @@ begin
   SetLength(lHead, Min(Length(ABytes), cDeclScanBytes));
   for i := 1 to Length(lHead) do
     lHead[i] := Char(ABytes[i - 1]); // ASCII view is enough for the prolog
-  lPos := Pos('encoding=', LowerCase(lHead));
+  lPos := Pos(cXmlEncodingAttr, LowerCase(lHead));
   if lPos = 0 then
     Exit;
-  lPos := lPos + Length('encoding=') + 1; // skip the quote
+  lPos := lPos + Length(cXmlEncodingAttr) + 1; // skip the quote
   lEnd := lPos;
   while (lEnd <= Length(lHead)) and not CharInSet(lHead[lEnd], ['"', '''', '?', ' ']) do
     Inc(lEnd);
@@ -169,7 +223,7 @@ begin
     lByte := ABytes[i];
     if (lByte >= Ord('A')) and (lByte <= Ord('z')) then
       Inc(lLetters)
-    else if lByte >= $C0 then
+    else if lByte >= cLegacyHighLetterMin then
     begin
       Inc(lLetters);
       Inc(lHigh);
@@ -215,19 +269,13 @@ end;
 
 // ── Cloudflare challenge + debug proxy ──────────────────────────────────────
 
-// Decode only the HEAD of a response for the challenge scan. A Cloudflare
-// interstitial is a few KB; a real playlist/EPG can be hundreds of MB, and a
-// Delphi UTF-16 string of it is ~2x that — never decode the whole body just to
-// look for a token (this is the main per-fetch memory spike).
-const
-  CF_SCAN_BYTES = 32 * 1024;
-
+// Decode only the HEAD of a response for the challenge scan (cCloudflareScanBytes).
 function DecodeHead(const ABytes: TBytes): string;
 begin
-  if Length(ABytes) <= CF_SCAN_BYTES then
+  if Length(ABytes) <= cCloudflareScanBytes then
     Result := DecodeBytes(ABytes)
   else
-    Result := DecodeBytes(Copy(ABytes, 0, CF_SCAN_BYTES));
+    Result := DecodeBytes(Copy(ABytes, 0, cCloudflareScanBytes));
 end;
 
 function IsCloudflareChallenge(const ABody, AServer: string; AStatus: Integer): Boolean;
@@ -238,8 +286,15 @@ begin
     (Pos('__cf_chl', ABody) > 0) or
     (Pos('cf-chl', ABody) > 0) or
     (Pos('Just a moment', ABody) > 0) or
-    ((AStatus = 403) and (Pos('Attention Required', ABody) > 0)) or
-    (((AStatus = 403) or (AStatus = 503)) and SameText(AServer, 'cloudflare') and (Pos('challenge', ABody) > 0));
+    ((AStatus = cHttpStatusForbidden) and (Pos('Attention Required', ABody) > 0)) or
+    (((AStatus = cHttpStatusForbidden) or (AStatus = cHttpStatusServiceUnavailable)) and
+      SameText(AServer, cServerCloudflare) and (Pos('challenge', ABody) > 0));
+end;
+
+// 429 / 503 = the provider asks us to slow down: retry with backoff
+function IsRetryStatus(AStatus: Integer): Boolean;
+begin
+  Result := (AStatus = cHttpStatusTooManyRequests) or (AStatus = cHttpStatusServiceUnavailable);
 end;
 
 procedure ApplyDebugProxyIndy(H: TIdHTTP);
@@ -247,14 +302,14 @@ var
   P: string;
   Colon: Integer;
 begin
-  P := GetEnvironmentVariable('IPTV_DEBUG_PROXY');
+  P := GetEnvironmentVariable(cEnvDebugProxy);
   if P = '' then
     Exit;
   Colon := P.LastIndexOf(':');
   if Colon > 0 then
   begin
     H.ProxyParams.ProxyServer := P.Substring(0, Colon);
-    H.ProxyParams.ProxyPort := StrToIntDef(P.Substring(Colon + 1), 8080);
+    H.ProxyParams.ProxyPort := StrToIntDef(P.Substring(Colon + 1), cDebugProxyDefaultPort);
   end;
 end;
 
@@ -263,13 +318,13 @@ var
   P: string;
   Colon: Integer;
 begin
-  P := GetEnvironmentVariable('IPTV_DEBUG_PROXY');
+  P := GetEnvironmentVariable(cEnvDebugProxy);
   if P = '' then
     Exit;
   Colon := P.LastIndexOf(':');
   if Colon > 0 then
     C.ProxySettings := TProxySettings.Create(P.Substring(0, Colon),
-      StrToIntDef(P.Substring(Colon + 1), 8080));
+      StrToIntDef(P.Substring(Colon + 1), cDebugProxyDefaultPort));
 end;
 
 // ── fetchers ────────────────────────────────────────────────────────────────
@@ -289,7 +344,7 @@ type
 procedure TRedirectCatcher.HandleRedirect(Sender: TObject; var ADest: string;
   var ANumRedirect: Integer; var AHandled: Boolean; var AMethod: TIdHTTPMethod);
 begin
-  if ADest.StartsWith('https:', True) then
+  if ADest.StartsWith(cSchemeHttps + ':', cIgnoreCase) then
   begin
     FHttpsTarget := ADest;
     AHandled := False; // stop Indy here; WinHttpGetBytes takes over
@@ -315,13 +370,13 @@ begin
   try
     H.OnRedirect := lCatcher.HandleRedirect;
     H.HandleRedirects := True;
-    H.RedirectMaximum := 5;            // cap redirect chains (#3)
+    H.RedirectMaximum := cMaxRedirects; // cap redirect chains (#3)
     H.AllowCookies := True;            // keep session cookies across redirects (#4)
     H.CookieManager := TIdCookieManager.Create(H);
     TIdHTTPAccess(H).IPVersion := Id_IPv4; // force IPv4 — broken IPv6 on some providers (#11)
-    H.ConnectTimeout := 15000;
+    H.ConnectTimeout := cTimeoutConnectMs;
     H.ReadTimeout := AReadTimeoutMs;   // per request-type (#17)
-    H.Request.Connection := 'close';   // avoid socket-reuse issues on portal calls (#12)
+    H.Request.Connection := cConnectionClose; // avoid socket-reuse issues on portal calls (#12)
     // don't raise on a 4xx/5xx — we want the body so we can spot a Cloudflare
     // challenge page and decide on backoff ourselves (#13/#14)
     H.HTTPOptions := H.HTTPOptions + [hoNoProtocolErrorException, hoWantProtocolErrorContent];
@@ -332,8 +387,8 @@ begin
     // Look like a media client, not a browser: a real VLC/ffmpeg sends just
     // Accept: */* and NO Accept-Language. Sending browser-y headers under a VLC
     // UA is a fingerprint mismatch some WAFs drop (#2, B2).
-    H.Request.Accept := '*/*';
-    H.Request.AcceptEncoding := 'identity'; // no gzip (#2)
+    H.Request.Accept := cAcceptAny;
+    H.Request.AcceptEncoding := cAcceptEncodingIdentity; // no gzip (#2)
     if AReferer <> '' then
       H.Request.Referer := AReferer;   // some portals gate on Referer (#8)
     ApplyDebugProxyIndy(H);            // route via mitmproxy when IPTV_DEBUG_PROXY set (#18)
@@ -346,10 +401,10 @@ begin
         if lCatcher.HttpsTarget <> '' then
           Exit(WinHttpGetBytes(lCatcher.HttpsTarget, AUserAgent, AReadTimeoutMs, AReferer));
         Status := H.ResponseCode;
-        if ((Status = 429) or (Status = 503)) and (Attempt < 3) then
+        if IsRetryStatus(Status) and (Attempt < cMaxRetries) then
         begin
           Inc(Attempt);
-          TThread.Sleep(500 * (1 shl Attempt)); // 1s, 2s, 4s backoff (#14)
+          TThread.Sleep(cBackoffBaseMs * (1 shl Attempt)); // 1s, 2s, 4s backoff (#14)
           Continue;
         end;
         Result := Copy(MS.Bytes, 0, MS.Size);
@@ -360,10 +415,10 @@ begin
     until False;
 
     if IsCloudflareChallenge(DecodeHead(Result),
-      H.Response.RawHeaders.Values['Server'], Status) then
+      H.Response.RawHeaders.Values[cHeaderServer], Status) then
       raise EProviderBlocked.Create(
         'Provider zit achter een Cloudflare browser-challenge — niet zonder browser op te halen.');
-    if Status >= 400 then
+    if Status >= cHttpStatusErrorMin then
       raise EIdHTTPProtocolException.CreateError(Status, H.ResponseText, DecodeBytes(Result));
     // Truncation guard: with identity encoding a declared Content-Length equals the
     // body length, so fewer received bytes means the connection dropped mid-transfer.
@@ -391,7 +446,7 @@ begin
   Result := nil;
   Headers := [];
   if AReferer <> '' then
-    Headers := [TNameValuePair.Create('Referer', AReferer)]; // #8
+    Headers := [TNameValuePair.Create(cHeaderReferer, AReferer)]; // #8
   Http := NewHttpClient(AUserAgent);
   try
     Http.ResponseTimeout := AReadTimeoutMs;
@@ -401,20 +456,20 @@ begin
       MS := TBytesStream.Create;
       try
         Resp := Http.Get(AUrl, MS, Headers);
-        if ((Resp.StatusCode = 429) or (Resp.StatusCode = 503)) and (Attempt < 3) then
+        if IsRetryStatus(Resp.StatusCode) and (Attempt < cMaxRetries) then
         begin
           Inc(Attempt);
-          TThread.Sleep(500 * (1 shl Attempt));
+          TThread.Sleep(cBackoffBaseMs * (1 shl Attempt));
           Continue;
         end;
         Result := Copy(MS.Bytes, 0, MS.Size);
         if IsCloudflareChallenge(DecodeHead(Result),
-          Resp.HeaderValue['Server'], Resp.StatusCode) then
+          Resp.HeaderValue[cHeaderServer], Resp.StatusCode) then
           raise EProviderBlocked.Create(
             'Provider zit achter een Cloudflare browser-challenge — niet zonder browser op te halen.');
         // surface real HTTP errors instead of returning the error-page body (which
         // parses to nothing → a silently empty/cleared catalog). Mirrors the Indy path.
-        if Resp.StatusCode >= 400 then
+        if Resp.StatusCode >= cHttpStatusErrorMin then
           raise Exception.CreateFmt('HTTP %d fetching %s', [Resp.StatusCode, MaskUrlSecrets(AUrl)]);
         // truncation guard (see the Indy path): a short body vs a declared
         // Content-Length means a mid-transfer drop — fail instead of persisting
@@ -435,7 +490,7 @@ end;
 function HttpGetBytes(const AUrl, AUserAgent: string; AReadTimeoutMs: Integer;
   const AReferer: string): TBytes;
 begin
-  if AUrl.StartsWith('https', True) then
+  if AUrl.StartsWith(cSchemeHttps, cIgnoreCase) then
     Result := WinHttpGetBytes(AUrl, AUserAgent, AReadTimeoutMs, AReferer)
   else
     Result := IndyGetBytes(AUrl, AUserAgent, AReadTimeoutMs, AReferer);
@@ -452,16 +507,16 @@ var
   Buf: TBytes;
   N: Integer;
 begin
-  if (Length(ABytes) < 2) or (ABytes[0] <> $1F) or (ABytes[1] <> $8B) then
+  if (Length(ABytes) < 2) or (ABytes[0] <> cGzipMagic1) or (ABytes[1] <> cGzipMagic2) then
     Exit(ABytes);
   Src := TBytesStream.Create(ABytes);
   try
-    Z := TZDecompressionStream.Create(Src, 15 + 16); // 15 + 16 = gzip header
+    Z := TZDecompressionStream.Create(Src, cZlibWindowBitsGzip);
     try
       Dst := TBytesStream.Create;
       try
         // read in chunks: a decompression stream has no known Size to CopyFrom
-        SetLength(Buf, 256 * 1024);
+        SetLength(Buf, cGunzipChunkBytes);
         repeat
           N := Z.Read(Buf[0], Length(Buf));
           if N > 0 then

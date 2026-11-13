@@ -82,14 +82,59 @@ var
   // working; a plain restart without the tab fixed it. Some lazy first-use init in
   // the activation path (likely the JWT token / OpenSSL load on Linux) is not
   // thread-safe. So the server first runs a few requests to itself, one at a time,
-  // and external backend requests wait (no lock held; max WarmupWaitMs) until that
+  // and external backend requests wait (no lock held; max cWarmupWaitMs) until that
   // is done.
   GWarmGate: TEvent;
   GWarmToken: string;
 
 const
-  WarmupHeader = 'X-IPTV-Warmup';
-  WarmupWaitMs = 30000;
+  // startup warm-up (see GWarmGate)
+  cWarmupHeader = 'X-IPTV-Warmup';
+  cWarmupWaitMs = 30000;
+  cWarmupConnectTimeoutMs = 5000;
+  cWarmupResponseTimeoutMs = 15000;
+  cLoopbackHost = '127.0.0.1';
+  // one request per resource class, strictly one after another
+  cWarmupPaths: array[0..2] of string = ('/api/health', '/discover.json',
+    '/player_api.php?username=warmup&password=warmup');
+  // TEvent.Create arguments of the warm-up gate
+  cManualReset = True;
+  cInitiallySignaled = False;
+
+  // MARS application
+  cAppName = 'IPTVPlay';
+  cAppResourceMask = 'IPTV.Api.Mars.*';
+  cParamSslCertFile = 'Indy.SSL.CertFile';
+  cParamSslKeyFile = 'Indy.SSL.KeyFile';
+  cParamSslRootCertFile = 'Indy.SSL.RootCertFile';
+
+  // first URL segments owned by the backend (admin API + Xtream portal + Plex).
+  // catch-up: timeshift/{u}/{p}/... and streaming/timeshift.php MUST be listed,
+  // else the SPA fallback answers them with index.html (200) and the box spins
+  cBackendRoutes: array[0..13] of string =
+    ('api', 'player_api.php', 'get.php', 'xmltv.php', 'live', 'movie', 'series',
+     'timeshift', 'streaming',
+     'plex', 'discover.json', 'lineup.json', 'lineup_status.json', 'lineup.post');
+
+  // bundled admin UI
+  cWebUiDir = 'webui';
+  cIndexHtml = 'index.html';
+
+  // HTTP
+  cSchemeHttp = 'http';
+  cSchemeHttps = 'https';
+  cMethodGet = 'GET';
+  cIgnoreCase = True;                  // string.StartsWith AIgnoreCase
+  cHttpStatusOk = 200;
+  cHttpStatusErrorMin = 400;
+  cSlowRequestMs = 1000;               // log requests at least this slow
+
+  // credential masking for the request log: /live|movie|series|stream|timeshift/{user}/{pass}
+  // path segments AND ?username=&password=-style query keys
+  cMaskPathPattern = '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+';
+  cMaskPathReplace = '$1***/***';
+  cMaskQueryPattern = '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*';
+  cMaskQueryReplace = '$1***';
 
 // warm-up requests go to our own (possibly self-signed) cert on loopback
 procedure AcceptOwnCert(const Sender: TObject; const ARequest: TURLRequest;
@@ -102,10 +147,8 @@ end;
 // path segments AND ?username=&password=-style query keys
 function MaskUrl(const AUrl: string): string;
 begin
-  Result := TRegEx.Replace(AUrl,
-    '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+', '$1***/***', [roIgnoreCase]);
-  Result := TRegEx.Replace(Result,
-    '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*', '$1***', [roIgnoreCase]);
+  Result := TRegEx.Replace(AUrl, cMaskPathPattern, cMaskPathReplace, [roIgnoreCase]);
+  Result := TRegEx.Replace(Result, cMaskQueryPattern, cMaskQueryReplace, [roIgnoreCase]);
 end;
 
 constructor TApiServer.Create(const AConfig: TAppConfig; const ALog: TLogProc);
@@ -118,17 +161,10 @@ end;
 // first URL segments owned by the backend (admin API + Xtream portal); anything
 // else is treated as an admin-UI/static request.
 function IsBackendRoute(const AFirstSeg: string): Boolean;
-const
-  // catch-up: timeshift/{u}/{p}/... and streaming/timeshift.php MUST be listed,
-  // else the SPA fallback answers them with index.html (200) and the box spins
-  ROUTES: array[0..13] of string =
-    ('api', 'player_api.php', 'get.php', 'xmltv.php', 'live', 'movie', 'series',
-     'timeshift', 'streaming',
-     'plex', 'discover.json', 'lineup.json', 'lineup_status.json', 'lineup.post');
 var
   R: string;
 begin
-  for R in ROUTES do
+  for R in cBackendRoutes do
     if SameText(AFirstSeg, R) then
       Exit(True);
   Result := False;
@@ -164,7 +200,7 @@ begin
   if Q > 0 then
     Rel := Copy(Rel, 1, Q - 1);
   if (Rel = '') or (Rel = '/') then
-    Rel := 'index.html';
+    Rel := cIndexHtml;
   if Rel.Contains('..') then // path-traversal guard
     Exit;
   Rel := Rel.Replace('/', PathDelim, [rfReplaceAll]);
@@ -175,17 +211,17 @@ begin
   // (e.g. "C:\..."), so a crafted path could escape the web root. Reject anything
   // that doesn't canonicalise to a location inside AWebRoot.
   if not TPath.GetFullPath(FullPath).StartsWith(
-       IncludeTrailingPathDelimiter(TPath.GetFullPath(AWebRoot)), True) then
+       IncludeTrailingPathDelimiter(TPath.GetFullPath(AWebRoot)), cIgnoreCase) then
     Exit;
   if not TFile.Exists(FullPath) then
-    FullPath := TPath.Combine(AWebRoot, 'index.html'); // SPA fallback
+    FullPath := TPath.Combine(AWebRoot, cIndexHtml); // SPA fallback
   if not TFile.Exists(FullPath) then
     Exit;
   // Indy frees the stream after sending (FreeContentStream := True)
   Stream := TFileStream.Create(FullPath, fmOpenRead or fmShareDenyWrite);
   AResponse.SetContentStream(Stream);
   AResponse.SetContentType(MimeType(ExtractFileExt(FullPath)));
-  AResponse.SetStatusCode(200);
+  AResponse.SetStatusCode(cHttpStatusOk);
   Result := True;
 end;
 
@@ -208,9 +244,9 @@ begin
       raise Exception.Create('UseHttps is on but TlsCertFile/TlsKeyFile are not set');
     FEngine.Port := 0;
     FEngine.PortSSL := FConfig.HttpPort;
-    FEngine.Parameters.Values['Indy.SSL.CertFile'] := FConfig.TlsCertFile;
-    FEngine.Parameters.Values['Indy.SSL.KeyFile'] := FConfig.TlsKeyFile;
-    FEngine.Parameters.Values['Indy.SSL.RootCertFile'] := FConfig.TlsRootCertFile;
+    FEngine.Parameters.Values[cParamSslCertFile] := FConfig.TlsCertFile;
+    FEngine.Parameters.Values[cParamSslKeyFile] := FConfig.TlsKeyFile;
+    FEngine.Parameters.Values[cParamSslRootCertFile] := FConfig.TlsRootCertFile;
   end
   else
   begin
@@ -222,20 +258,20 @@ begin
   // Empty app base + OnGetApplication fallback => every URL routes to this one
   // application, and resource [Path]'s (api, player_api.php, live, ...) match
   // from the site root.
-  FEngine.AddApplication('IPTVPlay', '', ['IPTV.Api.Mars.*']);
+  FEngine.AddApplication(cAppName, '', [cAppResourceMask]);
   FEngine.OnGetApplication :=
     procedure (const AEngine: IMARSEngine; const AURL: TMARSURL;
       const ARequest: IMARSRequest; const AResponse: IMARSResponse;
       var AApplication: IMARSApplication)
     begin
       if AApplication = nil then
-        AApplication := AEngine.ApplicationByName('IPTVPlay');
+        AApplication := AEngine.ApplicationByName(cAppName);
     end;
 
   // the bundled admin UI (built React app) lives in <exedir>/webui when present;
   // empty => the image/run is API-only (manage from the dev frontend instead).
   FWebRoot := '';
-  var LRoot := TPath.Combine(ExtractFilePath(ParamStr(0)), 'webui');
+  var LRoot := TPath.Combine(ExtractFilePath(ParamStr(0)), cWebUiDir);
   if TDirectory.Exists(LRoot) then
   begin
     FWebRoot := LRoot;
@@ -261,10 +297,7 @@ begin
         //  1) PATH segments — the live/movie/series stream endpoints are
         //     /live/{user}/{pass}/{id}, so the password sits in the path (no '=').
         //  2) query keys — get.php/player_api.php (?username=&password=), admin ?pw=, tokens, mac.
-        LMasked := TRegEx.Replace(AURL.URL,
-          '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+', '$1***/***', [roIgnoreCase]);
-        LMasked := TRegEx.Replace(LMasked,
-          '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*', '$1***', [roIgnoreCase]);
+        LMasked := MaskUrl(AURL.URL);
         // client IP first: shows which box/app asked (e.g. two boxes fighting
         // over a single provider connection)
         FLog(Format('%-15s %s %s', [ARequest.RemoteIP, ARequest.Method, LMasked]));
@@ -276,12 +309,12 @@ begin
 
       // hold external backend requests until the startup warm-up has run
       if (FWebRoot = '') or IsBackendRoute(LFirst) then
-        if (GWarmGate <> nil) and (ARequest.GetHeaderParamValue(WarmupHeader) <> GWarmToken) then
-          GWarmGate.WaitFor(WarmupWaitMs);
+        if (GWarmGate <> nil) and (ARequest.GetHeaderParamValue(cWarmupHeader) <> GWarmToken) then
+          GWarmGate.WaitFor(cWarmupWaitMs);
 
       if (FWebRoot = '') then
         Exit;
-      if not SameText(ARequest.Method, 'GET') then
+      if not SameText(ARequest.Method, cMethodGet) then
         Exit;
       if IsBackendRoute(LFirst) then
         Exit; // /api, /player_api.php, /live, ... -> let MARS handle it
@@ -304,7 +337,7 @@ begin
       if not Assigned(FLog) then
         Exit;
       LMs := (TStopwatch.GetTimeStamp - GReqStart) * 1000 div TStopwatch.Frequency;
-      if (LMs >= 1000) or (AResponse.StatusCode >= 400) then
+      if (LMs >= cSlowRequestMs) or (AResponse.StatusCode >= cHttpStatusErrorMin) then
         FLog(Format('%-15s done %d in %d ms  %s %s',
           [ARequest.RemoteIP, AResponse.StatusCode, LMs, ARequest.Method, MaskUrl(AURL.URL)]));
     end;
@@ -325,7 +358,7 @@ begin
 
   // close the warm-up gate BEFORE the listener opens (see GWarmGate)
   if GWarmGate = nil then
-    GWarmGate := TEvent.Create(nil, True, False, '')
+    GWarmGate := TEvent.Create(nil, cManualReset, cInitiallySignaled, '')
   else
     GWarmGate.ResetEvent;
   GWarmToken := TGUID.NewGuid.ToString;
@@ -337,8 +370,9 @@ begin
     // warm up the MARS activation path with requests to ourselves, strictly one at a
     // time (each resource class once), then open the gate. On a background thread so
     // a stuck warm-up can never block startup; external requests wait at most
-    // WarmupWaitMs anyway.
-    var LBase := Format('%s://127.0.0.1:%d', [IfThen(FConfig.UseHttps, 'https', 'http'), FConfig.HttpPort]);
+    // cWarmupWaitMs anyway.
+    var LBase := Format('%s://%s:%d', [IfThen(FConfig.UseHttps, cSchemeHttps, cSchemeHttp),
+      cLoopbackHost, FConfig.HttpPort]);
     var LLog := FLog;
     TThread.CreateAnonymousThread(
       procedure
@@ -351,12 +385,11 @@ begin
         try
           LHttp := THTTPClient.Create;
           try
-            LHttp.ConnectionTimeout := 5000;
-            LHttp.ResponseTimeout := 15000;
-            LHttp.CustomHeaders[WarmupHeader] := GWarmToken;
+            LHttp.ConnectionTimeout := cWarmupConnectTimeoutMs;
+            LHttp.ResponseTimeout := cWarmupResponseTimeoutMs;
+            LHttp.CustomHeaders[cWarmupHeader] := GWarmToken;
             LHttp.ValidateServerCertificateCallback := AcceptOwnCert;
-            for LPath in TArray<string>.Create('/api/health', '/discover.json',
-              '/player_api.php?username=warmup&password=warmup') do
+            for LPath in cWarmupPaths do
               try
                 LHttp.Get(LBase + LPath).StatusCode;
               except
@@ -393,7 +426,7 @@ begin
   begin
     // the discover.json lives on httpPort; that port serves TLS when UseHttps is on,
     // so the SSDP LOCATION must use https there or Plex's fetch fails
-    if FConfig.UseHttps then Scheme := 'https' else Scheme := 'http';
+    if FConfig.UseHttps then Scheme := cSchemeHttps else Scheme := cSchemeHttp;
     FSsdp := TSsdpServer.Create(
       Format('%s://%s:%d/discover.json', [Scheme, SafeUrlHost(FConfig.PublicBaseUrl, 'localhost'),
         FConfig.HttpPort]), FLog);

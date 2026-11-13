@@ -37,6 +37,10 @@ uses
   IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.CustomList,
   IPTV.Api.Serializers;
 
+const
+  cBundleVersion = 1;   // the 'version' an export writes
+  cStreamKeySep = '|';  // joins sourceName|contentType|upstreamId|upstreamUrl into a dedupe key
+
 function StreamExportJson(const ASourceName: string; const AStream: TStreamItem): TJSONObject;
 begin
   Result := TJSONObject.Create;
@@ -56,7 +60,7 @@ function StreamFromExportJson(const J: TJSONObject; ASourceId: Integer): TStream
 begin
   Result := TStreamItem.Create;
   Result.SourceId := ASourceId;
-  Result.ContentType := ContentTypeFromString(J.GetValue<string>('contentType', 'live'));
+  Result.ContentType := ContentTypeFromString(J.GetValue<string>('contentType', ContentTypeNames[ctLive]));
   Result.UpstreamId := J.GetValue<string>('upstreamId', '');
   Result.Name := J.GetValue<string>('name', '');
   Result.Logo := J.GetValue<string>('logo', '');
@@ -84,7 +88,7 @@ var
   GName: string;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('version', TJSONNumber.Create(1));
+  Result.AddPair('version', TJSONNumber.Create(cBundleVersion));
 
   SrcNames := TDictionary<Integer, string>.Create;
   try
@@ -236,8 +240,8 @@ begin
               SName := SObj.GetValue<string>('sourceName', '');
               if not SrcIdByName.TryGetValue(SName, NewSrcId) then
                 Continue;
-              Key := SName + '|' + SObj.GetValue<string>('contentType', '') + '|' +
-                     SObj.GetValue<string>('upstreamId', '') + '|' +
+              Key := SName + cStreamKeySep + SObj.GetValue<string>('contentType', '') + cStreamKeySep +
+                     SObj.GetValue<string>('upstreamId', '') + cStreamKeySep +
                      SObj.GetValue<string>('upstreamUrl', '');
               if SeenStream.ContainsKey(Key) then
                 Continue;
@@ -317,7 +321,7 @@ begin
                     Item.Id := 0;
                     Item.ListId := NewListId;
                     Item.StreamItemId := Sid;
-                    Item.ContentType := ContentTypeFromString(SObj.GetValue<string>('contentType', 'live'));
+                    Item.ContentType := ContentTypeFromString(SObj.GetValue<string>('contentType', ContentTypeNames[ctLive]));
                     Item.DisplayName := TJSONObject(IV).GetValue<string>('displayName', '');
                     Item.LogoOverride := TJSONObject(IV).GetValue<string>('logoOverride', '');
                     Item.TvgIdOverride := TJSONObject(IV).GetValue<string>('tvgIdOverride', '');

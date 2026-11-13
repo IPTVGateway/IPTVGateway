@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
 import type { ContentType, IngestStatus, PrefixCount, Source, SourceKind } from '../types'
-import { CONTENT_TYPES } from '../lib/ordering'
+import { CONTENT_LIVE, CONTENT_TYPES } from '../lib/ordering'
+
+// how often ingest progress is polled
+const REFRESH_STATUS_POLL_MS = 2000
+const MS_PER_DAY = 86_400_000
+// an account expiring within this many days is flagged "soon"
+const EXPIRY_WARN_DAYS = 14
 import { Modal } from './Modal'
 import { useT } from '../i18n'
 
@@ -55,7 +61,7 @@ const EMPTY_FORM: SourceForm = {
   forceHls: false,
   preferOwnEpg: false,
   enabled: true,
-  contentTypes: ['live'],
+  contentTypes: [CONTENT_LIVE],
   includeFilters: [],
   excludeFilters: [],
   stripPrefixes: '',
@@ -134,7 +140,7 @@ export function SourcesPanel({ onChanged }: Props) {
       }
     }
     void poll()
-    const t = setInterval(poll, 2000)
+    const t = setInterval(poll, REFRESH_STATUS_POLL_MS)
     return () => {
       cancelled = true
       clearInterval(t)
@@ -668,9 +674,9 @@ function SourceExpiry({ s }: { s: Source }) {
       </div>
     )
   const exp = new Date(s.expiresUtc)
-  const days = Math.ceil((exp.getTime() - Date.now()) / 86400000)
+  const days = Math.ceil((exp.getTime() - Date.now()) / MS_PER_DAY)
   const when = exp.toLocaleDateString()
-  const cls = days < 0 ? 'source-expiry expired' : days <= 14 ? 'source-expiry soon' : 'source-expiry muted'
+  const cls = days < 0 ? 'source-expiry expired' : days <= EXPIRY_WARN_DAYS ? 'source-expiry soon' : 'source-expiry muted'
   return (
     <div className={cls}>
       {days < 0

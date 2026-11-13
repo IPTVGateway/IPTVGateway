@@ -61,6 +61,40 @@ uses
   IdHTTP, IdGlobal, IdCookieManager,
   IPTV.Model.Types;
 
+const
+  // portal endpoints
+  cPortalPhp = 'portal.php';
+  cLoadPhp = 'load.php';
+  cConsolePath = '/c';               // the MAG web console, stripped from the base
+
+  // HTTP client
+  cMaxRedirects = 5;
+  cTimeoutConnectMs = 15000;
+  cTimeoutReadMs = 30000;
+  cHeaderXUserAgent = 'X-User-Agent';
+  cHeaderCookie = 'Cookie';
+  cHeaderAuthorization = 'Authorization';
+  cBearerPrefix = 'Bearer ';
+
+  // portal request types / actions
+  cTypeStb = 'stb';
+  cTypeItv = 'itv';
+  cActionHandshake = 'handshake';
+  cActionGetGenres = 'get_genres';
+  cActionGetOrderedList = 'get_ordered_list';
+
+  // JSON fields
+  cJsonJs = 'js';                    // every answer is wrapped in {"js": ...}
+  cJsonData = 'data';
+  cJsonId = 'id';
+  cJsonName = 'name';
+
+  // channel cmd "ffmpeg http://.../ch/<id>": player prefix to strip
+  cCmdPlayerPrefix = 'ffmpeg ';
+  cIgnoreCase = True;                // string.StartsWith AIgnoreCase
+
+  cMaxPages = 100;                   // hard safety cap on pagination
+
 type
   // IPVersion is protected on TIdHTTP — a same-unit descendant exposes it.
   TIdHTTPAccess = class(TIdHTTP);
@@ -70,11 +104,11 @@ var
   U: string;
 begin
   U := ABaseUrl.Trim.TrimRight(['/']);
-  if U.ToLower.EndsWith('portal.php') or U.ToLower.EndsWith('load.php') then
+  if U.ToLower.EndsWith(cPortalPhp) or U.ToLower.EndsWith(cLoadPhp) then
     Exit(U);
-  if U.ToLower.EndsWith('/c') then
-    U := U.Substring(0, U.Length - 2);
-  Result := U + '/portal.php';
+  if U.ToLower.EndsWith(cConsolePath) then
+    U := U.Substring(0, U.Length - Length(cConsolePath));
+  Result := U + '/' + cPortalPhp;
 end;
 
 function StalkerActionUrl(const APortal, AType, AAction, AExtra: string): string;
@@ -99,22 +133,22 @@ begin
   H := TIdHTTP.Create(nil);
   try
     H.HandleRedirects := True;
-    H.RedirectMaximum := 5;
+    H.RedirectMaximum := cMaxRedirects;
     H.AllowCookies := True;
     H.CookieManager := TIdCookieManager.Create(H);
     TIdHTTPAccess(H).IPVersion := Id_IPv4;
-    H.ConnectTimeout := 15000;
-    H.ReadTimeout := 30000;
+    H.ConnectTimeout := cTimeoutConnectMs;
+    H.ReadTimeout := cTimeoutReadMs;
     if FUserAgent <> '' then
       H.Request.UserAgent := FUserAgent
     else
       H.Request.UserAgent := StalkerUserAgent;
     if FReferer <> '' then
       H.Request.Referer := FReferer;
-    H.Request.CustomHeaders.Values['X-User-Agent'] := StalkerXUserAgent;
-    H.Request.CustomHeaders.Values['Cookie'] := StalkerCookie(FMac);
+    H.Request.CustomHeaders.Values[cHeaderXUserAgent] := StalkerXUserAgent;
+    H.Request.CustomHeaders.Values[cHeaderCookie] := StalkerCookie(FMac);
     if FToken <> '' then
-      H.Request.CustomHeaders.Values['Authorization'] := 'Bearer ' + FToken;
+      H.Request.CustomHeaders.Values[cHeaderAuthorization] := cBearerPrefix + FToken;
     Result := H.Get(AUrl);
   finally
     H.Free;
@@ -127,12 +161,12 @@ var
   JV, Js: TJSONValue;
 begin
   Result := False;
-  Resp := Fetch(StalkerActionUrl(FPortal, 'stb', 'handshake', '&token='));
+  Resp := Fetch(StalkerActionUrl(FPortal, cTypeStb, cActionHandshake, '&token='));
   JV := TJSONObject.ParseJSONValue(Resp);
   try
     if JV is TJSONObject then
     begin
-      Js := TJSONObject(JV).GetValue('js');
+      Js := TJSONObject(JV).GetValue(cJsonJs);
       if Js is TJSONObject then
       begin
         FToken := TJSONObject(Js).GetValue<string>('token', '');
@@ -157,12 +191,12 @@ var
   Page: Integer;
 begin
   // genres → categories (live tv)
-  Resp := Fetch(StalkerActionUrl(FPortal, 'itv', 'get_genres', ''));
+  Resp := Fetch(StalkerActionUrl(FPortal, cTypeItv, cActionGetGenres, ''));
   JV := TJSONObject.ParseJSONValue(Resp);
   try
-    if (JV is TJSONObject) and (TJSONObject(JV).GetValue('js') is TJSONArray) then
+    if (JV is TJSONObject) and (TJSONObject(JV).GetValue(cJsonJs) is TJSONArray) then
     begin
-      Arr := TJSONArray(TJSONObject(JV).GetValue('js'));
+      Arr := TJSONArray(TJSONObject(JV).GetValue(cJsonJs));
       for Item in Arr do
         if Item is TJSONObject then
         begin
@@ -170,8 +204,8 @@ begin
           Cat := TCategory.Create;
           Cat.SourceId := ASource.Id;
           Cat.ContentType := ctLive;
-          Cat.UpstreamId := O.GetValue<string>('id', '');
-          Cat.Name := O.GetValue<string>('title', O.GetValue<string>('name', ''));
+          Cat.UpstreamId := O.GetValue<string>(cJsonId, '');
+          Cat.Name := O.GetValue<string>('title', O.GetValue<string>(cJsonName, ''));
           ASnapshot.Categories.Add(Cat);
         end;
     end;
@@ -182,16 +216,16 @@ begin
   // channels (paged) → streams
   Page := 1;
   repeat
-    Resp := Fetch(StalkerActionUrl(FPortal, 'itv', 'get_ordered_list',
+    Resp := Fetch(StalkerActionUrl(FPortal, cTypeItv, cActionGetOrderedList,
       Format('&genre=*&p=%d', [Page])));
     JV := TJSONObject.ParseJSONValue(Resp);
     try
       Data := nil;
       if JV is TJSONObject then
       begin
-        Js := TJSONObject(JV).GetValue('js');
-        if (Js is TJSONObject) and (TJSONObject(Js).GetValue('data') is TJSONArray) then
-          Data := TJSONArray(TJSONObject(Js).GetValue('data'));
+        Js := TJSONObject(JV).GetValue(cJsonJs);
+        if (Js is TJSONObject) and (TJSONObject(Js).GetValue(cJsonData) is TJSONArray) then
+          Data := TJSONArray(TJSONObject(Js).GetValue(cJsonData));
       end;
       if (Data = nil) or (Data.Count = 0) then
         Break;
@@ -202,8 +236,8 @@ begin
           S := TStreamItem.Create;
           S.SourceId := ASource.Id;
           S.ContentType := ctLive;
-          S.UpstreamId := O.GetValue<string>('id', '');
-          S.Name := O.GetValue<string>('name', '');
+          S.UpstreamId := O.GetValue<string>(cJsonId, '');
+          S.Name := O.GetValue<string>(cJsonName, '');
           S.Logo := O.GetValue<string>('logo', '');
           S.TvgId := O.GetValue<string>('xmltv_id', '');
           S.CategoryUpstreamId := O.GetValue<string>('tv_genre_id', '');
@@ -211,8 +245,8 @@ begin
           // NOTE: some panels need a per-channel create_link call instead; that
           // refinement is pending a live portal to validate against.
           Cmd := O.GetValue<string>('cmd', '');
-          if Cmd.StartsWith('ffmpeg ', True) then
-            Cmd := Cmd.Substring(7).Trim;
+          if Cmd.StartsWith(cCmdPlayerPrefix, cIgnoreCase) then
+            Cmd := Cmd.Substring(Length(cCmdPlayerPrefix)).Trim;
           S.UpstreamUrl := Cmd;
           ASnapshot.Streams.Add(S);
         end;
@@ -220,7 +254,7 @@ begin
     finally
       JV.Free;
     end;
-  until Page > 100; // hard safety cap on pagination
+  until Page > cMaxPages;
 end;
 
 function TStalkerReader.Read(const ASource: TSourceConfig): TSourceSnapshot;

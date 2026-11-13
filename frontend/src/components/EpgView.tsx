@@ -1,9 +1,23 @@
 import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { api } from '../api/client'
 import type { CustomGroup, CustomItem, CustomList, EpgProgramme, StreamItem } from '../types'
-import { bouquetOrder, byNameCI } from '../lib/ordering'
-import { useDebounced } from '../hooks/useDebounced'
+import {
+  bouquetOrder,
+  byNameCI,
+  CONTENT_LIVE,
+  SORT_BY_NAME,
+  SORT_BY_NUMBER,
+  SORT_MODE_STORAGE_KEY,
+  type SortMode,
+} from '../lib/ordering'
+import { SEARCH_DEBOUNCE_MS, useDebounced } from '../hooks/useDebounced'
 import { useT } from '../i18n'
+
+// re-render cadence that keeps the "on now" highlight current
+const NOW_TICK_MS = 60_000
+// after "Update EPG": reload the view this many times, this far apart, while the guide comes in
+const EPG_UPDATE_RELOADS = 5
+const EPG_UPDATE_RELOAD_MS = 3000
 
 /** A provider logo that 404s shows a broken-image icon; hide it instead. */
 const hideBrokenImg = (e: SyntheticEvent<HTMLImageElement>) => {
@@ -60,7 +74,7 @@ export function EpgView({ lists, activeListId }: Props) {
   // Re-render roughly every minute so the "on now" highlight stays current.
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 60_000)
+    const t = setInterval(() => setNow(Date.now()), NOW_TICK_MS)
     return () => clearInterval(t)
   }, [])
 
@@ -97,7 +111,7 @@ export function EpgView({ lists, activeListId }: Props) {
 function SourceEpg({ now }: { now: number }) {
   const t = useT()
   const [search, setSearch] = useState('')
-  const debSearch = useDebounced(search, 300)
+  const debSearch = useDebounced(search, SEARCH_DEBOUNCE_MS)
 
   const [channels, setChannels] = useState<StreamItem[]>([])
   const [chLoading, setChLoading] = useState(false)
@@ -113,7 +127,7 @@ function SourceEpg({ now }: { now: number }) {
     setChLoading(true)
     setChError(null)
     api
-      .streams({ search: debSearch.trim() || undefined, type: 'live' })
+      .streams({ search: debSearch.trim() || undefined, type: CONTENT_LIVE })
       .then((rows) => {
         if (cancelled) return
         // Only channels that carry a tvgId can have an EPG.
@@ -312,20 +326,20 @@ function OwnEpg({
     pollRef.current = setInterval(() => {
       n += 1
       setReloadKey((k) => k + 1)
-      if (n >= 5) {
+      if (n >= EPG_UPDATE_RELOADS) {
         if (pollRef.current) clearInterval(pollRef.current)
         pollRef.current = null
         setEpgMsg(null)
       }
-    }, 3000)
+    }, EPG_UPDATE_RELOAD_MS)
   }
 
   // the position of each (effective) tvg-id in the bouquet as the list panel
   // shows it (its first channel wins when several share one guide id)
   const laneRank = useMemo(() => {
-    let mode: 'name' | 'number' = 'name'
+    let mode: SortMode = SORT_BY_NAME
     try {
-      if (localStorage.getItem('iptv.list.sortMode') === 'number') mode = 'number'
+      if (localStorage.getItem(SORT_MODE_STORAGE_KEY) === SORT_BY_NUMBER) mode = SORT_BY_NUMBER
     } catch {
       /* default A→Z */
     }
@@ -402,6 +416,10 @@ function OwnEpg({
 const HOUR_MS = 3_600_000
 const PX_PER_HOUR = 170 // timeline scale
 const LABEL_W = 150 // frozen channel column width
+// grid window around now: at most this far back, at least / at most this far ahead
+const GRID_MAX_HOURS_BACK = 24
+const GRID_MIN_HOURS_AHEAD = 12
+const GRID_MAX_HOURS_AHEAD = 48
 
 /** A real TV-guide grid: channels as rows, time on the horizontal axis,
  *  programme blocks sized by duration, a live "now" line. Frozen header row
@@ -430,14 +448,14 @@ function EpgGrid({
       }
     const startHour = Math.floor(now / HOUR_MS) * HOUR_MS
     const minData = Number.isFinite(minStart) ? minStart : startHour
-    const maxData = Number.isFinite(maxStop) ? maxStop : startHour + 12 * HOUR_MS
+    const maxData = Number.isFinite(maxStop) ? maxStop : startHour + GRID_MIN_HOURS_AHEAD * HOUR_MS
     // anchored on NOW: show the past the guide has (catch-up), at most a day back,
     // and up to two days ahead. Whole hours, so the ticks read 07:00, 08:00 …
     const wStart = Math.max(
       Math.floor(Math.min(startHour - HOUR_MS, minData) / HOUR_MS) * HOUR_MS,
-      startHour - 24 * HOUR_MS,
+      startHour - GRID_MAX_HOURS_BACK * HOUR_MS,
     )
-    const wEnd = Math.min(Math.max(maxData, startHour + 12 * HOUR_MS), startHour + 48 * HOUR_MS)
+    const wEnd = Math.min(Math.max(maxData, startHour + GRID_MIN_HOURS_AHEAD * HOUR_MS), startHour + GRID_MAX_HOURS_AHEAD * HOUR_MS)
     const x = (ms: number) => ((ms - wStart) / HOUR_MS) * PX_PER_HOUR
     const t: number[] = []
     for (let h = wStart; h <= wEnd; h += HOUR_MS) t.push(h)

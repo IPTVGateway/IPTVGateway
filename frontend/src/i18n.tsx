@@ -37,6 +37,8 @@ const BUILTIN_DICTS: Record<string, Dict> = {
 }
 
 const LOCALE_KEY = 'iptv.locale'
+/** Locale used when nothing (valid) is stored: English, the source language. */
+const DEFAULT_LOCALE = 'en'
 
 /** Identity translator — used as the no-provider default and for English. */
 const identityT = (s: string) => s
@@ -54,9 +56,9 @@ interface I18nControl {
   reload: () => void
 }
 const I18nContext = createContext<I18nControl>({
-  locale: 'en',
+  locale: DEFAULT_LOCALE,
   setLocale: () => {},
-  languages: [{ code: 'en', name: 'English' }],
+  languages: [{ code: DEFAULT_LOCALE, name: 'English' }],
   reload: () => {},
 })
 
@@ -70,9 +72,9 @@ function stripMeta(d: Dict): Dict {
 
 function readInitialLocale(): string {
   try {
-    return localStorage.getItem(LOCALE_KEY) || 'en'
+    return localStorage.getItem(LOCALE_KEY) || DEFAULT_LOCALE
   } catch {
-    return 'en'
+    return DEFAULT_LOCALE
   }
 }
 

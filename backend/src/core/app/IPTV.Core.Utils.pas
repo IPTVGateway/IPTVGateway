@@ -151,7 +151,78 @@ uses
 {$IFDEF POSIX}
   , Posix.SysTime
 {$ENDIF}
-  ;
+  , IPTV.Model.Epg;
+
+const
+  // ProcessResidentBytes (Linux): statm counts pages; 4 KiB pages on x86-64
+  cProcStatmPath = '/proc/self/statm';
+  cLinuxPageSize = 4096;
+
+  // stored form of a content-type set ("live,movie")
+  cContentTypeDelim = ',';
+
+  // quality vocabulary (CanonicalQuality / QualityRank); mirrored in the web
+  // app's ListPanel.tsx QUALITIES - keep in sync
+  cQualitySD = 'SD';
+  cQualityHD = 'HD';
+  cQualityFHD = 'FHD';
+  cQualityUHD = 'UHD';
+  cQuality4K = '4K';
+  cQuality4KPlus = '4K+';
+  cQuality8K = '8K';
+  cQuality8KPlus = '8K+';
+  cQualityQHD = 'QHD';
+  cQuality2K = '2K';
+  cQualityRaw = 'RAW';             // the providers' unprocessed/original feed tier
+  cQualityFullHd = 'FULLHD';       // spellings folded to cQualityFHD
+  cQualityFullHdDash = 'FULL-HD';
+
+  // M3uStreamId: shorter credentials are not blanked (they'd hit incidental chars)
+  cMinCredLength = 2;
+
+  // StripNamePrefixes / StripNameSuffixes: upper bound on strip passes
+  cMaxStripPasses = 16;
+
+  // record / bullet glyphs providers put before a trailing tag ("NPO 1 HD ⏺rec")
+  cSepRecordButton = #$23FA;       // ⏺ black circle for record
+  cSepBlackCircle = #$25CF;        // ● black circle
+  cSepBullet = #$2022;             // • bullet
+  cSepMediumBlackCircle = #$26AB;  // ⚫ medium black circle
+
+  // FoldDecorativeChar: contiguous Unicode ranges mapped by offset
+  cSuperscriptFour = $2074;        // ⁴ .. ⁹ (U+2074..U+2079)
+  cSuperscriptNine = $2079;
+  cFullwidthDigitZero = $FF10;     // ０ .. ９
+  cFullwidthDigitNine = $FF19;
+  cFullwidthUpperA = $FF21;        // Ａ .. Ｚ
+  cFullwidthUpperZ = $FF3A;
+  cFullwidthLowerA = $FF41;        // ａ .. ｚ
+  cFullwidthLowerZ = $FF5A;
+  cFullwidthPlus = $FF0B;          // ＋
+
+  // EpgKeyAlias: short form some providers use for National Geographic
+  cNatGeoShort = 'natgeo';
+  cNatGeoLong = 'nationalgeographic';
+
+  // NormalizePublicBaseUrl
+  cSchemeSep = '://';
+  cDefaultScheme = 'http://';      // added when the operator typed no scheme
+
+  // XtreamBase64: 0 chars per line = never wrap
+  cBase64NoLineBreaks = 0;
+
+  // XtreamTzOffsetMin: portal clocks are whole quarter hours off UTC, at most UTC±14 h
+  cTzOffsetStepMin = 15;
+  cMaxTzOffsetMin = 14 * MinsPerHour;
+
+  // ParseTimeshiftStart: a plain number below this is no unix timestamp (1973-03-03)
+  cMinUnixTimestamp = 100000000;
+  // date-time parts: Y M D H Mi [S]
+  cMinTimeshiftParts = 5;
+  cMaxTimeshiftParts = 6;
+
+  // XtreamTimeshiftUrl: container when the caller passes none
+  cDefaultStreamExt = 'ts';
 
 function ProcessResidentBytes: Int64;
 {$IFDEF LINUX}
@@ -162,9 +233,9 @@ begin
   // field[1] = resident set size; page size is 4096 on x86-64 Linux.
   Result := 0;
   try
-    Parts := TFile.ReadAllText('/proc/self/statm').Trim.Split([' ']);
+    Parts := TFile.ReadAllText(cProcStatmPath).Trim.Split([' ']);
     if Length(Parts) >= 2 then
-      Result := StrToInt64Def(Parts[1], 0) * 4096;
+      Result := StrToInt64Def(Parts[1], 0) * cLinuxPageSize;
   except
     Result := 0;
   end;
@@ -203,7 +274,7 @@ var
 begin
   SL := TStringList.Create;
   try
-    SL.Delimiter := ',';
+    SL.Delimiter := cContentTypeDelim;
     SL.StrictDelimiter := True;
     for CT := Low(TContentType) to High(TContentType) do
       if CT in ACt then
@@ -220,7 +291,7 @@ var
   P: string;
 begin
   Result := [];
-  Parts := AValue.Split([',']);
+  Parts := AValue.Split([cContentTypeDelim]);
   for P in Parts do
     if P.Trim <> '' then
       Include(Result, ContentTypeFromString(P.Trim));
@@ -289,13 +360,13 @@ var
   U: string;
 begin
   U := FoldDecorativeLetters(AToken.Trim).ToUpper;
-  if (U = 'FULLHD') or (U = 'FULL-HD') then
-    Exit('FHD');
+  if (U = cQualityFullHd) or (U = cQualityFullHdDash) then
+    Exit(cQualityFHD);
   // known quality labels (the '+' tiers are distinct from their base tier);
   // RAW = the providers' unprocessed/original feed tier
-  if (U = 'SD') or (U = 'HD') or (U = 'FHD') or (U = 'UHD') or
-     (U = '4K') or (U = '4K+') or (U = '8K') or (U = '8K+') or
-     (U = 'QHD') or (U = '2K') or (U = 'RAW') then
+  if (U = cQualitySD) or (U = cQualityHD) or (U = cQualityFHD) or (U = cQualityUHD) or
+     (U = cQuality4K) or (U = cQuality4KPlus) or (U = cQuality8K) or (U = cQuality8KPlus) or
+     (U = cQualityQHD) or (U = cQuality2K) or (U = cQualityRaw) then
     Result := U
   else
     Result := '';
@@ -304,7 +375,8 @@ end;
 function QualityRank(const AQuality: string): Integer;
 const
   Ladder: array[0..10] of string =
-    ('8K+', '8K', '4K+', '4K', 'UHD', 'QHD', '2K', 'FHD', 'RAW', 'HD', 'SD');
+    (cQuality8KPlus, cQuality8K, cQuality4KPlus, cQuality4K, cQualityUHD, cQualityQHD, cQuality2K,
+     cQualityFHD, cQualityRaw, cQualityHD, cQualitySD);
 var
   K: Integer;
   U: string;
@@ -384,7 +456,7 @@ var
   procedure Blank(const ACred: string);
   begin
     // length>=2 so a 1-char cred can't blanket-replace incidental characters
-    if ACred.Length >= 2 then
+    if ACred.Length >= cMinCredLength then
       S := StringReplace(S, ACred, CRED, [rfReplaceAll]); // case-sensitive (URLs are)
   end;
 
@@ -411,11 +483,11 @@ begin
   // are > #255 so CharInSet (AnsiChar set) can't see them — test them explicitly.
   case C of
     ' ', #9, '|', '-', ':',
-    #$00A6,            // ¦ broken bar
-    #$2502, #$2503,    // │ ┃ box-drawings vertical (light / heavy) — the common ones
-    #$2506, #$2507,    // ┆ ┇ dashed vertical (triple)
-    #$250A, #$250B,    // ┊ ┋ dashed vertical (quadruple)
-    #$FF5C:            // ｜ fullwidth vertical line
+    cSepBrokenBar,
+    cSepBoxLight, cSepBoxHeavy,                  // the common ones
+    cSepTripleDashLight, cSepTripleDashHeavy,
+    cSepQuadDashLight, cSepQuadDashHeavy,
+    cSepFullwidthBar:
       Result := True;
   else
     Result := False;
@@ -478,7 +550,7 @@ begin
         Break;
       end;
     end;
-  until (not Changed) or (Iterations > 16);
+  until (not Changed) or (Iterations > cMaxStripPasses);
   Result := Result.Trim;
 end;
 
@@ -509,12 +581,12 @@ begin
     $1D41: Result := 'U'; $2C7D: Result := 'V'; $1D42: Result := 'W';
     // superscript digits
     $2070: Result := '0'; $00B9: Result := '1'; $00B2: Result := '2'; $00B3: Result := '3';
-    $2074..$2079: Result := Char(Ord('4') + Ord(C) - $2074);
+    cSuperscriptFour..cSuperscriptNine: Result := Char(Ord('4') + Ord(C) - cSuperscriptFour);
     // fullwidth forms
-    $FF10..$FF19: Result := Char(Ord('0') + Ord(C) - $FF10);
-    $FF21..$FF3A: Result := Char(Ord('A') + Ord(C) - $FF21);
-    $FF41..$FF5A: Result := Char(Ord('a') + Ord(C) - $FF41);
-    $FF0B: Result := '+';
+    cFullwidthDigitZero..cFullwidthDigitNine: Result := Char(Ord('0') + Ord(C) - cFullwidthDigitZero);
+    cFullwidthUpperA..cFullwidthUpperZ: Result := Char(Ord('A') + Ord(C) - cFullwidthUpperA);
+    cFullwidthLowerA..cFullwidthLowerZ: Result := Char(Ord('a') + Ord(C) - cFullwidthLowerA);
+    cFullwidthPlus: Result := '+';
   else
     Result := C;
   end;
@@ -535,7 +607,8 @@ function IsSuffixSep(C: Char): Boolean;
 begin
   // the prefix separators plus record/bullet glyphs providers put before a tag
   // ("NPO 1 HD <record-dot>rec")
-  Result := IsPrefixSep(C) or (C = #$23FA) or (C = #$25CF) or (C = #$2022) or (C = #$26AB);
+  Result := IsPrefixSep(C) or (C = cSepRecordButton) or (C = cSepBlackCircle) or (C = cSepBullet) or
+    (C = cSepMediumBlackCircle);
 end;
 
 function TrimTrailingSeps(const S: string): string;
@@ -583,7 +656,7 @@ begin
         Break;
       end;
     end;
-  until (not Changed) or (Iterations > 16);
+  until (not Changed) or (Iterations > cMaxStripPasses);
   Result := Result.Trim;
   if Result = '' then
     Result := AName.Trim; // never strip a name down to nothing
@@ -636,8 +709,8 @@ function EpgKeyAlias(const AKey: string): string;
 begin
   Result := AKey;
   // a few common short forms providers use for the same channel
-  if Result.StartsWith('natgeo') then
-    Result := 'nationalgeographic' + Result.Substring(6);
+  if Result.StartsWith(cNatGeoShort) then
+    Result := cNatGeoLong + Result.Substring(Length(cNatGeoShort));
   // the unnumbered main channel is number 1 in the guides
   if Result = 'ziggosport' then
     Result := 'ziggosport1'
@@ -698,8 +771,8 @@ var
   Dot, I: Integer;
 begin
   S := AId.Trim.ToLower;
-  if S.StartsWith('extra:') then
-    S := S.Substring(6);
+  if S.StartsWith(EXTRA_EPG_PREFIX) then
+    S := S.Substring(Length(EXTRA_EPG_PREFIX));
   // drop a trailing COUNTRY suffix: "NPO.1.nl" / "npo1.nl" / "bbc.one.uk" - only
   // real country codes ("bbc.one" or "sport.hd" keep their last part)
   Dot := S.LastIndexOf('.');
@@ -720,17 +793,18 @@ begin
   lUrl := AValue.Trim;
   ANormalized := '';
   // "http://" alone: stripping its slashes below would leave "http:" as a host
-  if lUrl.Contains('://') and (lUrl.Substring(lUrl.IndexOf('://') + 3).Trim(['/']) = '') then
+  if lUrl.Contains(cSchemeSep) and
+     (lUrl.Substring(lUrl.IndexOf(cSchemeSep) + Length(cSchemeSep)).Trim(['/']) = '') then
     Exit(False);
   while lUrl.EndsWith('/') do
     lUrl := lUrl.Substring(0, lUrl.Length - 1);
   ANormalized := '';
   if lUrl = '' then
     Exit(True);
-  if not lUrl.Contains('://') then
-    lUrl := 'http://' + lUrl; // "192.168.1.10:9000" is what people type
+  if not lUrl.Contains(cSchemeSep) then
+    lUrl := cDefaultScheme + lUrl; // "192.168.1.10:9000" is what people type
   // a host must follow the scheme (TURI accepts "http://" with an empty host)
-  lHost := lUrl.Substring(lUrl.IndexOf('://') + 3);
+  lHost := lUrl.Substring(lUrl.IndexOf(cSchemeSep) + Length(cSchemeSep));
   if lHost.IndexOfAny(['/', ':', '?', '#']) >= 0 then
     lHost := lHost.Substring(0, lHost.IndexOfAny(['/', ':', '?', '#']));
   Result := (lHost <> '') and (SafeUrlHost(lUrl, '') <> '');
@@ -809,7 +883,7 @@ function XtreamBase64(const S: string): string;
 var
   Enc: TBase64Encoding;
 begin
-  Enc := TBase64Encoding.Create(0); // 0 chars per line = never wrap
+  Enc := TBase64Encoding.Create(cBase64NoLineBreaks);
   try
     Result := Enc.EncodeBytesToString(TEncoding.UTF8.GetBytes(S));
   finally
@@ -831,8 +905,8 @@ begin
   if Local < Utc then
     Diff := -Diff;
   // round to the nearest quarter hour (the two values are read a moment apart)
-  AMinutes := Round(Diff / 900) * 15;
-  if Abs(AMinutes) > 14 * 60 then
+  AMinutes := Round(Diff / (cTzOffsetStepMin * SecsPerMin)) * cTzOffsetStepMin;
+  if Abs(AMinutes) > cMaxTzOffsetMin then
   begin
     AMinutes := 0;
     Exit; // nonsense clock -> unknown
@@ -854,20 +928,20 @@ begin
     Exit;
   if TryStrToInt64(S, Unix) then
   begin
-    if Unix < 100000000 then
+    if Unix < cMinUnixTimestamp then
       Exit;
     ADt := UnixToDateTime(Unix, True);
     Exit(True);
   end;
   // 2026-11-12:20-30 | 2026-11-12:20-30-00 | 2026-11-12 20:30[:00]
   Parts := S.Split(['-', ':', ' ', 'T']);
-  if (Length(Parts) < 5) or (Length(Parts) > 6) then
+  if (Length(Parts) < cMinTimeshiftParts) or (Length(Parts) > cMaxTimeshiftParts) then
     Exit;
   Se := 0;
   if not (TryStrToInt(Parts[0], Y) and TryStrToInt(Parts[1], Mo) and TryStrToInt(Parts[2], D) and
           TryStrToInt(Parts[3], H) and TryStrToInt(Parts[4], Mi)) then
     Exit;
-  if (Length(Parts) = 6) and not TryStrToInt(Parts[5], Se) then
+  if (Length(Parts) = cMaxTimeshiftParts) and not TryStrToInt(Parts[5], Se) then
     Exit;
   Result := TryEncodeDateTime(Y, Mo, D, H, Mi, Se, 0, ADt);
 end;
@@ -884,7 +958,7 @@ var
 begin
   Ext := AExt;
   if Ext = '' then
-    Ext := 'ts';
+    Ext := cDefaultStreamExt;
   Result := Format('%s/timeshift/%s/%s/%d/%s/%s.%s',
     [ABaseUrl.Trim.TrimRight(['/']), AUser.Trim, APass.Trim, ADurationMin,
      FormatTimeshiftStart(IncMinute(AStartUtc, ATzOffsetMin)), AUpstreamId, Ext]);

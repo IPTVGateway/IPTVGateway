@@ -54,6 +54,17 @@ implementation
 
 {$R *.dfm}
 
+const
+  // writable state under ProgramData (see the unit header)
+  cAppDataFolderName = 'IPTVGateway';
+  cFallbackAppDataRoot = 'C:\ProgramData\' + cAppDataFolderName; // when SHGetFolderPath fails
+  cLogDirName = 'Logs';
+  cLogFileName = 'iptvgateway-svc.log';
+  cSvcDataDirName = 'Data';       // the service's DB folder (the exe default is cDataDirName)
+
+  // below the SCM's default 30 s start timeout
+  cStartWaitMs = 25000;
+
 function ExeDir: string;
 begin
   Result := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)));
@@ -68,19 +79,19 @@ var
   Buf: array[0..MAX_PATH] of Char;
 begin
   if Succeeded(SHGetFolderPath(0, CSIDL_COMMON_APPDATA, 0, SHGFP_TYPE_CURRENT, @Buf[0])) then
-    Result := IncludeTrailingPathDelimiter(Buf) + 'IPTVGateway'
+    Result := IncludeTrailingPathDelimiter(Buf) + cAppDataFolderName
   else
-    Result := 'C:\ProgramData\IPTVGateway';
+    Result := cFallbackAppDataRoot;
 end;
 
 function LogDir: string;
 begin
-  Result := TPath.Combine(AppDataRoot, 'Logs');
+  Result := TPath.Combine(AppDataRoot, cLogDirName);
 end;
 
 function SvcConfigPath: string;
 begin
-  Result := TPath.Combine(AppDataRoot, 'config.json');
+  Result := TPath.Combine(AppDataRoot, cConfigFileName);
 end;
 
 // The exe-relative DB default that TAppConfig.Default computes. If config.json
@@ -88,12 +99,12 @@ end;
 // redirect the DB under ProgramData so it isn't written next to the (read-only) exe.
 function ExeDefaultDbPath: string;
 begin
-  Result := TPath.Combine(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), 'data'), 'iptvplay.sqlite');
+  Result := TPath.Combine(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), cDataDirName), cDatabaseFileName);
 end;
 
 function SvcDefaultDbPath: string;
 begin
-  Result := TPath.Combine(AppDataRoot, 'Data\iptvplay.sqlite');
+  Result := TPath.Combine(AppDataRoot, cSvcDataDirName + PathDelim + cDatabaseFileName);
 end;
 
 procedure ServiceController(CtrlCode: DWord); stdcall;
@@ -109,7 +120,7 @@ end;
 procedure TIPTVGatewayService.ServiceCreate(Sender: TObject);
 begin
   FLogLock := TCriticalSection.Create;
-  FLogPath := IncludeTrailingPathDelimiter(LogDir) + 'iptvgateway-svc.log';
+  FLogPath := IncludeTrailingPathDelimiter(LogDir) + cLogFileName;
   try
     TDirectory.CreateDirectory(LogDir); // no-op if it already exists
   except
@@ -159,10 +170,6 @@ begin
   end;
 end;
 
-const
-  // below the SCM's default 30 s start timeout
-  cStartWaitMs = 25000;
-
 procedure TIPTVGatewayService.ServiceStart(Sender: TService; var Started: Boolean);
 var
   Cfg: TAppConfig;
@@ -175,7 +182,7 @@ begin
     if FileExists(SvcConfigPath) then
       Cfg := TAppConfig.Load(SvcConfigPath)
     else
-      Cfg := TAppConfig.Load(ExeDir + 'config.json'); // template or defaults
+      Cfg := TAppConfig.Load(ExeDir + cConfigFileName); // template or defaults
     // Keep the DB off the (read-only) exe dir unless the operator set an explicit path.
     if SameText(Cfg.DatabasePath, ExeDefaultDbPath) or (Cfg.DatabasePath = '') then
       Cfg.DatabasePath := SvcDefaultDbPath

@@ -84,7 +84,22 @@ uses
   MARS.Core.Registry,
   IPTV.Model.CustomList, IPTV.Storage.Intf, IPTV.App.Context, IPTV.Output.Builder,
   IPTV.Core.Utils,
-  IPTV.Model.Types;
+  IPTV.Model.Types, IPTV.Api.Serializers;
+
+const
+  // the emulated HDHomeRun device (discover.json / lineup_status.json)
+  cHdhrFriendlyName = 'IPTV Gateway';
+  cHdhrManufacturer = 'IPTVPlay';
+  cHdhrModelNumber = 'HDTC-2US';
+  cHdhrFirmwareName = 'hdhomerun3_atsc';
+  cHdhrFirmwareVersion = '20200101';
+  cHdhrDeviceAuth = 'iptvplay';
+  cHdhrFallbackDeviceId = '12345678'; // only when no device id is configured yet
+  cHdhrSource = 'Cable';
+  cHdhrLineupPath = '/lineup.json';
+
+  // BuildM3U ASequentialChno: Plex's M3U tuner needs unique numbers 1,2,3...
+  cSequentialChno = True;
 
 { shared helpers }
 
@@ -104,9 +119,9 @@ end;
 
 function PlexHost: string;
 begin
-  Result := 'localhost';
+  Result := cDefaultPublicHost;
   if App <> nil then
-    Result := SafeUrlHost(App.Config.PublicBaseUrl, 'localhost');
+    Result := SafeUrlHost(App.Config.PublicBaseUrl, cDefaultPublicHost);
 end;
 
 // how channel names are decorated on the Plex surfaces (group / number / source letter)
@@ -122,7 +137,7 @@ begin
   if (App <> nil) and (App.Config.PlexDeviceId <> '') then
     Result := App.Config.PlexDeviceId
   else
-    Result := '12345678';
+    Result := cHdhrFallbackDeviceId;
 end;
 
 // base URL Plex uses to reach us (the admin/portal port). That port serves TLS
@@ -164,24 +179,24 @@ var
 begin
   if not ClientAllowed(Request) then
   begin
-    Response.StatusCode := 403;
+    Response.StatusCode := cHttpForbidden;
     Exit('');
   end;
   if (App = nil) or (not App.Config.PlexM3uEnabled) then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit('');
   end;
   L := ServedList;
   if L = nil then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit('');
   end;
   try
     // sequential, globally-unique tvg-chno — Plex's M3U tuner rejects duplicate
     // channel numbers (per-group numbering collides across groups)
-    Result := BuildM3U(App.Store, L.Id, M3uProxyPrefix(L), True, App.Config.VisibleGroups, NameOpts);
+    Result := BuildM3U(App.Store, L.Id, M3uProxyPrefix(L), cSequentialChno, App.Config.VisibleGroups, NameOpts);
   finally
     L.Free;
   end;
@@ -193,7 +208,7 @@ var
 begin
   if not ClientAllowed(Request) then
   begin
-    Response.StatusCode := 403;
+    Response.StatusCode := cHttpForbidden;
     Exit('');
   end;
   // The XMLTV guide is shared by BOTH surfaces (Plex HDHomeRun and the Jellyfin/
@@ -201,13 +216,13 @@ begin
   // setup must not need the M3U toggle just to get a guide.
   if (App = nil) or not (App.Config.PlexM3uEnabled or App.Config.PlexHdhrEnabled) then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit('');
   end;
   L := ServedList;
   if L = nil then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit('');
   end;
   try
@@ -226,25 +241,25 @@ function THdhrDiscoverResource.Discover: TJSONObject;
 begin
   if not ClientAllowed(Request) then
   begin
-    Response.StatusCode := 403;
+    Response.StatusCode := cHttpForbidden;
     Exit(TJSONObject.Create);
   end;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit(TJSONObject.Create);
   end;
   Result := TJSONObject.Create;
-  Result.AddPair('FriendlyName', 'IPTV Gateway');
-  Result.AddPair('Manufacturer', 'IPTVPlay');
-  Result.AddPair('ModelNumber', 'HDTC-2US');
-  Result.AddPair('FirmwareName', 'hdhomerun3_atsc');
-  Result.AddPair('FirmwareVersion', '20200101');
+  Result.AddPair('FriendlyName', cHdhrFriendlyName);
+  Result.AddPair('Manufacturer', cHdhrManufacturer);
+  Result.AddPair('ModelNumber', cHdhrModelNumber);
+  Result.AddPair('FirmwareName', cHdhrFirmwareName);
+  Result.AddPair('FirmwareVersion', cHdhrFirmwareVersion);
   Result.AddPair('DeviceID', DeviceId);
-  Result.AddPair('DeviceAuth', 'iptvplay');
+  Result.AddPair('DeviceAuth', cHdhrDeviceAuth);
   Result.AddPair('TunerCount', TJSONNumber.Create(App.Config.PlexTunerCount));
   Result.AddPair('BaseURL', BaseUrl);
-  Result.AddPair('LineupURL', BaseUrl + '/lineup.json');
+  Result.AddPair('LineupURL', BaseUrl + cHdhrLineupPath);
 end;
 
 { THdhrLineupStatusResource }
@@ -253,19 +268,19 @@ function THdhrLineupStatusResource.Status: TJSONObject;
 begin
   if not ClientAllowed(Request) then
   begin
-    Response.StatusCode := 403;
+    Response.StatusCode := cHttpForbidden;
     Exit(TJSONObject.Create);
   end;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit(TJSONObject.Create);
   end;
   Result := TJSONObject.Create;
   Result.AddPair('ScanInProgress', TJSONNumber.Create(0));
   Result.AddPair('ScanPossible', TJSONNumber.Create(1));
-  Result.AddPair('Source', 'Cable');
-  Result.AddPair('SourceList', TJSONArray.Create.Add('Cable'));
+  Result.AddPair('Source', cHdhrSource);
+  Result.AddPair('SourceList', TJSONArray.Create.Add(cHdhrSource));
 end;
 
 { THdhrLineupResource }
@@ -282,13 +297,13 @@ var
 begin
   if not ClientAllowed(Request) then
   begin
-    Response.StatusCode := 403;
+    Response.StatusCode := cHttpForbidden;
     Exit(TJSONArray.Create);
   end;
   Result := TJSONArray.Create;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit;
   end;
   L := ServedList;
@@ -298,7 +313,7 @@ begin
     // same global group filter as the M3U/XMLTV, so all three agree
     Channels := SelectOutputChannels(App.Store, L.Id, App.Config.VisibleGroups);
     try
-      KeepContentTypes(Channels, [ctLive, ctRadio]); // a tuner lineup: linear channels only
+      KeepContentTypes(Channels, cLinearContentTypes); // a tuner lineup: linear channels only
       // one decorated-name computation, shared shape with the M3U/XMLTV. (The id-sort
       // prefix lives in the channel-id, not the HDHomeRun GuideName, so key on AnyName.)
       Names := nil;
@@ -333,12 +348,12 @@ function THdhrLineupPostResource.Scan: TJSONObject;
 begin
   if not ClientAllowed(Request) then
   begin
-    Response.StatusCode := 403;
+    Response.StatusCode := cHttpForbidden;
     Exit(TJSONObject.Create);
   end;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
-    Response.StatusCode := 404;
+    Response.StatusCode := cHttpNotFound;
     Exit(TJSONObject.Create);
   end;
   Result := TJSONObject.Create.AddPair('ScanInProgress', TJSONNumber.Create(0));

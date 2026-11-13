@@ -41,6 +41,9 @@ export interface TvgSuggestion {
   score: number
 }
 
+/** Minimum token-overlap score for a guide-id suggestion. */
+export const DEFAULT_SUGGEST_THRESHOLD = 0.6
+
 /**
  * Best guide-id match for a channel name, or null below the threshold. Matches the
  * channel name against each guide entry's sample name (and, as a weaker signal, the
@@ -50,7 +53,7 @@ export interface TvgSuggestion {
 export function suggestTvgId(
   channelName: string,
   known: TvgGuide[],
-  threshold = 0.6,
+  threshold = DEFAULT_SUGGEST_THRESHOLD,
 ): TvgSuggestion | null {
   let best: TvgSuggestion | null = null
   for (const k of known) {

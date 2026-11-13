@@ -11,6 +11,22 @@ uses
   IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
   IPTV.Model.CustomList;
 
+const
+  // HTTP status codes (shared by the API resources and the Plex client)
+  cHttpOk = 200;
+  cHttpBadRequest = 400;
+  cHttpUnauthorized = 401;
+  cHttpForbidden = 403;
+  cHttpNotFound = 404;
+  cHttpInternalServerError = 500;
+  cHttpServiceUnavailable = 503;
+
+  // host named in our own URLs when publicBaseUrl is unset/unparseable
+  cDefaultPublicHost = 'localhost';
+
+  // what the media servers (Plex/Jellyfin tuner surfaces) publish: linear channels only
+  cLinearContentTypes = [ctLive, ctRadio];
+
 function SourceToJson(const S: TSourceConfig): TJSONObject;
 procedure SourceFromJson(const J: TJSONObject; const S: TSourceConfig);
 function SourcesToJson(const L: TObjectList<TSourceConfig>): TJSONArray;

@@ -50,15 +50,21 @@ type
 
 implementation
 
+const
+  // TEvent.Create / TThread.Create arguments
+  cManualReset = True;            // FStop / FStartDone stay set once signalled
+  cInitiallyNonSignaled = False;
+  cCreateSuspended = False;       // the worker starts right away
+
 constructor TAppRunner.Create(const AConfig: TAppConfig; const ALog: TLogProc;
   const AConfigPath: string);
 begin
   FConfig := AConfig;
   FLog := ALog;
-  FStop := TEvent.Create(nil, True, False, '');
-  FStartDone := TEvent.Create(nil, True, False, '');
+  FStop := TEvent.Create(nil, cManualReset, cInitiallyNonSignaled, '');
+  FStartDone := TEvent.Create(nil, cManualReset, cInitiallyNonSignaled, '');
   FContext := TAppContext.Create(FConfig, FLog, AConfigPath); // exists immediately; Start runs on the thread
-  inherited Create(False); // must be last: fields ready before Execute runs
+  inherited Create(cCreateSuspended); // must be last: fields ready before Execute runs
 end;
 
 destructor TAppRunner.Destroy;

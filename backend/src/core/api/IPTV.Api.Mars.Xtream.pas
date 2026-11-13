@@ -116,7 +116,69 @@ uses
   IPTV.Model.Types, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
   IPTV.Model.Source,
   IPTV.Storage.Intf, IPTV.App.Context, IPTV.Output.Builder, IPTV.Core.Utils,
-  IPTV.Source.Xtream;
+  IPTV.Source.Xtream, IPTV.Api.Serializers;
+
+const
+  // player_api.php actions
+  cActGetAccountInfo = 'get_account_info';
+  cActGetLiveCategories = 'get_live_categories';
+  cActGetLiveStreams = 'get_live_streams';
+  cActGetVodCategories = 'get_vod_categories';
+  cActGetVodStreams = 'get_vod_streams';
+  cActGetSeriesCategories = 'get_series_categories';
+  cActGetSeries = 'get_series';
+  cActGetShortEpg = 'get_short_epg';
+  cActGetSimpleDataTable = 'get_simple_data_table';
+  cActGetVodInfo = 'get_vod_info';
+  cActGetSeriesInfo = 'get_series_info';
+
+  // Xtream stream_type values
+  cStreamTypeLive = 'live';
+  cStreamTypeMovie = 'movie';
+  cStreamTypeSeries = 'series';
+  cStreamTypeRadio = 'radio_streams'; // how real portals list radio
+
+  // JSON fields that are passed around / compared, not just written
+  cFieldStreamId = 'stream_id';
+  cFieldSeriesId = 'series_id';
+  cFieldCategoryId = 'category_id';
+
+  // containers
+  cExtTs = 'ts';
+  cExtM3u8 = 'm3u8';
+  cDefaultVodExt = 'mp4'; // a movie/episode URL without an extension
+
+  // URL schemes
+  cSchemeHttp = 'http';
+  cSchemeHttps = 'https';
+  cIgnoreCase = True; // string.StartsWith IgnoreCase
+
+  // we advertise UTC, so a box sends timeshift starts in UTC (see DoTimeshift)
+  cServerTimezone = 'UTC';
+
+  cMaxCategoryId = 999999999; // positive and well inside a 32-bit int for every client
+
+  // EPG listings (get_short_epg / get_simple_data_table)
+  cShortEpgDefaultLimit = 4; // programmes when the box sends no (or an empty) limit
+  cNoEpgLimit = 0;
+  cOnlyFuture = True;  // BuildEpgListings AOnlyFuture: skip finished programmes
+  cWithPast = False;   // ... keep them (the full table)
+  cEpgDateTimeFormat = 'yyyy-mm-dd hh:nn:ss';
+  cTimesAreUtc = True; // DateTimeToUnix AInputIsUTC
+
+  // PlayerApiResult.Pick AWantCats
+  cWantCategories = True;
+  cWantStreams = False;
+
+  // the one season/episode an M3U "series" item is offered as
+  cM3uSeason = 1;
+  cM3uEpisode = 1;
+
+  // DoRedirect ALive: follow the box's requested container (.ts/.m3u8)
+  cLiveStream = True;
+
+  // BuildM3U ASequentialChno: a box keeps the bouquet's own channel numbers
+  cBouquetChno = False;
 
 { ── shared helpers ──────────────────────────────────────────────────────── }
 
@@ -132,15 +194,15 @@ end;
 // host the box reaches us on (publicBaseUrl; 'localhost' when unset/unparseable)
 function PublicHost: string;
 begin
-  Result := SafeUrlHost(App.Config.PublicBaseUrl, 'localhost');
+  Result := SafeUrlHost(App.Config.PublicBaseUrl, cDefaultPublicHost);
 end;
 
 function PublicScheme: string;
 begin
-  if App.Config.PublicBaseUrl.StartsWith('https:', True) then
-    Result := 'https'
+  if App.Config.PublicBaseUrl.StartsWith(cSchemeHttps + ':', cIgnoreCase) then
+    Result := cSchemeHttps
   else
-    Result := 'http';
+    Result := cSchemeHttp;
 end;
 
 function StreamIdFromParam(const AId: string): Integer;
@@ -202,8 +264,8 @@ begin
   Formats := TJSONArray.Create;
   // in proxy mode the relay serves TS only (HLS can't be relayed; it is bounced)
   if not App.Config.ProxyStreams then
-    Formats.Add('m3u8');
-  Formats.Add('ts');
+    Formats.Add(cExtM3u8);
+  Formats.Add(cExtTs);
   UserInfo.AddPair('allowed_output_formats', Formats);
   Result.AddPair('user_info', UserInfo);
 
@@ -232,15 +294,12 @@ begin
     ServerInfo.AddPair('https_port', '0');
   ServerInfo.AddPair('rtmp_port', '0');
   if App.Config.ProxyStreams then
-    ServerInfo.AddPair('server_protocol', 'http')
+    ServerInfo.AddPair('server_protocol', cSchemeHttp)
   else
     ServerInfo.AddPair('server_protocol', PublicScheme);
-  ServerInfo.AddPair('timezone', 'UTC');
+  ServerInfo.AddPair('timezone', cServerTimezone);
   Result.AddPair('server_info', ServerInfo);
 end;
-
-const
-  cMaxCategoryId = 999999999; // positive and well inside a 32-bit int for every client
 
 // a category id that only depends on the group name (1..cMaxCategoryId)
 function StableCategoryId(const AGroupName: string): Integer;
@@ -295,7 +354,7 @@ begin
         UsedCatIds.Add(CatId, 0);
         GroupToCat.Add(C.GroupName, CatId);
         Cat := TJSONObject.Create;
-        Cat.AddPair('category_id', CatId.ToString);
+        Cat.AddPair(cFieldCategoryId, CatId.ToString);
         Cat.AddPair('category_name', C.GroupName);
         Cat.AddPair('parent_id', TJSONNumber.Create(0));
         ACategories.Add(Cat);
@@ -312,17 +371,17 @@ begin
       Stream.AddPair('num', TJSONNumber.Create(N));
       Stream.AddPair('name', C.Name);
       if C.ContentType = ctRadio then
-        Stream.AddPair('stream_type', 'radio_streams') // how real portals list radio
+        Stream.AddPair('stream_type', cStreamTypeRadio)
       else
         Stream.AddPair('stream_type', AStreamType);
       Stream.AddPair(AIdField, TJSONNumber.Create(C.StreamItemId));
       Stream.AddPair('stream_icon', C.Logo);
       // the id xmltv.php publishes it under (iptv-<id> for a channel without tvg-id)
       Stream.AddPair('epg_channel_id', ChannelGuideId(C));
-      Stream.AddPair('category_id', CatId.ToString);
+      Stream.AddPair(cFieldCategoryId, CatId.ToString);
       if ACt = ctMovie then
         // the box builds /movie/u/p/{id}.{container_extension}: give it the real one
-        Stream.AddPair('container_extension', System.StrUtils.IfThen(UrlExt(C.UpstreamUrl) = '', 'mp4', UrlExt(C.UpstreamUrl)))
+        Stream.AddPair('container_extension', System.StrUtils.IfThen(UrlExt(C.UpstreamUrl) = '', cDefaultVodExt, UrlExt(C.UpstreamUrl)))
       else if ACt = ctSeries then
         Stream.AddPair('cover', C.Logo);
       if C.ContentType = ctLive then
@@ -357,7 +416,7 @@ var
     try
       for lItem in AStreams do
         if (lItem is TJSONObject) and
-           (TJSONObject(lItem).GetValue<string>('category_id', '') = ACategoryId) then
+           (TJSONObject(lItem).GetValue<string>(cFieldCategoryId, '') = ACategoryId) then
           Result.AddElement(TJSONValue(lItem.Clone));
     finally
       FreeAndNil(AStreams);
@@ -380,18 +439,18 @@ var
   end;
 
 begin
-  if (AAction = '') or (AAction = 'get_account_info') then
+  if (AAction = '') or (AAction = cActGetAccountInfo) then
     Exit(AccountInfo(AList));
 
   Channels := App.Store.LoadOutputChannels(AList.Id);
   try
-    if AAction = 'get_live_categories' then Result := Pick(ctLive, 'stream_id', 'live', True)
-    else if AAction = 'get_live_streams' then Result := Pick(ctLive, 'stream_id', 'live', False)
+    if AAction = cActGetLiveCategories then Result := Pick(ctLive, cFieldStreamId, cStreamTypeLive, cWantCategories)
+    else if AAction = cActGetLiveStreams then Result := Pick(ctLive, cFieldStreamId, cStreamTypeLive, cWantStreams)
     // (radio is listed with the live channels, stream_type radio_streams - see BuildContent)
-    else if AAction = 'get_vod_categories' then Result := Pick(ctMovie, 'stream_id', 'movie', True)
-    else if AAction = 'get_vod_streams' then Result := Pick(ctMovie, 'stream_id', 'movie', False)
-    else if AAction = 'get_series_categories' then Result := Pick(ctSeries, 'series_id', 'series', True)
-    else if AAction = 'get_series' then Result := Pick(ctSeries, 'series_id', 'series', False)
+    else if AAction = cActGetVodCategories then Result := Pick(ctMovie, cFieldStreamId, cStreamTypeMovie, cWantCategories)
+    else if AAction = cActGetVodStreams then Result := Pick(ctMovie, cFieldStreamId, cStreamTypeMovie, cWantStreams)
+    else if AAction = cActGetSeriesCategories then Result := Pick(ctSeries, cFieldSeriesId, cStreamTypeSeries, cWantCategories)
+    else if AAction = cActGetSeries then Result := Pick(ctSeries, cFieldSeriesId, cStreamTypeSeries, cWantStreams)
     else Result := TJSONArray.Create;
   finally
     Channels.Free;
@@ -431,19 +490,19 @@ begin
     Exit(TJSONArray.Create);
   end;
   try
-    Ext := System.StrUtils.IfThen(UrlExt(Stream.UpstreamUrl) = '', 'mp4', UrlExt(Stream.UpstreamUrl));
+    Ext := System.StrUtils.IfThen(UrlExt(Stream.UpstreamUrl) = '', cDefaultVodExt, UrlExt(Stream.UpstreamUrl));
     Src := FindSource(Stream.SourceId);
     try
       if (Src <> nil) and (Src.Kind = skXtream) then
       try
-        JV := XtreamApiGet(Src, 'action=get_vod_info&vod_id=' + TNetEncoding.URL.Encode(Stream.UpstreamId));
+        JV := XtreamApiGet(Src, 'action=' + cActGetVodInfo + '&vod_id=' + TNetEncoding.URL.Encode(Stream.UpstreamId));
         if JV is TJSONObject then
         begin
           MD := TJSONObject(JV).GetValue('movie_data');
           if MD is TJSONObject then
           begin
-            TJSONObject(MD).RemovePair('stream_id').Free;
-            TJSONObject(MD).AddPair('stream_id', TJSONNumber.Create(Stream.Id));
+            TJSONObject(MD).RemovePair(cFieldStreamId).Free;
+            TJSONObject(MD).AddPair(cFieldStreamId, TJSONNumber.Create(Stream.Id));
             if TJSONObject(MD).GetValue('container_extension') = nil then
               TJSONObject(MD).AddPair('container_extension', Ext);
           end;
@@ -462,7 +521,7 @@ begin
         .AddPair('name', Stream.Name)
         .AddPair('movie_image', Stream.Logo))
       .AddPair('movie_data', TJSONObject.Create
-        .AddPair('stream_id', TJSONNumber.Create(Stream.Id))
+        .AddPair(cFieldStreamId, TJSONNumber.Create(Stream.Id))
         .AddPair('name', Stream.Name)
         .AddPair('container_extension', Ext));
   finally
@@ -509,7 +568,7 @@ begin
       if (Src <> nil) and (Src.Kind = skXtream) then
       begin
         try
-          JV := XtreamApiGet(Src, 'action=get_series_info&series_id=' + TNetEncoding.URL.Encode(Stream.UpstreamId));
+          JV := XtreamApiGet(Src, 'action=' + cActGetSeriesInfo + '&series_id=' +TNetEncoding.URL.Encode(Stream.UpstreamId));
         except
           on E: Exception do
           begin
@@ -563,13 +622,13 @@ begin
       Src.Free;
     end;
     // M3U: the item itself is the (only) episode
-    Ext := System.StrUtils.IfThen(UrlExt(Stream.UpstreamUrl) = '', 'mp4', UrlExt(Stream.UpstreamUrl));
+    Ext := System.StrUtils.IfThen(UrlExt(Stream.UpstreamUrl) = '', cDefaultVodExt, UrlExt(Stream.UpstreamUrl));
     Ep := TJSONObject.Create
       .AddPair('id', Stream.Id.ToString)
-      .AddPair('episode_num', TJSONNumber.Create(1))
+      .AddPair('episode_num', TJSONNumber.Create(cM3uEpisode))
       .AddPair('title', Stream.Name)
       .AddPair('container_extension', Ext)
-      .AddPair('season', TJSONNumber.Create(1))
+      .AddPair('season', TJSONNumber.Create(cM3uSeason))
       .AddPair('info', TJSONObject.Create);
     EpArr := TJSONArray.Create;
     EpArr.AddElement(Ep);
@@ -579,7 +638,7 @@ begin
         .AddPair('name', Stream.Name)
         .AddPair('cover', Stream.Logo))
       .AddPair('episodes', TJSONObject.Create
-        .AddPair('1', EpArr));
+        .AddPair(IntToStr(cM3uSeason), EpArr));
   finally
     Stream.Free;
   end;
@@ -648,16 +707,16 @@ begin
       O := TJSONObject.Create;
       // real portals send non-empty ids; some players (Formuler/MyTVOnline) key the
       // listing on them — the start time is unique within one channel
-      O.AddPair('id', IntToStr(DateTimeToUnix(P.StartUtc, True)));
+      O.AddPair('id', IntToStr(DateTimeToUnix(P.StartUtc, cTimesAreUtc)));
       O.AddPair('epg_id', '1');
       O.AddPair('title', B64(P.Title));
       O.AddPair('lang', '');
-      O.AddPair('start', FormatDateTime('yyyy-mm-dd hh:nn:ss', P.StartUtc));
-      O.AddPair('end', FormatDateTime('yyyy-mm-dd hh:nn:ss', P.StopUtc));
+      O.AddPair('start', FormatDateTime(cEpgDateTimeFormat, P.StartUtc));
+      O.AddPair('end', FormatDateTime(cEpgDateTimeFormat, P.StopUtc));
       O.AddPair('description', B64(P.Description));
       O.AddPair('channel_id', Tvg);
-      O.AddPair('start_timestamp', IntToStr(DateTimeToUnix(P.StartUtc, True)));
-      O.AddPair('stop_timestamp', IntToStr(DateTimeToUnix(P.StopUtc, True)));
+      O.AddPair('start_timestamp', IntToStr(DateTimeToUnix(P.StartUtc, cTimesAreUtc)));
+      O.AddPair('stop_timestamp', IntToStr(DateTimeToUnix(P.StopUtc, cTimesAreUtc)));
       O.AddPair('now_playing', TJSONNumber.Create(IfThen((NowU >= P.StartUtc) and (NowU < P.StopUtc), 1, 0)));
       // a finished programme inside the provider's archive window can be replayed
       O.AddPair('has_archive', TJSONNumber.Create(IfThen((ArchiveDays > 0) and
@@ -737,7 +796,7 @@ begin
   List := ResolveList(AUser, APass);
   if List = nil then
   begin
-    AResponse.StatusCode := 401;
+    AResponse.StatusCode := cHttpUnauthorized;
     Exit;
   end;
   try
@@ -746,7 +805,7 @@ begin
     Stream := App.Store.LoadListStreamById(List.Id, StreamIdFromParam(AId));
     if Stream = nil then
     begin
-      AResponse.StatusCode := 404;
+      AResponse.StatusCode := cHttpNotFound;
       Exit;
     end;
     try
@@ -763,7 +822,7 @@ begin
         Ext := '';
       Hls := ALive and SourceForcesHls(Stream.SourceId);
       if Hls then
-        Ext := 'm3u8';
+        Ext := cExtM3u8;
       if App.Config.ProxyStreams and not Hls then
       begin
         Target := Format('http://%s:%d/live/%s/%s/%s', [PublicHost, App.Config.ProxyPort,
@@ -810,13 +869,13 @@ begin
   Dur := StrToIntDef(ADuration, 0);
   if (Dur <= 0) or not ParseTimeshiftStart(AStart, StartUtc) then
   begin
-    AResponse.StatusCode := 400;
+    AResponse.StatusCode := cHttpBadRequest;
     Exit;
   end;
   List := ResolveList(AUser, APass);
   if List = nil then
   begin
-    AResponse.StatusCode := 401;
+    AResponse.StatusCode := cHttpUnauthorized;
     Exit;
   end;
   try
@@ -824,7 +883,7 @@ begin
     Stream := App.Store.LoadListStreamById(List.Id, StreamIdFromParam(AId));
     if Stream = nil then
     begin
-      AResponse.StatusCode := 404;
+      AResponse.StatusCode := cHttpNotFound;
       Exit;
     end;
     try
@@ -834,14 +893,14 @@ begin
         Target := Format('http://%s:%d/timeshift/%s/%s/%d/%s/%d.%s',
           [PublicHost, App.Config.ProxyPort, PathCred(List.OutputUsername), PathCred(List.OutputPassword),
            Dur, FormatTimeshiftStart(StartUtc),
-           Stream.Id, System.StrUtils.IfThen(Ext = '', 'ts', Ext)]);
+           Stream.Id, System.StrUtils.IfThen(Ext = '', cExtTs, Ext)]);
       end
       else
         Target := TimeshiftUpstreamUrl(App.Store, Stream, Dur, StartUtc, Ext);
       if Target = '' then
       begin
         // the stream's source isn't an Xtream portal: no timeshift there
-        AResponse.StatusCode := 404;
+        AResponse.StatusCode := cHttpNotFound;
         Exit;
       end;
       Masked := TRegEx.Replace(Target, '(/timeshift/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
@@ -871,13 +930,14 @@ begin
     Exit(TJSONObject.Create.AddPair('user_info',
       TJSONObject.Create.AddPair('auth', TJSONNumber.Create(0))));
   try
-    if AAction = 'get_short_epg' then
-      Result := BuildEpgListings(List, AStreamId, IfThen(StrToIntDef(ALimit, 0) > 0, StrToIntDef(ALimit, 0), 4), True)
-    else if AAction = 'get_simple_data_table' then
-      Result := BuildEpgListings(List, AStreamId, 0, False)
-    else if AAction = 'get_vod_info' then
+    if AAction = cActGetShortEpg then
+      Result := BuildEpgListings(List, AStreamId,
+        IfThen(StrToIntDef(ALimit, 0) > 0, StrToIntDef(ALimit, 0), cShortEpgDefaultLimit), cOnlyFuture)
+    else if AAction = cActGetSimpleDataTable then
+      Result := BuildEpgListings(List, AStreamId, cNoEpgLimit, cWithPast)
+    else if AAction = cActGetVodInfo then
       Result := VodInfo(List, AVodId)
-    else if AAction = 'get_series_info' then
+    else if AAction = cActGetSeriesInfo then
       Result := SeriesInfo(List, ASeriesId)
     else
       Result := PlayerApiResult(List, AAction, ACategoryId);
@@ -897,7 +957,7 @@ begin
   List := ResolveList(AUser, APass);
   if List = nil then
   begin
-    Response.StatusCode := 401;
+    Response.StatusCode := cHttpUnauthorized;
     Exit('');
   end;
   try
@@ -909,7 +969,7 @@ begin
     end;
     // the Media Servers group filter is for the Plex bouquet only — a box gets its
     // whole bouquet (group names of one bouquet mean nothing in another)
-    Result := BuildM3U(App.Store, List.Id, Prefix, False, nil);
+    Result := BuildM3U(App.Store, List.Id, Prefix, cBouquetChno, nil);
   finally
     List.Free;
   end;
@@ -924,7 +984,7 @@ begin
   List := ResolveList(AUser, APass);
   if List = nil then
   begin
-    Response.StatusCode := 401;
+    Response.StatusCode := cHttpUnauthorized;
     Exit('');
   end;
   try
@@ -941,7 +1001,7 @@ end;
 
 procedure TLiveStreamResource.Redirect(AUser, APass, AId: string);
 begin
-  DoRedirect(Response, AUser, APass, AId, True);
+  DoRedirect(Response, AUser, APass, AId, cLiveStream);
 end;
 
 procedure TMovieStreamResource.Redirect(AUser, APass, AId: string);

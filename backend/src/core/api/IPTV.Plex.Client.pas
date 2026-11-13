@@ -15,7 +15,24 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections,
-  System.JSON, System.Net.HttpClient, System.Net.URLClient;
+  System.JSON, System.Net.HttpClient, System.Net.URLClient,
+  IPTV.Api.Serializers;
+
+const
+  // timeouts (ms)
+  cConnectTimeoutMs = 8000;
+  cResponseTimeoutMs = 15000;
+
+  // Plex API: headers, paths and the JSON shape of the DVR list
+  cHeaderAccept = 'Accept';
+  cHeaderPlexToken = 'X-Plex-Token';
+  cMimeJson = 'application/json';
+  cDvrsPath = '/livetv/dvrs';
+  cKeyMediaContainer = 'MediaContainer';
+  cKeyDvr = 'Dvr';
+  cKeyDvrKey = 'key';
+
+  cHttpSuccessLast = 299; // 2xx = success
 
 function ReloadPlexGuides(const AServerUrl, AToken: string): Integer;
 var
@@ -37,8 +54,8 @@ var
     try
       // use Base (trailing slash stripped) — AServerUrl may end in '/', which
       // would make '//livetv/...' that Plex 404s; and only count a real success
-      R := Client.Post(Format('%s/livetv/dvrs/%s/reloadGuide', [Base, AKey]), Empty);
-      if (R.StatusCode >= 200) and (R.StatusCode < 300) then
+      R := Client.Post(Format('%s%s/%s/reloadGuide', [Base, cDvrsPath, AKey]), Empty);
+      if (R.StatusCode >= cHttpOk) and (R.StatusCode <= cHttpSuccessLast) then
         Inc(Result);
     finally
       Empty.Free;
@@ -55,15 +72,15 @@ begin
 
   Client := THTTPClient.Create;
   try
-    Client.ConnectionTimeout := 8000;
-    Client.ResponseTimeout := 15000;
-    Client.CustomHeaders['Accept'] := 'application/json';
-    Client.CustomHeaders['X-Plex-Token'] := AToken;
+    Client.ConnectionTimeout := cConnectTimeoutMs;
+    Client.ResponseTimeout := cResponseTimeoutMs;
+    Client.CustomHeaders[cHeaderAccept] := cMimeJson;
+    Client.CustomHeaders[cHeaderPlexToken] := AToken;
 
-    Resp := Client.Get(Base + '/livetv/dvrs');
-    if Resp.StatusCode = 401 then
+    Resp := Client.Get(Base + cDvrsPath);
+    if Resp.StatusCode = cHttpUnauthorized then
       raise Exception.Create('Plex rejected the token (401)');
-    if Resp.StatusCode <> 200 then
+    if Resp.StatusCode <> cHttpOk then
       raise Exception.CreateFmt('Plex returned %d listing DVRs', [Resp.StatusCode]);
 
     RootVal := TJSONObject.ParseJSONValue(Resp.ContentAsString);
@@ -74,19 +91,19 @@ begin
     end;
     Root := TJSONObject(RootVal);
     try
-      if not (Root.GetValue('MediaContainer') is TJSONObject) then
+      if not (Root.GetValue(cKeyMediaContainer) is TJSONObject) then
         Exit; // no DVRs configured in Plex (or an unexpected shape) — nothing to reload
-      MC := TJSONObject(Root.GetValue('MediaContainer'));
-      DvrsVal := MC.GetValue('Dvr');
+      MC := TJSONObject(Root.GetValue(cKeyMediaContainer));
+      DvrsVal := MC.GetValue(cKeyDvr);
       if DvrsVal is TJSONArray then
       begin
         Dvrs := TJSONArray(DvrsVal);
         for I := 0 to Dvrs.Count - 1 do
           if Dvrs.Items[I] is TJSONObject then
-            ReloadOne(TJSONObject(Dvrs.Items[I]).GetValue<string>('key', ''));
+            ReloadOne(TJSONObject(Dvrs.Items[I]).GetValue<string>(cKeyDvrKey, ''));
       end
       else if DvrsVal is TJSONObject then
-        ReloadOne(TJSONObject(DvrsVal).GetValue<string>('key', ''));
+        ReloadOne(TJSONObject(DvrsVal).GetValue<string>(cKeyDvrKey, ''));
     finally
       Root.Free;
     end;

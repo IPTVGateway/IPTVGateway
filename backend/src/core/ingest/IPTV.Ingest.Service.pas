@@ -88,6 +88,10 @@ uses
   IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
   IPTV.Source.Intf, IPTV.Source.Factory, IPTV.Source.Epg, IPTV.Core.Utils;
 
+const
+  // RSS log line after a refresh is in MiB
+  cBytesPerMiB = 1024 * 1024;
+
 constructor TIngestService.Create(const AStore: IStore; const ALog: TLogProc);
 begin
   inherited Create;
@@ -408,7 +412,7 @@ begin
   // Report the actual resident memory (the figure the operator watches) so its
   // trend is visible in the log after each refresh.
   RefreshExtraEpg; // the extra guides last: their matching uses the fresh catalog
-  Log(Format('Refresh done — process RSS: %d MB', [ProcessResidentBytes div (1024 * 1024)]));
+  Log(Format('Refresh done — process RSS: %d MB', [ProcessResidentBytes div cBytesPerMiB]));
 end;
 
 procedure TIngestService.SetExtraEpgUrls(const AUrls: TArray<string>);

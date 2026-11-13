@@ -59,13 +59,18 @@ implementation
 uses
   System.SysUtils;
 
+const
+  // KeepOneSourcePerChannel: separates tvg-id and source id in a score key
+  // (a control char, so it can never be part of a tvg-id)
+  cScoreKeySep = #1;
+
 procedure KeepOneSourcePerChannel(AList: TEpgProgrammeList; ANowUtc: TDateTime);
 type
   TScore = record
     Future, Total: Integer;
   end;
 var
-  Scores: TDictionary<string, TScore>;  // key: tvg-id + #1 + source id
+  Scores: TDictionary<string, TScore>;  // key: tvg-id + cScoreKeySep + source id
   Best: TDictionary<string, Integer>;   // tvg-id -> chosen source id
   P: TEpgProgramme;
   Key: string;
@@ -81,7 +86,7 @@ begin
   try
     for P in AList do
     begin
-      Key := P.ChannelTvgId + #1 + P.SourceId.ToString;
+      Key := P.ChannelTvgId + cScoreKeySep + P.SourceId.ToString;
       if not Scores.TryGetValue(Key, Sc) then
         Sc := Default(TScore);
       Inc(Sc.Total);
@@ -91,12 +96,12 @@ begin
     end;
     for Pair in Scores do
     begin
-      Sep := Pair.Key.LastIndexOf(#1);
+      Sep := Pair.Key.LastIndexOf(cScoreKeySep);
       Tvg := Pair.Key.Substring(0, Sep);
       Src := StrToIntDef(Pair.Key.Substring(Sep + 1), 0);
       if Best.TryGetValue(Tvg, Cur) then
       begin
-        BestSc := Scores[Tvg + #1 + Cur.ToString];
+        BestSc := Scores[Tvg + cScoreKeySep + Cur.ToString];
         if (Pair.Value.Future < BestSc.Future) or
            ((Pair.Value.Future = BestSc.Future) and (Pair.Value.Total < BestSc.Total)) or
            ((Pair.Value.Future = BestSc.Future) and (Pair.Value.Total = BestSc.Total) and (Src > Cur)) then

@@ -3,6 +3,14 @@ import { api } from '../api/client'
 import type { AppConfig, CustomList, MediaGroup, MediaStatus } from '../types'
 import { useT } from '../i18n'
 
+// Input ranges + shown defaults (when the config has no value) of the numeric settings.
+const DUMMY_EPG_BLOCK_MINUTES = { min: 5, max: 720, def: 120 }
+const DUMMY_EPG_HOURS_BACK = { min: 0, max: 168, def: 12 } // up to a week back
+const DUMMY_EPG_HOURS_AHEAD = { min: 1, max: 336, def: 48 } // up to two weeks ahead
+const PLEX_TUNER_COUNT = { min: 1, max: 32, def: 4 }
+// how long the "Copied ✓" feedback stays
+const COPIED_FEEDBACK_MS = 1500
+
 /**
  * "Media Servers" tab: everything Plex/Jellyfin. A single GLOBAL group filter
  * (which M3U group-titles are published on the existing root endpoints), the base
@@ -236,33 +244,41 @@ export function MediaServersView() {
               {t('Block length (minutes)')}
               <input
                 type="number"
-                min={5}
-                max={720}
-                value={cfg.dummyEpgBlockMinutes ?? 120}
+                min={DUMMY_EPG_BLOCK_MINUTES.min}
+                max={DUMMY_EPG_BLOCK_MINUTES.max}
+                value={cfg.dummyEpgBlockMinutes ?? DUMMY_EPG_BLOCK_MINUTES.def}
                 disabled={!cfg.dummyEpgEnabled}
-                onChange={(e) => patch({ dummyEpgBlockMinutes: clamp(e.target.value, 5, 720) })}
+                onChange={(e) =>
+                  patch({
+                    dummyEpgBlockMinutes: clamp(e.target.value, DUMMY_EPG_BLOCK_MINUTES.min, DUMMY_EPG_BLOCK_MINUTES.max),
+                  })
+                }
               />
             </label>
             <label className="inline">
               {t('Window: hours back')}
               <input
                 type="number"
-                min={0}
-                max={168}
-                value={cfg.dummyEpgHoursBack ?? 12}
+                min={DUMMY_EPG_HOURS_BACK.min}
+                max={DUMMY_EPG_HOURS_BACK.max}
+                value={cfg.dummyEpgHoursBack ?? DUMMY_EPG_HOURS_BACK.def}
                 disabled={!cfg.dummyEpgEnabled}
-                onChange={(e) => patch({ dummyEpgHoursBack: clamp(e.target.value, 0, 168) })}
+                onChange={(e) =>
+                  patch({ dummyEpgHoursBack: clamp(e.target.value, DUMMY_EPG_HOURS_BACK.min, DUMMY_EPG_HOURS_BACK.max) })
+                }
               />
             </label>
             <label className="inline">
               {t('Window: hours ahead')}
               <input
                 type="number"
-                min={1}
-                max={336}
-                value={cfg.dummyEpgHoursAhead ?? 48}
+                min={DUMMY_EPG_HOURS_AHEAD.min}
+                max={DUMMY_EPG_HOURS_AHEAD.max}
+                value={cfg.dummyEpgHoursAhead ?? DUMMY_EPG_HOURS_AHEAD.def}
                 disabled={!cfg.dummyEpgEnabled}
-                onChange={(e) => patch({ dummyEpgHoursAhead: clamp(e.target.value, 1, 336) })}
+                onChange={(e) =>
+                  patch({ dummyEpgHoursAhead: clamp(e.target.value, DUMMY_EPG_HOURS_AHEAD.min, DUMMY_EPG_HOURS_AHEAD.max) })
+                }
               />
             </label>
           </div>
@@ -332,11 +348,13 @@ export function MediaServersView() {
               {t('Tuners (concurrent streams)')}
               <input
                 type="number"
-                min={1}
-                max={32}
-                value={cfg.plexTunerCount ?? 4}
+                min={PLEX_TUNER_COUNT.min}
+                max={PLEX_TUNER_COUNT.max}
+                value={cfg.plexTunerCount ?? PLEX_TUNER_COUNT.def}
                 disabled={!cfg.plexHdhrEnabled}
-                onChange={(e) => patch({ plexTunerCount: clamp(e.target.value, 1, 32) })}
+                onChange={(e) =>
+                  patch({ plexTunerCount: clamp(e.target.value, PLEX_TUNER_COUNT.min, PLEX_TUNER_COUNT.max) })
+                }
               />
             </label>
             <label className="inline">
@@ -507,7 +525,7 @@ function CopyUrl({ label, url }: { label: string; url: string }) {
   function copy() {
     if (copyText(url)) {
       setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+      setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS)
     } else {
       // last resort: select the text so the user can hit Ctrl+C themselves
       const el = valueRef.current

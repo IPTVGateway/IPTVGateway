@@ -43,15 +43,45 @@ uses
   System.NetEncoding, System.DateUtils, System.Math,
   IPTV.Model.Types, IPTV.Source.Http, IPTV.Core.Utils;
 
+const
+  // player_api.php actions
+  cActionLiveCategories = 'get_live_categories';
+  cActionLiveStreams = 'get_live_streams';
+  cActionVodCategories = 'get_vod_categories';
+  cActionVodStreams = 'get_vod_streams';
+  cActionSeriesCategories = 'get_series_categories';
+  cActionSeries = 'get_series';
+
+  // stream URL path segments (<base>/<segment>/<user>/<pass>/<id>.<ext>)
+  cPathLive = 'live';
+  cPathMovie = 'movie';
+  cPathSeries = 'series';
+  cExtTs = 'ts';                       // live has no container_extension
+
+  // JSON fields
+  cJsonCategoryId = 'category_id';
+  cJsonStreamType = 'stream_type';
+  cStreamTypeRadio = 'radio_streams';
+
+  // key separator of the content-type|category-id lookup
+  cCategoryKeySep = '|';
+
+  cReturnUtc = True;                   // UnixToDateTime AReturnUTC
+
+// <base>/player_api.php?username=U&password=P (URL-encoded, trimmed)
+function PlayerApiBaseUrl(const ASource: TSourceConfig): string;
+begin
+  Result := Format('%s/player_api.php?username=%s&password=%s',
+    [ASource.Url.Trim.TrimRight(['/']),
+     TNetEncoding.URL.Encode(ASource.Username.Trim),
+     TNetEncoding.URL.Encode(ASource.Password.Trim)]);
+end;
+
 function TXtreamReader.ApiUrl(const ASource: TSourceConfig; const AAction: string): string;
 begin
   // Trim whitespace too (a stray leading/trailing space in the URL would make
   // the request malformed → WinHTTP 12152 / "connection closed"), not just '/'.
-  Result := Format('%s/player_api.php?username=%s&password=%s&action=%s',
-    [ASource.Url.Trim.TrimRight(['/']),
-     TNetEncoding.URL.Encode(ASource.Username.Trim),
-     TNetEncoding.URL.Encode(ASource.Password.Trim),
-     AAction]);
+  Result := PlayerApiBaseUrl(ASource) + '&action=' + AAction;
 end;
 
 function TXtreamReader.FetchJson(const AUrl, AUserAgent, AReferer: string): TObject;
@@ -81,7 +111,7 @@ begin
       ASnapshot.Categories.Add(Cat); // own immediately so a GetValue type-mismatch can't leak it
       Cat.SourceId := ASource.Id;
       Cat.ContentType := TContentType(AContentType);
-      Cat.UpstreamId := Obj.GetValue<string>('category_id', '');
+      Cat.UpstreamId := Obj.GetValue<string>(cJsonCategoryId, '');
       Cat.Name := Obj.GetValue<string>('category_name', '');
     end;
   finally
@@ -113,7 +143,7 @@ begin
       S.SourceId := ASource.Id;
       S.ContentType := TContentType(AContentType);
       // radio arrives in get_live_streams, flagged stream_type=radio_streams
-      if (S.ContentType = ctLive) and SameText(Obj.GetValue<string>('stream_type', ''), 'radio_streams') then
+      if (S.ContentType = ctLive) and SameText(Obj.GetValue<string>(cJsonStreamType, ''), cStreamTypeRadio) then
         S.ContentType := ctRadio;
       // live and radio share one call: drop the type the operator switched off
       if not ASource.EnabledFor(S.ContentType) then
@@ -125,7 +155,7 @@ begin
       S.Name := Obj.GetValue<string>('name', '');
       S.Logo := Obj.GetValue<string>('stream_icon', Obj.GetValue<string>('cover', ''));
       S.TvgId := Obj.GetValue<string>('epg_channel_id', '');
-      S.CategoryUpstreamId := Obj.GetValue<string>('category_id', '');
+      S.CategoryUpstreamId := Obj.GetValue<string>(cJsonCategoryId, '');
       // catch-up: tv_archive=1 + tv_archive_duration (days); numbers or strings
       if (AContentType = Ord(ctLive)) and
          (StrToIntDef(Obj.GetValue<string>('tv_archive', '0'), 0) = 1) then
@@ -137,7 +167,7 @@ begin
       // players that don't negotiate; live has none, so .ts is the safe default.
       Ext := Obj.GetValue<string>('container_extension', '').Trim;
       if Ext = '' then
-        Ext := 'ts';
+        Ext := cExtTs;
       S.UpstreamUrl := Format('%s/%s/%s/%s/%s.%s',
         [ASource.Url.Trim.TrimRight(['/']), AStreamPath, ASource.Username.Trim, ASource.Password.Trim, StreamId, Ext]);
     end;
@@ -156,10 +186,7 @@ var
   Offs: Integer;
 begin
   try
-    JV := TJSONValue(FetchJson(Format('%s/player_api.php?username=%s&password=%s',
-      [ASource.Url.Trim.TrimRight(['/']),
-       TNetEncoding.URL.Encode(ASource.Username.Trim),
-       TNetEncoding.URL.Encode(ASource.Password.Trim)]), ASource.UserAgent, ASource.Referer));
+    JV := TJSONValue(FetchJson(PlayerApiBaseUrl(ASource), ASource.UserAgent, ASource.Referer));
     try
       if not (JV is TJSONObject) then Exit;
       UI := TJSONObject(JV).GetValue('user_info');
@@ -169,7 +196,7 @@ begin
       V := TJSONObject(UI).GetValue('exp_date');
       ASnapshot.ExpiresUtc := 0;
       if (V <> nil) and not (V is TJSONNull) and TryStrToInt64(V.Value, Exp) and (Exp > 0) then
-        ASnapshot.ExpiresUtc := UnixToDateTime(Exp, True);
+        ASnapshot.ExpiresUtc := UnixToDateTime(Exp, cReturnUtc);
       ASnapshot.MaxConnections := StrToIntDef(TJSONObject(UI).GetValue<string>('max_connections', '0'), 0);
       // the portal's clock: timeshift start times are in its local time
       SI := TJSONObject(JV).GetValue('server_info');
@@ -194,10 +221,7 @@ end;
 function XtreamApiGet(const ASource: TSourceConfig; const AQuery: string): TJSONValue;
 begin
   Result := TJSONObject.ParseJSONValue(HttpGetString(
-    Format('%s/player_api.php?username=%s&password=%s&%s',
-      [ASource.Url.Trim.TrimRight(['/']),
-       TNetEncoding.URL.Encode(ASource.Username.Trim),
-       TNetEncoding.URL.Encode(ASource.Password.Trim), AQuery]),
+    PlayerApiBaseUrl(ASource) + '&' + AQuery,
     ASource.UserAgent, TimeoutPortalMs, ASource.Referer));
 end;
 
@@ -213,19 +237,19 @@ begin
   Names := TDictionary<string, string>.Create;
   try
     for Cat in ASnapshot.Categories do
-      Names.AddOrSetValue(ContentTypeNames[Cat.ContentType] + '|' + Cat.UpstreamId, Cat.Name);
+      Names.AddOrSetValue(ContentTypeNames[Cat.ContentType] + cCategoryKeySep + Cat.UpstreamId, Cat.Name);
     for S in ASnapshot.Streams do
     begin
-      Key := ContentTypeNames[S.ContentType] + '|' + S.CategoryUpstreamId;
+      Key := ContentTypeNames[S.ContentType] + cCategoryKeySep + S.CategoryUpstreamId;
       if Names.TryGetValue(Key, N) then
         S.GroupTitle := N
       else if (S.ContentType = ctRadio) and
-        Names.TryGetValue(ContentTypeNames[ctLive] + '|' + S.CategoryUpstreamId, N) then
+        Names.TryGetValue(ContentTypeNames[ctLive] + cCategoryKeySep + S.CategoryUpstreamId, N) then
       begin
         S.GroupTitle := N; // radio sits in the live categories ...
         // ... so give radio its own copy of that category (browsable as radio,
         // and kept when only radio is switched on)
-        if not Names.ContainsKey(ContentTypeNames[ctRadio] + '|' + S.CategoryUpstreamId) then
+        if not Names.ContainsKey(ContentTypeNames[ctRadio] + cCategoryKeySep + S.CategoryUpstreamId) then
         begin
           lRadioCat := TCategory.Create;
           ASnapshot.Categories.Add(lRadioCat);
@@ -233,7 +257,7 @@ begin
           lRadioCat.ContentType := ctRadio;
           lRadioCat.UpstreamId := S.CategoryUpstreamId;
           lRadioCat.Name := N;
-          Names.Add(ContentTypeNames[ctRadio] + '|' + S.CategoryUpstreamId, N);
+          Names.Add(ContentTypeNames[ctRadio] + cCategoryKeySep + S.CategoryUpstreamId, N);
         end;
       end;
     end;
@@ -249,18 +273,18 @@ begin
     LoadAccountInfo(ASource, Result);
     if ASource.EnabledFor(ctLive) or ASource.EnabledFor(ctRadio) then
     begin
-      LoadCategories(ASource, Result, Ord(ctLive), 'get_live_categories');
-      LoadStreams(ASource, Result, Ord(ctLive), 'get_live_streams', 'live');
+      LoadCategories(ASource, Result, Ord(ctLive), cActionLiveCategories);
+      LoadStreams(ASource, Result, Ord(ctLive), cActionLiveStreams, cPathLive);
     end;
     if ASource.EnabledFor(ctMovie) then
     begin
-      LoadCategories(ASource, Result, Ord(ctMovie), 'get_vod_categories');
-      LoadStreams(ASource, Result, Ord(ctMovie), 'get_vod_streams', 'movie');
+      LoadCategories(ASource, Result, Ord(ctMovie), cActionVodCategories);
+      LoadStreams(ASource, Result, Ord(ctMovie), cActionVodStreams, cPathMovie);
     end;
     if ASource.EnabledFor(ctSeries) then
     begin
-      LoadCategories(ASource, Result, Ord(ctSeries), 'get_series_categories');
-      LoadStreams(ASource, Result, Ord(ctSeries), 'get_series', 'series');
+      LoadCategories(ASource, Result, Ord(ctSeries), cActionSeriesCategories);
+      LoadStreams(ASource, Result, Ord(ctSeries), cActionSeries, cPathSeries);
     end;
     ApplyCategoryNames(Result);
   except

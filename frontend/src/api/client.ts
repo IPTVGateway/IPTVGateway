@@ -20,12 +20,18 @@ import type {
   MediaGroup,
   MediaStatus,
 } from '../types'
+import { DEFAULT_PROBE_SECONDS } from '../lib/constants'
 
 // ── admin password (optional) ───────────────────────────────────────────────
 // When the backend has an admin password set, every /api/* call must carry it.
 // We keep it in localStorage and send it as a header (and, for plain <a download>
 // links that can't set headers, as a ?pw= query param).
+// every admin endpoint lives under this path (Vite proxies it to the backend in dev)
+const API_BASE = '/api'
 const PW_KEY = 'iptv.admin.pw'
+const ADMIN_PASSWORD_HEADER = 'X-Admin-Password'
+// longest backend error detail we put into an Error message
+const MAX_ERROR_DETAIL = 300
 export const adminAuth = {
   get: () => localStorage.getItem(PW_KEY) ?? '',
   set: (v: string) => localStorage.setItem(PW_KEY, v),
@@ -45,23 +51,25 @@ export class UnauthorizedError extends Error {
   }
 }
 
+const HTTP_UNAUTHORIZED = 401
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const pw = adminAuth.get()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((init?.headers as Record<string, string>) ?? {}),
   }
-  if (pw) headers['X-Admin-Password'] = pw
-  const res = await fetch(`/api${path}`, { ...init, headers })
+  if (pw) headers[ADMIN_PASSWORD_HEADER] = pw
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers })
   // Read once as text so we tolerate empty bodies (void endpoints) and
   // non-JSON error pages (e.g. a 500 HTML page) without throwing a parse error.
   const text = await res.text()
-  if (res.status === 401) {
+  if (res.status === HTTP_UNAUTHORIZED) {
     onUnauthorized?.()
     throw new UnauthorizedError()
   }
   if (!res.ok) {
-    const detail = text.trim().replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+    const detail = text.trim().replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_ERROR_DETAIL)
     throw new Error(`${res.status} ${detail || res.statusText}`)
   }
   if (!text) return undefined as T
@@ -212,7 +220,7 @@ export const api = {
       `/catalog/streams/${streamId}/variants?allSources=${opts.allSources ? 1 : 0}&listId=${opts.listId ?? 0}`,
     ),
   // measure a channel: the backend pulls ~seconds of it from the provider (serialised)
-  probeStream: (streamId: number, seconds = 8) =>
+  probeStream: (streamId: number, seconds = DEFAULT_PROBE_SECONDS) =>
     http<ProbeResult>(`/catalog/streams/${streamId}/probe?seconds=${seconds}`, { method: 'POST' }),
   // renumber the whole bouquet across all groups in one transaction (plan computed client-side)
   renumberList: (listId: number, numbers: { itemId: number; channelNumber: number }[]) =>
@@ -279,6 +287,6 @@ export const api = {
 
   // download URLs for the curated list (use as <a href download>): the list as
   // M3U_plus (raw upstream URLs) and the curated EPG as XMLTV.
-  exportM3uUrl: (listId: number) => `/api/lists/${listId}/export.m3u${pwQuery()}`,
-  exportXmltvUrl: (listId: number) => `/api/lists/${listId}/export.xmltv${pwQuery()}`,
+  exportM3uUrl: (listId: number) => `${API_BASE}/lists/${listId}/export.m3u${pwQuery()}`,
+  exportXmltvUrl: (listId: number) => `${API_BASE}/lists/${listId}/export.xmltv${pwQuery()}`,
 }

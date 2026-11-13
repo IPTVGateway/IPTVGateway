@@ -37,8 +37,13 @@ uses
   System.SysUtils;
 
 const
-  SSDP_PORT = 1900;
-  SSDP_GROUP = '239.255.255.250';
+  // SSDP / UPnP discovery
+  cSsdpPort = 1900;
+  cSsdpGroup = '239.255.255.250';
+  cBindAnyIPv4 = '0.0.0.0';
+  // tokens of a discovery probe (matched on the upper-cased datagram)
+  cProbeMSearch = 'M-SEARCH';
+  cProbeSsdpDiscover = 'SSDP:DISCOVER';
 
 constructor TSsdpServer.Create(const ALocation: string; const ALog: TLogProc);
 begin
@@ -60,7 +65,7 @@ var
 begin
   Msg := UpperCase(IndyTextEncoding_ASCII.GetString(AData));
   // only answer discovery probes (M-SEARCH ... Man: "ssdp:discover")
-  if (Pos('M-SEARCH', Msg) = 0) or (Pos('SSDP:DISCOVER', Msg) = 0) then
+  if (Pos(cProbeMSearch, Msg) = 0) or (Pos(cProbeSsdpDiscover, Msg) = 0) then
     Exit;
   // unicast reply straight back to the prober with our discover.json LOCATION
   Resp :=
@@ -91,22 +96,22 @@ begin
   try
     Srv.ThreadedEvent := True;
     Srv.OnUDPRead := DoRead;
-    Srv.DefaultPort := SSDP_PORT;
+    Srv.DefaultPort := cSsdpPort;
     Srv.Bindings.Clear;
     B := Srv.Bindings.Add;
     B.IPVersion := Id_IPv4;
-    B.IP := '0.0.0.0';
-    B.Port := SSDP_PORT;
+    B.IP := cBindAnyIPv4;
+    B.Port := cSsdpPort;
     B.ReuseSocket := rsTrue; // share 1900 with any other UPnP users on the host
     Srv.Active := True;
     try
-      B.AddMulticastMembership(SSDP_GROUP); // also see multicast M-SEARCH
+      B.AddMulticastMembership(cSsdpGroup); // also see multicast M-SEARCH
     except
       // some stacks reject this; unicast replies still work for many setups
     end;
     FServer := Srv;
     if Assigned(FLog) then
-      FLog(Format('SSDP responder on UDP %d -> %s', [SSDP_PORT, FLocation]));
+      FLog(Format('SSDP responder on UDP %d -> %s', [cSsdpPort, FLocation]));
   except
     on E: Exception do
     begin

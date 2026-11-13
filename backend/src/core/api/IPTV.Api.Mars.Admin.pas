@@ -208,17 +208,60 @@ uses
   IPTV.Api.Serializers, IPTV.Api.SettingsIO, IPTV.Output.Builder, IPTV.Core.Utils,
   IPTV.Plex.Client, IPTV.Source.Probe;
 
+const
+  // admin authentication: header (web app), query param (download links only)
+  cAdminPasswordHeader = 'X-Admin-Password';
+  cAdminPasswordQuery = 'pw';
+  cAllowQueryPassword = True; // RequireApp AAllowQueryPassword
+
+  // truthy query-param values ('1' / 'true', case-insensitive)
+  cQueryTrueDigit = '1';
+  cQueryTrueText = 'true';
+
+  // settings ranges (also checked on import)
+  cMaxHour = 23;
+  cMaxMinute = 59;
+  cMinPort = 1;
+  cMaxPort = 65535;
+  cMaxEpgDays = 31;
+
+  // catalog paging / EPG window: 0 = unlimited
+  cNoLimit = 0;
+  cNoOffset = 0;
+  cNoEpgDayLimit = 0;
+
+  // separator the strip-prefix/suffix token lists are compared with
+  cStripTokenSep = ';';
+  // chars of an oversized filter item quoted in the 400 message
+  cFilterPreviewLen = 40;
+
+  // UI language files: <exedir>/lang/<code>.json, optional "_name" label
+  cLangDirName = 'lang';
+  cLangFileExt = '.json';
+  cLangFileMask = '*' + cLangFileExt;
+  cLangNameKey = '_name';
+
+  // quality probe
+  cDefaultProbeSeconds = 8;  // ?seconds= absent or <= 0
+  cProbeRoundDigits = -2;    // RoundTo: 2 decimals
+
+  // download exports
+  cHeaderContentDisposition = 'Content-Disposition';
+  cAttachmentFmt = 'attachment; filename="%s"';
+  cExportM3uFileName = 'playlist.m3u';
+  cExportXmltvFileName = 'epg.xml';
+
 procedure TAdminResource.RequireApp(AAllowQueryPassword: Boolean);
 var
   Pw: string;
 begin
   if App = nil then
-    raise EMARSHttpException.Create('service not started', 503);
+    raise EMARSHttpException.Create('service not started', cHttpServiceUnavailable);
   Pw := App.Config.AdminPassword;
   if Pw <> '' then
-    if not IsSamePassword(Request.GetHeaderParamValue('X-Admin-Password'), Pw) and
-       not (AAllowQueryPassword and IsSamePassword(Request.GetQueryParamValue('pw'), Pw)) then
-      raise EMARSHttpException.Create('Unauthorized', 401);
+    if not IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), Pw) and
+       not (AAllowQueryPassword and IsSamePassword(Request.GetQueryParamValue(cAdminPasswordQuery), Pw)) then
+      raise EMARSHttpException.Create('Unauthorized', cHttpUnauthorized);
 end;
 
 function ParseIds(const ABody: TJSONObject): TArray<Integer>;
@@ -228,27 +271,20 @@ end;
 
 function IsTrue(const S: string): Boolean;
 begin
-  Result := (S = '1') or SameText(S, 'true');
+  Result := (S = cQueryTrueDigit) or SameText(S, cQueryTrueText);
 end;
-
-const
-  cMaxHour = 23;
-  cMaxMinute = 59;
-  cMinPort = 1;
-  cMaxPort = 65535;
-  cMaxEpgDays = 31;
 
 // 400 for values the service can't use (also checked on import)
 procedure CheckSettingsRange(AHour, AMinute, AProxyPort, AEpgDays: Integer);
 begin
   if (AHour < 0) or (AHour > cMaxHour) or (AMinute < 0) or (AMinute > cMaxMinute) then
-    raise EMARSHttpException.Create('refreshHour/refreshMinute out of range (0-23 / 0-59)', 400);
+    raise EMARSHttpException.Create('refreshHour/refreshMinute out of range (0-23 / 0-59)', cHttpBadRequest);
   if (AProxyPort < cMinPort) or (AProxyPort > cMaxPort) then
-    raise EMARSHttpException.Create(Format('proxyPort must be %d-%d', [cMinPort, cMaxPort]), 400);
+    raise EMARSHttpException.Create(Format('proxyPort must be %d-%d', [cMinPort, cMaxPort]), cHttpBadRequest);
   if AProxyPort = App.Config.HttpPort then
-    raise EMARSHttpException.Create('proxyPort must differ from the web/API port', 400);
+    raise EMARSHttpException.Create('proxyPort must differ from the web/API port', cHttpBadRequest);
   if (AEpgDays < 0) or (AEpgDays > cMaxEpgDays) then
-    raise EMARSHttpException.Create(Format('epgMaxDays must be 0-%d', [cMaxEpgDays]), 400);
+    raise EMARSHttpException.Create(Format('epgMaxDays must be 0-%d', [cMaxEpgDays]), cHttpBadRequest);
 end;
 
 // The Plex bouquet of an imported bundle: the import recreates the lists (new ids),
@@ -384,14 +420,14 @@ begin
     if TooLong <> '' then
       raise EMARSHttpException.Create(Format(
         'Filter item too long (%d chars, max %d) — split it into separate items: "%s…"',
-        [Length(TooLong), MaxFilterTokenLen, Copy(TooLong, 1, 40)]), 400);
+        [Length(TooLong), MaxFilterTokenLen, Copy(TooLong, 1, cFilterPreviewLen)]), cHttpBadRequest);
     S.IncludeFilters := CleanFilterTokens(S.IncludeFilters);
     S.ExcludeFilters := CleanFilterTokens(S.ExcludeFilters);
     App.Store.SaveSource(S);
     // if a strip-prefix/suffix rule changed, re-clean already-added channel names
     // (auto-named items only; manual renames are preserved)
-    if (Id > 0) and ((StrArrayToCsv(OldStrip, ';') <> StrArrayToCsv(S.StripPrefixes, ';')) or
-       (StrArrayToCsv(OldStripSfx, ';') <> StrArrayToCsv(S.StripSuffixes, ';'))) then
+    if (Id > 0) and ((StrArrayToCsv(OldStrip, cStripTokenSep) <> StrArrayToCsv(S.StripPrefixes, cStripTokenSep)) or
+       (StrArrayToCsv(OldStripSfx, cStripTokenSep) <> StrArrayToCsv(S.StripSuffixes, cStripTokenSep))) then
       App.Store.RestripSourceItems(S.Id, OldStrip, OldStripSfx, S.StripPrefixes, S.StripSuffixes);
     Result := SourceToJson(S);
   finally
@@ -484,7 +520,7 @@ end;
 // the built-in en/nl that ship inside the frontend bundle.
 function LangDir: string;
 begin
-  Result := TPath.Combine(ExtractFilePath(ParamStr(0)), 'lang');
+  Result := TPath.Combine(ExtractFilePath(ParamStr(0)), cLangDirName);
   ForceDirectories(Result);
 end;
 
@@ -499,7 +535,7 @@ begin
   try
   if not TDirectory.Exists(LangDir) then
     Exit;
-  for FileName in TDirectory.GetFiles(LangDir, '*.json') do
+  for FileName in TDirectory.GetFiles(LangDir, cLangFileMask) do
   begin
     Code := TPath.GetFileNameWithoutExtension(FileName);
     DisplayName := Code;
@@ -509,8 +545,8 @@ begin
     Val := nil;
     try
       Val := TJSONObject.ParseJSONValue(TFile.ReadAllText(FileName, TEncoding.UTF8));
-      if (Val is TJSONObject) and (TJSONObject(Val).GetValue('_name') <> nil) then
-        DisplayName := TJSONObject(Val).GetValue('_name').Value;
+      if (Val is TJSONObject) and (TJSONObject(Val).GetValue(cLangNameKey) <> nil) then
+        DisplayName := TJSONObject(Val).GetValue(cLangNameKey).Value;
     except
       // malformed file → skip the label, keep the code
     end;
@@ -535,16 +571,16 @@ begin
   // path-traversal guard: codes are simple identifiers, never paths
   if (ACode = '') or ACode.Contains('/') or ACode.Contains('\') or ACode.Contains('..') or
      ACode.Contains(':') then
-    raise EMARSHttpException.Create('Bad language code', 400);
-  FileName := TPath.Combine(LangDir, ACode + '.json');
+    raise EMARSHttpException.Create('Bad language code', cHttpBadRequest);
+  FileName := TPath.Combine(LangDir, ACode + cLangFileExt);
   if not TFile.Exists(FileName) then
-    raise EMARSHttpException.Create('Unknown language', 404);
+    raise EMARSHttpException.Create('Unknown language', cHttpNotFound);
   // parse to a value first; a non-object (or unparseable) file must not leak
   Val := TJSONObject.ParseJSONValue(TFile.ReadAllText(FileName, TEncoding.UTF8));
   if not (Val is TJSONObject) then
   begin
     Val.Free; // nil-safe; frees a non-object value too
-    raise EMARSHttpException.Create('Malformed language file', 500);
+    raise EMARSHttpException.Create('Malformed language file', cHttpInternalServerError);
   end;
   Result := TJSONObject(Val);
 end;
@@ -571,7 +607,7 @@ var
   L: TCategoryList;
 begin
   RequireApp;
-  L := App.Store.LoadCategories(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, '', 0, 0, IsTrue(AIncludeHidden)));
+  L := App.Store.LoadCategories(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, '', cNoLimit, cNoOffset, IsTrue(AIncludeHidden)));
   try
     Result := CategoriesToJson(L);
   finally
@@ -600,7 +636,7 @@ begin
   RequireApp;
   Result := TJSONObject.Create.AddPair('count',
     TJSONNumber.Create(App.Store.CountStreams(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, ACategory,
-      0, 0, IsTrue(AIncludeHidden), IsTrue(AInCategory)))));
+      cNoLimit, cNoOffset, IsTrue(AIncludeHidden), IsTrue(AInCategory)))));
 end;
 
 procedure TAdminResource.MarkCategoriesSeen(ABody: TJSONObject);
@@ -759,7 +795,7 @@ begin
     Groups := App.Config.VisibleGroups;
   // validated: a value without scheme/host used to break every box login (500)
   if not NormalizePublicBaseUrl(ABody.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl), Base) then
-    raise EMARSHttpException.Create('publicBaseUrl is not a valid URL (e.g. http://192.168.1.10:7777)', 400);
+    raise EMARSHttpException.Create('publicBaseUrl is not a valid URL (e.g. http://192.168.1.10:7777)', cHttpBadRequest);
   App.UpdateMediaConfig(Groups, Base,
     ABody.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
     ABody.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
@@ -791,7 +827,7 @@ begin
     Result := TJSONObject.Create.AddPair('dvrs', TJSONNumber.Create(Count));
   except
     on E: Exception do
-      raise EMARSHttpException.Create('Plex rescan failed: ' + E.Message, 400);
+      raise EMARSHttpException.Create('Plex rescan failed: ' + E.Message, cHttpBadRequest);
   end;
 end;
 
@@ -815,7 +851,7 @@ var
 begin
   RequireApp;
   if not ((ABody.GetValue('sources') is TJSONArray) or (ABody.GetValue('lists') is TJSONArray)) then
-    raise EMARSHttpException.Create('Invalid import file (no "sources"/"lists")', 400);
+    raise EMARSHttpException.Create('Invalid import file (no "sources"/"lists")', cHttpBadRequest);
 
   Counts := ImportStoreSettings(App.Store, ABody);
 
@@ -955,8 +991,8 @@ begin
   if App <> nil then
     Pw := App.Config.AdminPassword;
   // header only (the web app's Log tab sends it; a ?pw= would end up in URLs)
-  if (Pw <> '') and not IsSamePassword(Request.GetHeaderParamValue('X-Admin-Password'), Pw) then
-    raise EMARSHttpException.Create('Unauthorized', 401);
+  if (Pw <> '') and not IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), Pw) then
+    raise EMARSHttpException.Create('Unauthorized', cHttpUnauthorized);
   Result := TJSONObject.Create;
   Arr := TJSONArray.Create;
   Last := StrToInt64Def(ASince, 0);
@@ -998,7 +1034,7 @@ begin
   try
     // the channels actually published under the current global group filter
     Channels := SelectOutputChannels(App.Store, L.Id, App.Config.VisibleGroups);
-    KeepContentTypes(Channels, [ctLive, ctRadio]); // what the media servers actually get
+    KeepContentTypes(Channels, cLinearContentTypes); // what the media servers actually get
     Ids := TStringList.Create;
     GotEpg := TStringList.Create;
     try
@@ -1007,7 +1043,7 @@ begin
       for C in Channels do
         for Eff in C.EpgReadIds do
           Ids.Add(Eff);
-      Progs := App.Store.LoadEpgForTvgIds(Ids.ToStringArray, 0);
+      Progs := App.Store.LoadEpgForTvgIds(Ids.ToStringArray, cNoEpgDayLimit);
       try
         for I := 0 to Progs.Count - 1 do
           GotEpg.Add(Progs[I].ChannelTvgId);
@@ -1379,7 +1415,7 @@ begin
   RequireApp;
   Result := TJSONArray.Create;
   for V in App.Store.FindStreamVariants(AId,
-    SameText(AAllSources, '1') or SameText(AAllSources, 'true'), AListId) do
+    IsTrue(AAllSources), AListId) do
   begin
     O := TJSONObject.Create;
     O.AddPair('streamId', TJSONNumber.Create(V.StreamId));
@@ -1409,7 +1445,7 @@ begin
   RequireApp;
   S := App.Store.LoadStreamById(AId);
   if S = nil then
-    raise EMARSHttpException.Create('stream not found', 404);
+    raise EMARSHttpException.Create('stream not found', cHttpNotFound);
   try
     Url := S.UpstreamUrl;
     SrcId := S.SourceId;
@@ -1431,7 +1467,7 @@ begin
     Srcs.Free;
   end;
   if ASeconds <= 0 then
-    ASeconds := 8;
+    ASeconds := cDefaultProbeSeconds;
   R := ProbeStream(Url, ASeconds, Ua, Ref); // never raises; serialised inside
   Result := TJSONObject.Create;
   Result.AddPair('streamId', TJSONNumber.Create(AId));
@@ -1450,9 +1486,9 @@ begin
     Arr.AddElement(TJSONObject.Create.AddPair('codec', A.Codec).AddPair('language', A.Language));
   Result.AddPair('audio', Arr);
   Result.AddPair('bitrateKbps', TJSONNumber.Create(R.BitrateKbps));
-  Result.AddPair('mediaSeconds', TJSONNumber.Create(RoundTo(R.MediaSeconds, -2)));
-  Result.AddPair('wallSeconds', TJSONNumber.Create(RoundTo(R.WallSeconds, -2)));
-  Result.AddPair('realtime', TJSONNumber.Create(RoundTo(R.Realtime, -2)));
+  Result.AddPair('mediaSeconds', TJSONNumber.Create(RoundTo(R.MediaSeconds, cProbeRoundDigits)));
+  Result.AddPair('wallSeconds', TJSONNumber.Create(RoundTo(R.WallSeconds, cProbeRoundDigits)));
+  Result.AddPair('realtime', TJSONNumber.Create(RoundTo(R.Realtime, cProbeRoundDigits)));
   Result.AddPair('firstByteMs', TJSONNumber.Create(R.FirstByteMs));
   Result.AddPair('redirects', TJSONNumber.Create(R.Redirects));
   Result.AddPair('bytes', TJSONNumber.Create(R.Bytes));
@@ -1460,15 +1496,15 @@ end;
 
 function TAdminResource.ExportM3U(AId: Integer): string;
 begin
-  RequireApp(True); // a download link
-  Response.SetHeader('Content-Disposition', 'attachment; filename="playlist.m3u"');
+  RequireApp(cAllowQueryPassword); // a download link
+  Response.SetHeader(cHeaderContentDisposition, Format(cAttachmentFmt, [cExportM3uFileName]));
   Result := BuildM3U(App.Store, AId);
 end;
 
 function TAdminResource.ExportXmltv(AId: Integer): string;
 begin
-  RequireApp(True); // a download link
-  Response.SetHeader('Content-Disposition', 'attachment; filename="epg.xml"');
+  RequireApp(cAllowQueryPassword); // a download link
+  Response.SetHeader(cHeaderContentDisposition, Format(cAttachmentFmt, [cExportXmltvFileName]));
   Result := BuildXmltv(App.Store, AId, App.Config.EpgMaxDays);
 end;
 

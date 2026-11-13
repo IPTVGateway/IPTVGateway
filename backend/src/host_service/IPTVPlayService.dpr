@@ -61,7 +61,11 @@ uses
   IPTV.App.Runner in '..\core\app\IPTV.App.Runner.pas';
 
 const
-  cStopPollMs = 200;
+  cStopPollMs = 200;              // main loop: how often a stop signal is checked
+  cExitCodeStartFailed = 1;       // non-zero: systemd / Docker restart policies retry
+{$IFDEF MSWINDOWS}
+  cAddCtrlHandler = True;         // SetConsoleCtrlHandler: add (not remove) the handler
+{$ENDIF}
 
 var
   GRunner: TAppRunner;
@@ -103,7 +107,7 @@ end;
 procedure InstallSignalHandlers;
 begin
 {$IFDEF MSWINDOWS}
-  SetConsoleCtrlHandler(@ConsoleCtrlHandler, True);
+  SetConsoleCtrlHandler(@ConsoleCtrlHandler, cAddCtrlHandler);
 {$ENDIF}
 {$IFDEF POSIX}
   signal(SIGTERM, @PosixSignalHandler);
@@ -141,7 +145,7 @@ begin
     begin
       // non-zero so systemd (Restart=on-failure) / Docker restart policies retry
       StdLog('Exiting: the service did not start.');
-      ExitCode := 1;
+      ExitCode := cExitCodeStartFailed;
     end
     else
       StdLog('Stopped.');

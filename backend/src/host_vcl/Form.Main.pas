@@ -44,9 +44,13 @@ implementation
 
 {$R *.dfm}
 
+const
+  // the log memo is cleared once it holds more lines than this
+  cMaxLogMemoLines = 2000;
+
 function TMainForm.ConfigPath: string;
 begin
-  Result := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + 'config.json';
+  Result := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + cConfigFileName;
 end;
 
 procedure TMainForm.FormCreate(Sender: TObject);
@@ -79,7 +83,7 @@ begin
     begin
       // cap the memo so a long-running dev session (daily refresh, relay logs) can't
       // grow it unbounded
-      if memLog.Lines.Count > 2000 then
+      if memLog.Lines.Count > cMaxLogMemoLines then
         memLog.Lines.Clear;
       memLog.Lines.Add(Format('%s  %s', [FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now), AMsg]));
     end);
@@ -103,7 +107,7 @@ var
 begin
   if Assigned(FRunner) then
     Exit; // already running — guard against a reentrant click leaking the runner/port
-  Cfg := TAppConfig.Load(IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + 'config.json');
+  Cfg := TAppConfig.Load(ConfigPath);
   Cfg.HttpPort := StrToIntDef(edPort.Text, Cfg.HttpPort);
   FRunner := TAppRunner.Create(Cfg, Log);  // worker thread does the real work
   Log('Starting...');

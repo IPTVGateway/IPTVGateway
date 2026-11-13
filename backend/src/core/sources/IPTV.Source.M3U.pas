@@ -40,6 +40,34 @@ uses
   System.Net.HttpClient, System.IOUtils,
   IPTV.Model.Types, IPTV.Source.Http, IPTV.Core.Utils;
 
+const
+  // M3U directives
+  cM3uHeader = '#EXTM3U';
+  cM3uExtInf = '#EXTINF';
+  cM3uDirectivePrefix = '#';
+
+  // M3U_plus attributes
+  cAttrUrlTvg = 'url-tvg';
+  cAttrXTvgUrl = 'x-tvg-url';
+  cAttrTvgId = 'tvg-id';
+  cAttrTvgName = 'tvg-name';
+  cAttrTvgLogo = 'tvg-logo';
+  cAttrGroupTitle = 'group-title';
+
+  // Xtream-style URL path segments that reveal the content type
+  cUrlPathMovie = '/movie/';
+  cUrlPathSeries = '/series/';
+  cUrlPathLive = '/live/';
+
+  // a playlist "URL" starting with this is fetched; anything else is a local file
+  cSchemeHttp = 'http';
+
+  // get.php query parameters carrying the credentials
+  cQueryUsername = 'username';
+  cQueryPassword = 'password';
+
+  cIgnoreCase = True;                  // string.StartsWith AIgnoreCase
+
 { TM3UReader }
 
 function TM3UReader.GetAttr(const ALine, AName: string): string;
@@ -63,13 +91,13 @@ begin
   U := AUrl.ToLower;
   // the Xtream-style URL path is the most reliable hint: a live group called
   // "NL| FILM" or "VODAFONE SPORT" must stay live
-  if U.Contains('/movie/') then
+  if U.Contains(cUrlPathMovie) then
     Exit(Ord(ctMovie));
-  if U.Contains('/series/') then
+  if U.Contains(cUrlPathSeries) then
     Exit(Ord(ctSeries));
   if TRegEx.IsMatch(G, '(^|[^a-z])radio([^a-z]|$)') then
     Exit(Ord(ctRadio));
-  if U.Contains('/live/') then
+  if U.Contains(cUrlPathLive) then
     Exit(Ord(ctLive));
   // otherwise whole words in the group name only
   if TRegEx.IsMatch(G, '(^|[^a-z])(vod|films?|movies?)([^a-z]|$)') then
@@ -94,24 +122,24 @@ begin
     Trimmed := Lines[I].Trim;
     if Trimmed = '' then
       Continue;
-    if Trimmed.StartsWith('#EXTM3U') then
+    if Trimmed.StartsWith(cM3uHeader) then
     begin
       // header may carry the XMLTV guide url: #EXTM3U url-tvg="..." x-tvg-url="..."
-      ASnapshot.EpgUrl := GetAttr(Trimmed, 'url-tvg');
+      ASnapshot.EpgUrl := GetAttr(Trimmed, cAttrUrlTvg);
       if ASnapshot.EpgUrl = '' then
-        ASnapshot.EpgUrl := GetAttr(Trimmed, 'x-tvg-url');
+        ASnapshot.EpgUrl := GetAttr(Trimmed, cAttrXTvgUrl);
       Continue;
     end;
 
-    if Trimmed.StartsWith('#EXTINF', True) then
+    if Trimmed.StartsWith(cM3uExtInf, cIgnoreCase) then
     begin
       Item := TStreamItem.Create;
       Item.SourceId := ASnapshot.SourceId;
       ASnapshot.Streams.Add(Item); // own immediately so a malformed line can't leak it
-      Item.TvgId := GetAttr(Trimmed, 'tvg-id');
-      Item.TvgName := GetAttr(Trimmed, 'tvg-name');
-      Item.Logo := GetAttr(Trimmed, 'tvg-logo');
-      Item.GroupTitle := GetAttr(Trimmed, 'group-title');
+      Item.TvgId := GetAttr(Trimmed, cAttrTvgId);
+      Item.TvgName := GetAttr(Trimmed, cAttrTvgName);
+      Item.Logo := GetAttr(Trimmed, cAttrTvgLogo);
+      Item.GroupTitle := GetAttr(Trimmed, cAttrGroupTitle);
       Item.CategoryUpstreamId := Item.GroupTitle;
       // display name is everything after the FIRST comma that is OUTSIDE quotes —
       // attribute values like group-title="News, Sports" contain commas that must
@@ -129,7 +157,7 @@ begin
       if CommaPos >= 0 then
         Item.Name := Trimmed.Substring(CommaPos + 1).Trim;
     end
-    else if Trimmed.StartsWith('#') then
+    else if Trimmed.StartsWith(cM3uDirectivePrefix) then
       // other directives (#EXTGRP, #EXTVLCOPT, ...) ignored for now
       Continue
     else if Assigned(Item) and (Item.UpstreamUrl = '') then
@@ -159,7 +187,7 @@ function TM3UReader.Read(const ASource: TSourceConfig): TSourceSnapshot;
 var
   Content, User, Pass: string;
 begin
-  if ASource.Url.StartsWith('http', True) then
+  if ASource.Url.StartsWith(cSchemeHttp, cIgnoreCase) then
     // charset-detecting fetch (BOM/UTF-8/CP1251), long timeout for a bulk download
     Content := HttpGetText(ASource.Url.Trim, ASource.UserAgent, TimeoutBulkMs, ASource.Referer)
   else
@@ -170,9 +198,9 @@ begin
   User := ASource.Username;
   Pass := ASource.Password;
   if User = '' then
-    User := UrlQueryParam(ASource.Url, 'username');
+    User := UrlQueryParam(ASource.Url, cQueryUsername);
   if Pass = '' then
-    Pass := UrlQueryParam(ASource.Url, 'password');
+    Pass := UrlQueryParam(ASource.Url, cQueryPassword);
 
   Result := TSourceSnapshot.Create(ASource.Id);
   try

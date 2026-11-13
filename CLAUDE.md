@@ -224,7 +224,7 @@ $BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
 $DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (164 tests, unreleased after 1.2.35)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (175 tests as of 1.2.36)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -236,7 +236,7 @@ small scratch console program that uses `TSQLiteStore` on a COPY of it.
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
-npx vitest run     # 106 tests (unreleased after 1.2.35)
+npx vitest run     # 122 tests as of 1.2.36
 npm run build      # tsc -b && vite build
 ```
 
@@ -309,7 +309,7 @@ toggle in `TAppConfig` (with `proxyPort`, default 7778):
   inherent. Requires the host reachable from abroad (port-forward/VPN), ideally
   over HTTPS. Verified: clean `video/mp2t` relay (~9 Mbps live TS) through the proxy port.
 
-## Series, VOD info and disabled sources (after 1.2.35)
+## Series, VOD info and disabled sources (1.2.36)
 
 - `get_series_info`: Xtream series are fetched from the provider (`XtreamApiGet`);
   each upstream episode gets a stable box-facing id `cEpisodeIdBase` (1e9) +

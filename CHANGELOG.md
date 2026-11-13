@@ -5,7 +5,13 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
-Fixes from a five-part bug hunt (output, storage, ingest/EPG, web app, app/security).
+## [1.2.36] - 2026-11-14
+
+Two rounds of five-part bug hunts (output, storage, ingest/EPG, web app,
+app/security), series and movie info for boxes, and a code-quality pass.
+
+**After updating:** boxes may forget hidden or favourite categories once, because
+category ids are now stable (derived from the group name).
 
 ### Security
 - The **Log** endpoint (`/api/logs`) now requires the admin password, also while
@@ -97,8 +103,9 @@ Second bug hunt (five separate runs):
   such as "NL| FILM") keep their id and their place in the bouquet; before, the
   first refresh created duplicates and left the bouquet on the old row.
 - A guide with single-quoted attributes no longer makes the EPG parse crawl.
-- `publicBaseUrl` is checked when saved (`http://` is added when missing). A
-  wrong value can no longer break every box login or the service start.
+- `publicBaseUrl` is checked when saved, also via the API and a settings import
+  (`http://` is added when missing). A wrong value can no longer break every box
+  login or the service start.
 - Linux: the default database path no longer has a backslash in it. It used to
   end up outside the data folder. A config file that fails to load is no longer
   overwritten with defaults at start.

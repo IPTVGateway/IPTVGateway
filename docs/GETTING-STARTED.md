@@ -288,7 +288,16 @@ and others. Add a playlist or portal of type **Xtream Codes (API)**:
 | Password | the bouquet password (step 5) |
 
 The box gets your groups, channel order, numbers, names, logos and the guide. On
-supporting apps it also gets catch-up: programmes with ⟲ can be replayed.
+supporting apps it also gets catch-up: programmes with ⟲ can be replayed. Movies
+and series on the bouquet appear in the box's VOD and series sections; a series
+opens with its seasons and episodes.
+
+For a bouquet **without** a login, leave username and password empty in the app.
+If an app insists on something, use `-` for both.
+
+**Server address:** boxes reach the gateway at the **Base URL** (Media Servers tab),
+e.g. `http://192.168.1.50:7777`. If boxes can't connect after a fresh install, check
+this first: the Log tab warns while it still holds the template's placeholder.
 
 ### B. As an M3U playlist
 
@@ -324,6 +333,10 @@ the guide for up to a day.
   your bouquet order.
 - Plex has no catch-up of the provider's archive. Use its DVR to record instead.
 - After adding or removing channels, let Plex rescan its guide.
+- The tuner and guide addresses have no login. To keep other devices on your network
+  out, list your Plex server's IP under **Settings → Media servers: allowed clients**
+  (or a prefix such as `192.168.1.` for the whole network). Movies and series are
+  not part of the Plex lineup; it carries live and radio channels only.
 
 ---
 

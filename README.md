@@ -143,12 +143,16 @@ actually chose.
 
 **Output**
 - Xtream emulation: `player_api.php`, `get.php`, `xmltv.php`, live/movie/series redirects.
+  Series show their seasons and episodes on the box (`get_series_info`), movies carry
+  their real container (`.mkv`/`.mp4`) and `get_vod_info`. Radio is listed with the
+  live channels. A switched-off source or content type is never offered.
 - **Catch-up / timeshift**: the provider's archive is passed through with
   `tv_archive`, `has_archive`, `/timeshift/` and M3U `catchup="xc"`.
 - An XMLTV guide restricted to your chosen channels, with optional dummy EPG for
   channels that have no guide.
 - **Plex Live TV & DVR**: an HDHomeRun emulation with SSDP discovery, or an M3U
-  tuner with XMLTV.
+  tuner with XMLTV. These addresses have no login, so they can be limited to known
+  clients (Settings → "Media servers: allowed clients").
 - An optional stream proxy and cross-provider failover.
 - Optional HTTPS and an admin password.
 

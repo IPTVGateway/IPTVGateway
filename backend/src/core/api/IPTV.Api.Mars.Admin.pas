@@ -872,10 +872,11 @@ begin
     ABody.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
     ABody.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
     ABody.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
-  // extra (third-party) XMLTV guides: only when the body carries the field
+  // media-server client allow-list: only when the body carries the field
   lArrValue := ABody.GetValue('mediaAllowedClients');
   if lArrValue is TJSONArray then
     App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lArrValue)));
+  // extra (third-party) XMLTV guides: only when the body carries the field
   lArrValue := ABody.GetValue('extraEpgUrls');
   if lArrValue is TJSONArray then
     App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(lArrValue)));
@@ -915,6 +916,7 @@ function TAdminResource.ImportSettings(ABody: TJSONObject): TJSONObject;
 var
   lCounts: TImportCounts;
   lCfg: TJSONObject;
+  lGroups: TArray<string>;
 begin
   RequireApp;
   if not ((ABody.GetValue('sources') is TJSONArray) or (ABody.GetValue('lists') is TJSONArray)) then
@@ -953,8 +955,13 @@ begin
       lCfg.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
       lCfg.GetValue<string>('plexToken', App.Config.PlexToken));
     // media servers: the global group filter + base URL + dummy-EPG settings
+    // the base URL, dummy EPG and name options are restored also when the bundle has
+    // no group filter (then the current filter stays)
     if lCfg.GetValue('visibleGroups') is TJSONArray then
-      App.UpdateMediaConfig(StrArrayFromJson(TJSONArray(lCfg.GetValue('visibleGroups'))),
+      lGroups := StrArrayFromJson(TJSONArray(lCfg.GetValue('visibleGroups')))
+    else
+      lGroups := App.Config.VisibleGroups;
+    App.UpdateMediaConfig(lGroups,
         ImportedBaseUrl(lCfg.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl)),
         lCfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
         lCfg.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),

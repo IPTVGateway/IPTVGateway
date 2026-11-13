@@ -434,8 +434,8 @@ begin
   finally
     FreeAndNil(lSources);
   end;
-  if Length(lIds) = 0 then
-    Exit;
+  // (no Exit when no source is enabled: the extra guides below still refresh, and
+  // the slots of removed extra URLs are still cleared)
 
   for i := 0 to High(lIds) do
   try

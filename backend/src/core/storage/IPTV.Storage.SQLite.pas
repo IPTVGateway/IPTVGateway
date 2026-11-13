@@ -183,7 +183,9 @@ const
   cBusyTimeoutMs = 5000; // PRAGMA busy_timeout: wait (not error) on a brief lock
 
   // schema migration
-  cErrDuplicateColumn = 'duplicate column'; // SQLite error fragment (lower case) of ADD COLUMN on an existing column
+  cErrDuplicateColumn = 'duplicate column';
+  // fragment of SQLite's constraint error (upper-cased for the compare)
+  cErrUniqueConstraint = 'UNIQUE'; // SQLite error fragment (lower case) of ADD COLUMN on an existing column
   cVacuumAboveBytes = 64 * 1024 * 1024;     // VACUUM after the token repair when this much is free
   cStateM3uStreamIdV2 = 'm3u_stream_id_v2'; // app_state flag: M3U stream ids re-keyed once
 
@@ -248,8 +250,8 @@ function IsStrongDelim(AChar: Char): Boolean;
 begin
   case AChar of
     '|', ':', #$203A, #$00BB,            // | : › »
-    #$00A6, #$2502, #$2503, #$2506,      // ¦ │ ┃ ┆
-    #$2507, #$250A, #$250B, #$FF5C:      // ┇ ┊ ┋ ｜
+    cSepBrokenBar, cSepBoxLight, cSepBoxHeavy, cSepTripleDashLight,
+    cSepTripleDashHeavy, cSepQuadDashLight, cSepQuadDashHeavy, cSepFullwidthBar:
       Result := True;
   else
     Result := False;
@@ -817,8 +819,13 @@ begin
           lUpdate.ParamByName('id').AsInteger := lIds[k];
           lUpdate.ExecSQL;
         except
-          // a UNIQUE(source_id,content_type,upstream_id) clash (two rows that differ
-          // only by credentials) — leave this row's old id; harmless and very rare.
+          on E: Exception do
+            // a UNIQUE(source_id,content_type,upstream_id) clash (two rows that differ
+            // only by credentials): leave this row's old id; harmless and very rare.
+            // Anything else (locked / IO) must not be hidden - the migration flag
+            // would otherwise be set although rows were not re-keyed.
+            if not E.Message.ToUpper.Contains(cErrUniqueConstraint) then
+              raise;
         end;
       end;
     finally
@@ -1229,9 +1236,9 @@ function NameFilterSql(const ACol: string; const AInclude, AExclude: TArray<stri
   begin
     Result := AText
       .Replace('|', ' ').Replace('-', ' ').Replace(':', ' ').Replace(#9, ' ')
-      .Replace(#$00A6, ' ').Replace(#$2502, ' ').Replace(#$2503, ' ')
-      .Replace(#$2506, ' ').Replace(#$2507, ' ').Replace(#$250A, ' ')
-      .Replace(#$250B, ' ').Replace(#$FF5C, ' ')
+      .Replace(cSepBrokenBar, ' ').Replace(cSepBoxLight, ' ').Replace(cSepBoxHeavy, ' ')
+      .Replace(cSepTripleDashLight, ' ').Replace(cSepTripleDashHeavy, ' ').Replace(cSepQuadDashLight, ' ')
+      .Replace(cSepQuadDashHeavy, ' ').Replace(cSepFullwidthBar, ' ')
       .Trim;
   end;
 
@@ -1605,8 +1612,8 @@ begin
         Result.Name := lQuery.FieldByName('nm').AsString;
         // built from the source's CURRENT url/credentials (a credential swap keeps working)
         Result.UpstreamUrl := Format('%s/series/%s/%s/%s.%s',
-          [lQuery.FieldByName('surl').AsString.Trim.TrimRight(['/']), lQuery.FieldByName('su').AsString.Trim,
-           lQuery.FieldByName('sp').AsString.Trim, Result.UpstreamId,
+          [lQuery.FieldByName('surl').AsString.Trim.TrimRight(['/']), UrlPathSafe(lQuery.FieldByName('su').AsString),
+           UrlPathSafe(lQuery.FieldByName('sp').AsString), Result.UpstreamId,
            System.StrUtils.IfThen(lQuery.FieldByName('ext').AsString = '', cDefaultEpisodeExt,
              lQuery.FieldByName('ext').AsString)]);
       end;
@@ -2059,7 +2066,7 @@ var
   lTok, lWord, lExtra: string;
   lTvgArr: TArray<string>;
   lSeen: TDictionary<Integer, Boolean>;
-  lTvgs: TDictionary<string, Boolean>;
+  lTvgs: TDictionary<string, string>; // lower-case id -> the id as written
 
   function KeyOf(const AName: string; ASourceId: Integer; out AQual, AHead: string): string;
   var
@@ -2087,7 +2094,7 @@ begin
   lInList := TDictionary<Integer, Boolean>.Create;
   lList := TList<TStreamVariant>.Create;
   lSeen := TDictionary<Integer, Boolean>.Create;
-  lTvgs := TDictionary<string, Boolean>.Create;
+  lTvgs := TDictionary<string, string>.Create;
   try
     lQuery := NewQuery;
     try
@@ -2128,7 +2135,7 @@ begin
         WHERE content_type = :ct AND upstream_url <> '' AND
         ''' + cSqlSourceActiveExists;
       if lTvg <> '' then
-        lTvgs.AddOrSetValue(lTvg.ToLower, True);
+        lTvgs.AddOrSetValue(lTvg.ToLower, lTvg);
       // pass 1: self + name matches (collecting their tvg-ids); pass 2: rows that
       // only share one of those tvg-ids, so a variant without a tvg-id still
       // finds a differently named sibling through the others
@@ -2151,13 +2158,18 @@ begin
           lExtra := lExtra + ' AND (id = :self OR name LIKE :tok OR name GLOB ''*[^ -~]*'')'
         else if lPass = cPassByTvg then
         begin
-          lExtra := lExtra + ' AND tvg_id <> '''' AND lower(tvg_id) IN (';
+          // SQLite's lower() only folds ASCII: also match the ids as they were written
+          // (a non-ASCII capital in a tvg-id never matched the Delphi-lowered key)
+          lExtra := lExtra + ' AND tvg_id <> '''' AND (lower(tvg_id) IN (';
           for k := 0 to High(lTvgArr) do
             lExtra := lExtra + IfThen(k > 0, ',', '') + ':t' + IntToStr(k);
-          lExtra := lExtra + ')';
+          lExtra := lExtra + ') OR tvg_id IN (';
+          for k := 0 to High(lTvgArr) do
+            lExtra := lExtra + IfThen(k > 0, ',', '') + ':o' + IntToStr(k);
+          lExtra := lExtra + '))';
         end;
         lQuery.SQL.Text := lSql + lExtra;
-        lQuery.ParamByName('ct').AsString := lCt;
+        lQuery.ParamByName('ct').AsWideString := lCt;
         if not AAllSources then
           lQuery.ParamByName('s').AsInteger := lSrcId;
         if (lPass = cPassByName) and (lTok <> '') then
@@ -2167,7 +2179,10 @@ begin
         end
         else if lPass = cPassByTvg then
           for k := 0 to High(lTvgArr) do
+          begin
             lQuery.ParamByName('t' + IntToStr(k)).AsWideString := lTvgArr[k];
+            lQuery.ParamByName('o' + IntToStr(k)).AsWideString := lTvgs[lTvgArr[k]];
+          end;
         lQuery.Open;
         while not lQuery.Eof do
         begin
@@ -2199,7 +2214,7 @@ begin
           begin
             lSeen.AddOrSetValue(lVariant.StreamId, True);
             if (lPass = cPassByName) and (lVariant.TvgId <> '') then
-              lTvgs.AddOrSetValue(lVariant.TvgId.ToLower, True);
+              lTvgs.AddOrSetValue(lVariant.TvgId.ToLower, lVariant.TvgId);
             if lVariant.IsSelf then
               lVariant.MatchedBy := cMatchedBySelf
             else if lByName then
@@ -3576,7 +3591,8 @@ begin
     FreeAndNil(lToDelete);
     FreeAndNil(lSeen);
   end;
-  TouchLineup;
+  if Result > 0 then
+    TouchLineup; // only a real change makes Plex rescan
 end;
 
 function TSQLiteStore.SortGroupAlphabetically(AListId, ACustomGroupId: Integer): Integer;

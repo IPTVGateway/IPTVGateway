@@ -183,7 +183,7 @@ begin
       if lExt = '' then
         lExt := cExtTs;
       lStream.UpstreamUrl := Format('%s/%s/%s/%s/%s.%s',
-        [ASource.Url.Trim.TrimRight(['/']), AStreamPath, ASource.Username.Trim, ASource.Password.Trim,
+        [ASource.Url.Trim.TrimRight(['/']), AStreamPath, UrlPathSafe(ASource.Username), UrlPathSafe(ASource.Password),
          lStreamId, lExt]);
     end;
   finally

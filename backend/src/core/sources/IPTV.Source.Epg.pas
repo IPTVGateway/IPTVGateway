@@ -314,7 +314,7 @@ var
   lKeep: TDictionary<string, string>; // lower-case id -> the id as the list spells it
   lKeepAll: Boolean;
   lId: string;
-  lStart, lEnd, lCursor: Integer;
+  lStart, lEnd, lCursor, lTagEnd: Integer;
   lProg: TEpgProgramme;
 begin
   Result := TEpgProgrammeList.Create(True);
@@ -339,6 +339,16 @@ begin
         lStart := PosEx(cTagProgrammeOpen, lXml, lCursor);
         if lStart = 0 then
           Break;
+        // a self-closing <programme .../> (no title, nothing to keep): skip it, else
+        // the search for </programme> would swallow the NEXT programme into it
+        lTagEnd := PosEx('>', lXml, lStart);
+        if lTagEnd = 0 then
+          Break;
+        if lXml[lTagEnd - 1] = '/' then
+        begin
+          lCursor := lTagEnd + 1;
+          Continue;
+        end;
         lEnd := PosEx(cTagProgrammeClose, lXml, lStart);
         if lEnd = 0 then
           Break;
@@ -412,7 +422,7 @@ function ReadExtraXmltv(const AUrl: string; ASourceId: Integer;
   const AKeepChannel: TFunc<TEpgChannelInfo, Boolean>): TEpgProgrammeList;
 var
   lXml, lBlock, lChannel: string;
-  lStart, lEnd, lCursor: Integer;
+  lStart, lEnd, lCursor, lTagEnd: Integer;
   lInfo: TEpgChannelInfo;
   lProg: TEpgProgramme;
   lParser: TXmltvEpgReader;
@@ -463,6 +473,16 @@ begin
         lStart := PosEx(cTagProgrammeOpen, lXml, lCursor);
         if lStart = 0 then
           Break;
+        // a self-closing <programme .../> (no title, nothing to keep): skip it, else
+        // the search for </programme> would swallow the NEXT programme into it
+        lTagEnd := PosEx('>', lXml, lStart);
+        if lTagEnd = 0 then
+          Break;
+        if lXml[lTagEnd - 1] = '/' then
+        begin
+          lCursor := lTagEnd + 1;
+          Continue;
+        end;
         lEnd := PosEx(cTagProgrammeClose, lXml, lStart);
         if lEnd = 0 then
           Break;

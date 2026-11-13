@@ -213,11 +213,11 @@ begin
         begin
           lObj := TJSONObject(lItem);
           lCat := TCategory.Create;
+          ASnapshot.Categories.Add(lCat); // owned at once: a GetValue mismatch can't leak it
           lCat.SourceId := ASource.Id;
           lCat.ContentType := ctLive;
           lCat.UpstreamId := lObj.GetValue<string>(cJsonId, '');
           lCat.Name := lObj.GetValue<string>('title', lObj.GetValue<string>(cJsonName, ''));
-          ASnapshot.Categories.Add(lCat);
         end;
     end;
   finally
@@ -245,6 +245,7 @@ begin
         begin
           lObj := TJSONObject(lItem);
           lStream := TStreamItem.Create;
+          ASnapshot.Streams.Add(lStream); // owned at once: a GetValue mismatch can't leak it
           lStream.SourceId := ASource.Id;
           lStream.ContentType := ctLive;
           lStream.UpstreamId := lObj.GetValue<string>(cJsonId, '');
@@ -259,7 +260,6 @@ begin
           if lCmd.StartsWith(cCmdPlayerPrefix, cIgnoreCase) then
             lCmd := lCmd.Substring(Length(cCmdPlayerPrefix)).Trim;
           lStream.UpstreamUrl := lCmd;
-          ASnapshot.Streams.Add(lStream);
         end;
       Inc(lPage);
     finally

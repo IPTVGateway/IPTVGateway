@@ -81,6 +81,8 @@ type
     [Test] procedure ClientAllowList_IpsAndPrefixes;
     /// <summary>Password comparison is exact.</summary>
     [Test] procedure SamePassword_ConstantTimeCompare;
+    /// <summary>Provider logins in an Xtream URL path: only path-breaking characters are escaped.</summary>
+    [Test] procedure UrlPathSafe_EscapesOnlyPathBreakers;
     /// <summary>Credentials in URLs are masked.</summary>
     [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
@@ -482,6 +484,13 @@ begin
   Assert.IsFalse(IsSamePassword('s3cretX', 's3cret'));
   Assert.IsFalse(IsSamePassword('', 's3cret'));
   Assert.IsTrue(IsSamePassword('пароль', 'пароль'), 'unicode');
+end;
+
+procedure TUtilsTests.UrlPathSafe_EscapesOnlyPathBreakers;
+begin
+  Assert.AreEqual('user', UrlPathSafe(' user '));
+  Assert.AreEqual('a%2Fb%3Fc%23d%25e%20f', UrlPathSafe('a/b?c#d%e f'));
+  Assert.AreEqual('p@ss+w!rd', UrlPathSafe('p@ss+w!rd'), 'everything else stays as typed');
 end;
 
 initialization

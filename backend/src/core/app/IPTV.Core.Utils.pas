@@ -107,6 +107,11 @@ function MaskUrlSecrets(const AUrl: string): string;
 /// '/' removed, 'http://' added when no scheme was given. False when it still has
 /// no host (then ANormalized is ''). '' stays '' (= not configured) and is valid.
 function NormalizePublicBaseUrl(const AValue: string; out ANormalized: string): Boolean;
+/// A provider login for an Xtream URL PATH (/live/USER/PASS/1.ts): only the
+/// characters that would break the path are escaped (% / ? # and space); everything
+/// else stays as typed, so URLs that work today don't change.
+function UrlPathSafe(const AValue: string): string;
+
 /// Password check in constant time (no early exit on the first differing char,
 /// so the response time doesn't reveal how much of a guess was right).
 function IsSamePassword(const AGiven, AExpected: string): Boolean;
@@ -874,7 +879,6 @@ begin
     Exit(False);
   while lUrl.EndsWith('/') do
     lUrl := lUrl.Substring(0, lUrl.Length - 1);
-  ANormalized := '';
   if lUrl = '' then
     Exit(True);
   if not lUrl.Contains(cSchemeSep) then
@@ -886,6 +890,13 @@ begin
   Result := (lHost <> '') and (SafeUrlHost(lUrl, '') <> '');
   if Result then
     ANormalized := lUrl;
+end;
+
+function UrlPathSafe(const AValue: string): string;
+begin
+  // '%' first, so the escapes added below aren't escaped again
+  Result := AValue.Trim.Replace('%', '%25').Replace('/', '%2F').Replace('?', '%3F')
+    .Replace('#', '%23').Replace(' ', '%20');
 end;
 
 function IsSamePassword(const AGiven, AExpected: string): Boolean;
@@ -1037,7 +1048,7 @@ begin
   if lExt = '' then
     lExt := cDefaultStreamExt;
   Result := Format('%s/timeshift/%s/%s/%d/%s/%s.%s',
-    [ABaseUrl.Trim.TrimRight(['/']), AUser.Trim, APass.Trim, ADurationMin,
+    [ABaseUrl.Trim.TrimRight(['/']), UrlPathSafe(AUser), UrlPathSafe(APass), ADurationMin,
      FormatTimeshiftStart(IncMinute(AStartUtc, ATzOffsetMin)), AUpstreamId, lExt]);
 end;
 

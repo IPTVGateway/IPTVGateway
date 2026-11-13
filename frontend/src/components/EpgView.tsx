@@ -5,12 +5,9 @@ import {
   bouquetOrder,
   byNameCI,
   CONTENT_LIVE,
-  SORT_BY_NAME,
-  SORT_BY_NUMBER,
-  SORT_MODE_STORAGE_KEY,
-  type SortMode,
 } from '../lib/ordering'
 import { SEARCH_DEBOUNCE_MS, useDebounced } from '../hooks/useDebounced'
+import { readSortMode, SORT_MODE_EVENT } from '../lib/storage'
 import { useT } from '../i18n'
 
 // re-render cadence that keeps the "on now" highlight current
@@ -224,6 +221,17 @@ function OwnEpg({
 }) {
   const t = useT()
   const [listId, setListId] = useState<number | ''>(activeListId ?? '')
+  // the bouquet panel's sort mode: lanes follow it, also when it changes later
+  const [sortMode, setSortMode] = useState(readSortMode)
+  useEffect(() => {
+    const sync = () => setSortMode(readSortMode())
+    window.addEventListener(SORT_MODE_EVENT, sync)
+    window.addEventListener('storage', sync) // another tab
+    return () => {
+      window.removeEventListener(SORT_MODE_EVENT, sync)
+      window.removeEventListener('storage', sync)
+    }
+  }, [])
   const [programmes, setProgrammes] = useState<EpgProgramme[]>([])
   const [items, setItems] = useState<CustomItem[]>([])
   const [groups, setGroups] = useState<CustomGroup[]>([])
@@ -337,19 +345,13 @@ function OwnEpg({
   // the position of each (effective) tvg-id in the bouquet as the list panel
   // shows it (its first channel wins when several share one guide id)
   const laneRank = useMemo(() => {
-    let mode: SortMode = SORT_BY_NAME
-    try {
-      if (localStorage.getItem(SORT_MODE_STORAGE_KEY) === SORT_BY_NUMBER) mode = SORT_BY_NUMBER
-    } catch {
-      /* default A→Z */
-    }
     const m = new Map<string, number>()
-    for (const it of bouquetOrder(groups, items, mode)) {
+    for (const it of bouquetOrder(groups, items, sortMode)) {
       const tvg = (it.tvgIdOverride || it.streamTvgId || '').trim()
       if (tvg && !m.has(tvg)) m.set(tvg, m.size)
     }
     return m
-  }, [groups, items])
+  }, [groups, items, sortMode])
 
   // Group programmes into one lane per channelTvgId, each sorted by start. Lanes
   // follow the bouquet order; lanes matching no channel come after, A→Z by name.

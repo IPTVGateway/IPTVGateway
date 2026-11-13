@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { readSortMode, safeSetItem, writeSortMode } from '../lib/storage'
 import { api } from '../api/client'
 import type { ContentType, CustomGroup, CustomItem, CustomList, Source, TvgIdInfo, VariantMatch } from '../types'
 import {
@@ -11,7 +12,6 @@ import {
   reorderByDrag,
   SORT_BY_NAME,
   SORT_BY_NUMBER,
-  SORT_MODE_STORAGE_KEY,
   type SortMode,
 } from '../lib/ordering'
 import { suggestTvgId } from '../lib/epgMatch'
@@ -76,13 +76,11 @@ export function ListPanel({
   const [localError, setLocalError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [confirmEmptyUpstream, setConfirmEmptyUpstream] = useState(false)
-  const [sortMode, setSortMode] = useState<SortMode>(
-    () => (localStorage.getItem(SORT_MODE_STORAGE_KEY) === SORT_BY_NUMBER ? SORT_BY_NUMBER : SORT_BY_NAME),
-  )
+  const [sortMode, setSortMode] = useState<SortMode>(readSortMode)
 
   function changeSortMode(m: SortMode) {
     setSortMode(m)
-    localStorage.setItem(SORT_MODE_STORAGE_KEY, m)
+    writeSortMode(m) // also re-orders the EPG view's lanes
   }
 
   // collapsed groups (persisted per list) — keyed by group id; the upstream group is 0
@@ -93,7 +91,7 @@ export function ListPanel({
   }, [activeListId])
   function persistCollapsed(next: Set<number>) {
     setCollapsed(next)
-    localStorage.setItem(collapseKey(activeListId), JSON.stringify([...next]))
+    safeSetItem(collapseKey(activeListId), JSON.stringify([...next]))
   }
   function toggleCollapse(id: number) {
     const next = new Set(collapsed)

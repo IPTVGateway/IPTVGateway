@@ -150,7 +150,7 @@ begin
   FreeAndNil(FLogLock);
 end;
 
-// Best-effort append to a log file next to the exe. Called from the worker
+// Best-effort append to the service log (ProgramData\IPTVGateway\Logs). Called from the worker
 // thread (runner log callback), so it must be thread-safe; a failure to write
 // must never take the service down.
 procedure TIPTVGatewayService.SvcLog(const AMsg: string);
@@ -207,7 +207,11 @@ begin
     // the app starts on the runner's thread: wait (within the SCM's start timeout)
     // for the outcome, so a bind failure shows as a failed start in services.msc
     // and the Event Log instead of "Running" while nothing listens
-    if FRunner.WaitStartDone(cStartWaitMs) and (FRunner.StartError <> '') then
+    if not FRunner.WaitStartDone(cStartWaitMs) then
+      // still starting (slow disk / DB migration): report Running, the outcome is
+      // logged by the runner when it comes
+      SvcLog('Start still in progress after the SCM wait - reporting Running')
+    else if FRunner.StartError <> '' then
       raise Exception.Create(FRunner.StartError);
     Started := True;
   except

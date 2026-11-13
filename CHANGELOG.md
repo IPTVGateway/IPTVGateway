@@ -189,6 +189,24 @@ Second bug hunt (five separate runs):
 - The quality probe also finds variants whose names use decorative letters.
 - The daemon's stop signal handler only sets a flag. The main loop does the rest,
   because a signal handler must not take locks.
+- Provider logins with `/`, `?`, `#`, `%` or a space no longer break the upstream
+  stream, episode and catch-up URLs.
+- The quality probe also matches tvg-ids with non-ASCII capital letters.
+- The M3U id migration no longer hides real database errors.
+- Removing duplicates only flags the lineup as changed for Plex when something was
+  actually removed.
+- Settings import restores the public base URL, dummy EPG and name options also when
+  the file has no group filter.
+- Extra EPG guides are refreshed also when no source is enabled, and removed guides
+  are cleared.
+- Stopping while a background refresh hangs no longer frees the store under it.
+- Windows Service: a start that takes longer than the SCM wait is logged.
+- An M3U source URL with a leading space is fetched over http instead of read as a file.
+- Relay: only `/live`, `/movie`, `/series`, `/stream` and `/timeshift` paths are served.
+- XMLTV: a self-closing `<programme/>` no longer swallows the next programme.
+- Web app: the EPG lanes follow a changed bouquet sort order right away. Width, sort
+  and collapse preferences no longer break the page when browser storage is blocked
+  (private mode).
 - Internal: the code base now follows one coding style (named constants instead of
   magic values; uniform naming, `uses` and formatting). No functional change.
 

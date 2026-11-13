@@ -28,10 +28,11 @@ const HEALTH_OK = 'ok'
 
 const clampW = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 function loadW(key: string, def: number): number {
-  const v = Number(localStorage.getItem(key))
+  const v = Number(safeGetItem(key))
   return Number.isFinite(v) && v > 0 ? v : def
 }
 import { applyTheme, initTheme, readTheme, writeTheme, type ThemePref } from './lib/theme'
+import { safeGetItem, safeSetItem } from './lib/storage'
 
 const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -86,8 +87,8 @@ export function App() {
   // Resizable workbench columns (persisted), so the curated list can be widened.
   const [leftW, setLeftW] = useState(() => loadW(LEFT_W_KEY, LEFT_W_DEFAULT))
   const [rightW, setRightW] = useState(() => loadW(RIGHT_W_KEY, RIGHT_W_DEFAULT))
-  useEffect(() => localStorage.setItem(LEFT_W_KEY, String(leftW)), [leftW])
-  useEffect(() => localStorage.setItem(RIGHT_W_KEY, String(rightW)), [rightW])
+  useEffect(() => safeSetItem(LEFT_W_KEY, String(leftW)), [leftW])
+  useEffect(() => safeSetItem(RIGHT_W_KEY, String(rightW)), [rightW])
 
   // any 401 during the session drops us back to the login gate
   useEffect(() => {

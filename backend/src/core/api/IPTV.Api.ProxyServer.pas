@@ -113,6 +113,8 @@ const
   cPathStreaming = 'streaming';
   cPathTimeshiftPhp = 'timeshift.php';
   cPathTimeshift = 'timeshift';
+  // the first path segment the relay answers (anything else is a 404)
+  cRelayKinds: array[0..4] of string = ('live', 'movie', 'series', 'stream', cPathTimeshift);
   cQueryUsername = 'username';
   cQueryPassword = 'password';
   cQueryDuration = 'duration';
@@ -402,6 +404,11 @@ begin
     Exit;
   end;
   // catch-up: /timeshift/{user}/{pass}/{minutes}/{YYYY-MM-DD:HH-MM}/{id}.ts
+  if not MatchText(lParts[cSegKind], cRelayKinds) then
+  begin
+    AResponseInfo.ResponseNo := cHttpStatusNotFound; // e.g. /anything/u/p/12
+    Exit;
+  end;
   lIsTimeshift := SameText(lParts[cSegKind], cPathTimeshift);
   lTsDur := 0;
   lTsStart := 0;

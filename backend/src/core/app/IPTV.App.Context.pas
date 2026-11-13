@@ -219,7 +219,6 @@ begin
 end;
 
 const
-  STATE_LINEUP_CHANGED = 'lineup_changed_utc';
   STATE_PLEX_RESCAN = 'plex_rescan_utc';
 
 constructor TAppContext.Create(const AConfig: TAppConfig; const ALog: TLogProc;
@@ -515,7 +514,7 @@ end;
 procedure TAppContext.MarkLineupChanged;
 begin
   if Assigned(FStore) then
-    FStore.SetState(STATE_LINEUP_CHANGED, DateTimeToIsoUtc(NowUtc));
+    FStore.SetState(cStateLineupChanged, DateTimeToIsoUtc(NowUtc));
 end;
 
 procedure TAppContext.MarkPlexRescanned;
@@ -531,7 +530,7 @@ begin
   Result := False;
   if not Assigned(FStore) then
     Exit;
-  lChanged := FStore.GetState(STATE_LINEUP_CHANGED);
+  lChanged := FStore.GetState(cStateLineupChanged);
   if lChanged = '' then
     Exit; // nothing changed yet
   lRescan := FStore.GetState(STATE_PLEX_RESCAN);
@@ -580,6 +579,18 @@ begin
   if App = Self then
     App := nil;
 
+  if TInterlocked.CompareExchange(FBgOps, 0, 0) > 0 then
+  begin
+    // a background refresh is still running (stuck network read): freeing the
+    // ingest/store now would pull them from under it. The process is exiting -
+    // leaving them alive is the safe choice.
+    Log('Stop: a background refresh is still running - ingest and store are left to the process exit');
+    FIngest := nil;
+    // one deliberate extra reference: the context's own release must not free it
+    if FStore <> nil then
+      FStore._AddRef;
+    Exit;
+  end;
   FreeAndNil(FIngest);
   FStore := nil; // interface ref-count releases the SQLite store
 end;

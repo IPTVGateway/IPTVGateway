@@ -199,11 +199,13 @@ function TM3UReader.Read(const ASource: TSourceConfig): TSourceSnapshot;
 var
   lContent, lUser, lPass: string;
 begin
-  if ASource.Url.StartsWith(cSchemeHttp, cIgnoreCase) then
+  // trimmed for the check too: a stray leading space used to make an http playlist
+  // look like a local file path
+  if ASource.Url.Trim.StartsWith(cSchemeHttp, cIgnoreCase) then
     // charset-detecting fetch (BOM/UTF-8/CP1251), long timeout for a bulk download
     lContent := HttpGetText(ASource.Url.Trim, ASource.UserAgent, TimeoutBulkMs, ASource.Referer)
   else
-    lContent := DecodeBytes(TFile.ReadAllBytes(ASource.Url));
+    lContent := DecodeBytes(TFile.ReadAllBytes(ASource.Url.Trim));
 
   // credentials for the credential-insensitive stream id: prefer the source's own
   // fields, else recover them from the playlist URL (get.php?username=…&password=…)

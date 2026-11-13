@@ -22,6 +22,7 @@ type
   TPlayerApiResource = class
   protected
     [Context] Response: IMARSResponse;
+    [Context] Request: IMARSRequest;
   public
     /// <summary>Dispatches on the Xtream action (empty = account info).</summary>
     [GET, Produces(TMediaType.APPLICATION_JSON)]
@@ -149,6 +150,7 @@ uses
   IPTV.Output.Builder,
   IPTV.Core.Utils,
   IPTV.Source.Xtream,
+  IPTV.Api.AuthThrottle,
   IPTV.Api.Serializers;
 
 const
@@ -971,10 +973,14 @@ var
 begin
   lList := ResolveList(AUser, APass);
   if lList = nil then
+  begin
+    // counts towards the per-IP lockout like a 401 does
+    GAuthThrottle.RegisterFailure(Request.RemoteIP);
     // 200 + auth:0, like real panels: some boxes show a 401 as "network error"
     // instead of "wrong username/password"
     Exit(TJSONObject.Create.AddPair('user_info',
       TJSONObject.Create.AddPair('auth', TJSONNumber.Create(0))));
+  end;
   try
     if AAction = cActGetShortEpg then
       Result := BuildEpgListings(lList, AStreamId,

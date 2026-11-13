@@ -88,6 +88,13 @@ describe('api client — admin password', () => {
     expect((init.headers as Record<string, string>)['X-Admin-Password']).toBe('s3cret')
   })
 
+  it('always sends the X-IPTV-Client header (CSRF guard)', async () => {
+    const fn = mockFetch(ok([]))
+    await api.listSources()
+    const init = fn.mock.calls[0][1] as RequestInit
+    expect((init.headers as Record<string, string>)['X-IPTV-Client']).toBe('web')
+  })
+
   it('omits the header when no password is set', async () => {
     const fn = mockFetch(ok([]))
     await api.listSources()

@@ -7,6 +7,7 @@ interface
 
 uses
   // RTL
+  System.SysUtils,
   System.Generics.Collections,
   // own units
   IPTV.Model.Types,
@@ -227,6 +228,10 @@ type
     function SaveList(const AList: TCustomList): Integer;
     /// Delete a list and everything under it (its groups + items).
     procedure DeleteList(AId: Integer);
+    /// <summary>Runs AProc inside ONE database transaction: everything it writes
+    /// commits together, or nothing does when it raises (the exception is re-raised).
+    /// AProc gets the store to use for it - call that one, not the outer store.</summary>
+    procedure RunInTransaction(const AProc: TProc<IStore>);
     /// Resolve the list a box authenticates as. Credentials are OPTIONAL:
     /// when AUser is empty, return the single enabled list (the default);
     /// otherwise match on output_username/output_password. nil if no match.

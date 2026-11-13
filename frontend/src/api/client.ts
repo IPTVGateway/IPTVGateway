@@ -52,11 +52,16 @@ export class UnauthorizedError extends Error {
 }
 
 const HTTP_UNAUTHORIZED = 401
+const CLIENT_HEADER = 'X-IPTV-Client'
+const CLIENT_HEADER_VALUE = 'web'
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const pw = adminAuth.get()
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
+    // CSRF guard: the backend refuses state-changing /api calls without it (another
+    // site can't add a custom header without a CORS preflight the backend never approves)
+    [CLIENT_HEADER]: CLIENT_HEADER_VALUE,
     ...((init?.headers as Record<string, string>) ?? {}),
   }
   if (pw) headers[ADMIN_PASSWORD_HEADER] = pw

@@ -29,13 +29,18 @@ WORKDIR /opt/iptvplay
 
 # the pre-built (and stripped) Linux64 binary + default config
 COPY IPTVPlayService /opt/iptvplay/IPTVPlayService
+# starts the service as PUID:PGID instead of root (see the script)
+COPY entrypoint.sh /opt/iptvplay/entrypoint.sh
 COPY config.json /opt/iptvplay/config.json
 # the built React admin UI (served at / by the service when this dir exists)
 COPY webui /opt/iptvplay/webui
 
 # lang/ holds optional add-on UI translation files (<code>.json); en/nl ship
 # inside the webui bundle, so this starts empty. Mount it to add more languages.
-RUN chmod +x /opt/iptvplay/IPTVPlayService && mkdir -p /opt/iptvplay/data /opt/iptvplay/lang
+# (CR stripped from the script in case it was checked out with Windows line endings)
+RUN sed -i 's/\r$//' /opt/iptvplay/entrypoint.sh \
+ && chmod +x /opt/iptvplay/IPTVPlayService /opt/iptvplay/entrypoint.sh \
+ && mkdir -p /opt/iptvplay/data /opt/iptvplay/lang
 
 # SQLite db + state live here; mount as a volume so they survive restarts
 VOLUME ["/opt/iptvplay/data"]
@@ -68,5 +73,12 @@ LABEL net.unraid.docker.webui="http://[IP]:[PORT:7777]/" \
       org.opencontainers.image.source="https://github.com/IPTVGateway/IPTVGateway" \
       org.opencontainers.image.licenses="MIT"
 
-# console daemon: SIGTERM (docker stop) shuts it down cleanly
-ENTRYPOINT ["/opt/iptvplay/IPTVPlayService"]
+# Not root: the entrypoint drops to PUID:PGID (default 99:100 = Unraid nobody:users)
+# after handing the data volume to that user. All ports are > 1024, so no
+# privilege is needed to listen. PUID=0 keeps the old behaviour (root).
+ENV PUID=99 \
+    PGID=100
+
+# console daemon (exec'd by the entrypoint, stays PID 1): SIGTERM (docker stop)
+# shuts it down cleanly
+ENTRYPOINT ["/opt/iptvplay/entrypoint.sh"]

@@ -70,6 +70,7 @@ uses
   IPTV.App.Context,
   IPTV.Core.Utils,
   IPTV.Output.Builder,
+  IPTV.Api.AuthThrottle,
   IPTV.Model.Types;
 
 const
@@ -113,6 +114,7 @@ const
   cPathStreaming = 'streaming';
   cPathTimeshiftPhp = 'timeshift.php';
   cPathTimeshift = 'timeshift';
+  cHeaderRetryAfter = 'Retry-After';
   // the first path segment the relay answers (anything else is a 404)
   cRelayKinds: array[0..4] of string = ('live', 'movie', 'series', 'stream', cPathTimeshift);
   cQueryUsername = 'username';
@@ -374,11 +376,19 @@ var
   lTsDur: Integer;
   lSource: TSourceConfig;
   lHlsUrl: string;
+  lRetryAfter: Integer;
 begin
   lHlsUrl := '';
   if App = nil then
   begin
     AResponseInfo.ResponseNo := cHttpStatusServiceUnavailable;
+    Exit;
+  end;
+  // too many failed logins from this client: 429 until the lockout ends
+  if GAuthThrottle.IsBlocked(AContext.Binding.PeerIP, lRetryAfter) then
+  begin
+    AResponseInfo.ResponseNo := cHttpTooManyRequests;
+    AResponseInfo.CustomHeaders.Values[cHeaderRetryAfter] := IntToStr(lRetryAfter);
     Exit;
   end;
   // Hold a local interface ref to the store: a relay can run for minutes/hours, and
@@ -441,6 +451,7 @@ begin
   lList := FindListForPath(lStore, lUser, lPass); // '-' = empty login, %-encoding
   if lList = nil then
   begin
+    GAuthThrottle.RegisterFailure(AContext.Binding.PeerIP); // a wrong bouquet login
     AResponseInfo.ResponseNo := cHttpStatusUnauthorized;
     Exit;
   end;

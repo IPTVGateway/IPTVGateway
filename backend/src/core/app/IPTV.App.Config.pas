@@ -101,6 +101,10 @@ type
     PlexHdhrEnabled: Boolean;
     PlexHdhrProxy: Boolean;
     PlexTunerCount: Integer;  // concurrent streams advertised by the HDHomeRun tuner
+    /// Requests per minute per client IP on the web/API port (MARS rate limiter,
+    /// token bucket: bursts up to this many); 0 = off. Generous by default - boxes
+    /// and the web app never get near it, a flood does.
+    RateLimitPerMinute: Integer;
     PlexListId: Integer;      // bouquet served to Plex/Jellyfin; 0 = first enabled bouquet
     PlexDeviceId: string;     // stable HDHomeRun device id (generated once if empty)
     // Optional Plex server link, so the admin "rescan Plex" button can tell Plex
@@ -196,6 +200,7 @@ const
   cDefaultPublicBaseUrl = 'http://localhost:7777'; // port = cDefaultHttpPort
   cDefaultClientUrl = 'http://localhost:5173';     // Vite dev server
   cDefaultPlexTunerCount = 4;
+  cDefaultRateLimitPerMinute = 600;
   cDefaultDummyEpgBlockMinutes = 120;
   cDefaultDummyEpgHoursBack = 12;
   cDefaultDummyEpgHoursAhead = 48;
@@ -208,6 +213,7 @@ const
   cMaxEpgMaxDays = 366;
   cMinPlexTunerCount = 1;
   cMaxPlexTunerCount = 100;
+  cMaxRateLimitPerMinute = 100000;
   cMinDummyEpgBlockMinutes = 5;
   cMaxDummyEpgBlockMinutes = 720;   // 12 h
   cMaxDummyEpgHoursBack = 168;      // 1 week
@@ -236,6 +242,7 @@ const
   cKeyPlexHdhrEnabled = 'plexHdhrEnabled';
   cKeyPlexHdhrProxy = 'plexHdhrProxy';
   cKeyPlexTunerCount = 'plexTunerCount';
+  cKeyRateLimitPerMinute = 'rateLimitPerMinute';
   cKeyPlexListId = 'plexListId';
   cKeyPlexDeviceId = 'plexDeviceId';
   cKeyPlexServerUrl = 'plexServerUrl';
@@ -309,6 +316,7 @@ begin
   Result.PlexHdhrEnabled := False;
   Result.PlexHdhrProxy := False;
   Result.PlexTunerCount := cDefaultPlexTunerCount;
+  Result.RateLimitPerMinute := cDefaultRateLimitPerMinute;
   Result.PlexListId := 0;
   Result.PlexDeviceId := '';       // filled in by the API server on first start
   Result.PlexServerUrl := '';
@@ -382,6 +390,7 @@ begin
     lJson.AddPair(cKeyPlexHdhrEnabled, TJSONBool.Create(PlexHdhrEnabled));
     lJson.AddPair(cKeyPlexHdhrProxy, TJSONBool.Create(PlexHdhrProxy));
     lJson.AddPair(cKeyPlexTunerCount, TJSONNumber.Create(PlexTunerCount));
+    lJson.AddPair(cKeyRateLimitPerMinute, TJSONNumber.Create(RateLimitPerMinute));
     lJson.AddPair(cKeyPlexListId, TJSONNumber.Create(PlexListId));
     lJson.AddPair(cKeyPlexDeviceId, PlexDeviceId);
     lJson.AddPair(cKeyPlexServerUrl, PlexServerUrl);
@@ -524,6 +533,8 @@ begin
     Result.PlexHdhrProxy := JBool(lJson, cKeyPlexHdhrProxy, Result.PlexHdhrProxy);
     Result.PlexTunerCount := Clamp(JInt(lJson, cKeyPlexTunerCount, Result.PlexTunerCount),
       cMinPlexTunerCount, cMaxPlexTunerCount);
+    Result.RateLimitPerMinute := Clamp(JInt(lJson, cKeyRateLimitPerMinute, Result.RateLimitPerMinute),
+      0, cMaxRateLimitPerMinute);
     Result.PlexListId := JInt(lJson, cKeyPlexListId, Result.PlexListId);
     Result.PlexDeviceId := JStr(lJson, cKeyPlexDeviceId, Result.PlexDeviceId);
     Result.PlexServerUrl := JStr(lJson, cKeyPlexServerUrl, Result.PlexServerUrl);

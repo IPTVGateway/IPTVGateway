@@ -98,6 +98,7 @@ uses
 {$ENDIF}
   // own
   IPTV.Core.Utils,
+  IPTV.Api.AuthThrottle,
   IPTV.Api.Mars.Admin,
   IPTV.Api.Mars.Xtream,
   IPTV.Api.Mars.Plex;
@@ -118,6 +119,22 @@ var
   // is done.
   GWarmGate: TEvent;
   GWarmToken: string;
+
+const
+  // CSRF guard: state-changing /api calls must carry this header (the web app sends it)
+  cClientHeader = 'X-IPTV-Client';
+  // MARS engine parameters of its rate limiter
+  cParamRateLimitRequests = 'RateLimit.Requests';
+  cParamRateLimitWindow = 'RateLimit.Window';
+  cRateLimitWindowSec = 60;
+  cApiRoot = 'api';
+  cHeaderRetryAfter = 'Retry-After';
+  cMimeTextPlain = 'text/plain';
+  cHttpStatusForbidden = 403;
+  cHttpStatusUnauthorized = 401;
+  // the admin password as the web app / download links send it
+  cAdminPasswordHeader = 'X-Admin-Password';
+  cAdminPasswordQuery = 'pw';
 
 const
   // startup warm-up (see GWarmGate)
@@ -274,6 +291,12 @@ begin
   Result := FConfig.HttpPort;
 end;
 
+// methods that only read (no CSRF check needed)
+function IsSafeMethod(const AMethod: string): Boolean;
+begin
+  Result := SameText(AMethod, 'GET') or SameText(AMethod, 'HEAD') or SameText(AMethod, 'OPTIONS');
+end;
+
 procedure TApiServer.Start;
 var
   lRoot: string;
@@ -286,6 +309,10 @@ begin
   FEngine := TMARSEngine.Create;
   FEngine.BasePath := ''; // mount applications at the site root
 
+  // MARS's own per-IP request limiter (token bucket, checked before any routing):
+  // against floods. Failed logins are limited separately (IPTV.Api.AuthThrottle).
+  FEngine.Parameters.Values[cParamRateLimitRequests] := IntToStr(FConfig.RateLimitPerMinute);
+  FEngine.Parameters.Values[cParamRateLimitWindow] := IntToStr(cRateLimitWindowSec);
   if FConfig.UseHttps then
   begin
     if (FConfig.TlsCertFile = '') or (FConfig.TlsKeyFile = '') then
@@ -336,6 +363,7 @@ begin
       var AHandled: Boolean): Boolean
     var
       lFirst, lMasked: string;
+      lRetryAfter: Integer;
     begin
       Result := True; // continue to MARS by default
       GReqStart := TStopwatch.GetTimeStamp; // per Indy thread; read in AfterHandleRequest
@@ -354,6 +382,33 @@ begin
       lFirst := '';
       if AURL.HasPathTokens then
         lFirst := AURL.PathTokens[0];
+
+      if (FWebRoot = '') or IsBackendRoute(lFirst) then
+      begin
+        // too many failed logins from this client: 429 until the lockout ends
+        if GAuthThrottle.IsBlocked(ARequest.RemoteIP, lRetryAfter) then
+        begin
+          AResponse.SetStatusCode(cHttpTooManyRequests);
+          AResponse.SetHeader(cHeaderRetryAfter, IntToStr(lRetryAfter));
+          AResponse.SetContentType(cMimeTextPlain);
+          AResponse.SetContent('Too many failed logins - try again later');
+          AHandled := True;
+          Exit(False);
+        end;
+        // CSRF: a state-changing admin call must carry our own header. A page on
+        // another site can't add a custom header without a CORS preflight, which
+        // we never approve - so it can't make a logged-in (or password-less)
+        // browser change settings behind the user's back.
+        if SameText(lFirst, cApiRoot) and not IsSafeMethod(ARequest.Method) and
+           (ARequest.GetHeaderParamValue(cClientHeader) = '') then
+        begin
+          AResponse.SetStatusCode(cHttpStatusForbidden);
+          AResponse.SetContentType(cMimeTextPlain);
+          AResponse.SetContent('Missing ' + cClientHeader + ' header');
+          AHandled := True;
+          Exit(False);
+        end;
+      end;
 
       // hold external backend requests until the startup warm-up has run
       if (FWebRoot = '') or IsBackendRoute(lFirst) then
@@ -381,7 +436,21 @@ begin
       var AHandled: Boolean)
     var
       lMs: Int64;
+      lFirst: string;
     begin
+      // a failed login counts towards the per-IP lockout. On /api only when a
+      // password was actually sent (the web app's first probe without one is no
+      // guess); the box endpoints always carry a login.
+      if AResponse.StatusCode = cHttpStatusUnauthorized then
+      begin
+        lFirst := '';
+        if AURL.HasPathTokens then
+          lFirst := AURL.PathTokens[0];
+        if not SameText(lFirst, cApiRoot) or
+           (ARequest.GetHeaderParamValue(cAdminPasswordHeader) <> '') or
+           (ARequest.GetQueryParamValue(cAdminPasswordQuery) <> '') then
+          GAuthThrottle.RegisterFailure(ARequest.RemoteIP);
+      end;
       if not Assigned(FLog) then
         Exit;
       lMs := (TStopwatch.GetTimeStamp - GReqStart) * 1000 div TStopwatch.Frequency;

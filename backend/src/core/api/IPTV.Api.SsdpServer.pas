@@ -40,6 +40,14 @@ type
     procedure Stop;
   end;
 
+/// <summary>The search targets (ST) to answer for one M-SEARCH datagram: the requested
+/// one when we provide it (echoed as the client wrote it), both of ours for
+/// ssdp:all, none for anything else or for a datagram that isn't a discovery probe.</summary>
+function SsdpReplyTargets(const ARequest: string): TArray<string>;
+
+/// <summary>The unicast M-SEARCH reply for one search target.</summary>
+function BuildSsdpReply(const ALocation, ASearchTarget: string): string;
+
 implementation
 
 uses
@@ -54,6 +62,13 @@ const
   // tokens of a discovery probe (matched on the upper-cased datagram)
   cProbeMSearch = 'M-SEARCH';
   cProbeSsdpDiscover = 'SSDP:DISCOVER';
+  // search targets we answer (UPnP: a reply's ST must equal the request's ST;
+  // ssdp:all is answered once per target we provide)
+  cStAll = 'ssdp:all';
+  cStRootDevice = 'upnp:rootdevice';
+  cStMediaServer = 'urn:schemas-upnp-org:device:MediaServer:1';
+  cStHeader = 'ST:';
+  cDeviceUuid = 'uuid:iptvplay-hdhomerun';
 
 constructor TSsdpServer.Create(const ALocation: string; const ALog: TLogProc);
 begin
@@ -68,31 +83,56 @@ begin
   inherited;
 end;
 
-procedure TSsdpServer.DoRead(AThread: TIdUDPListenerThread; const AData: TIdBytes;
-  ABinding: TIdSocketHandle);
+function SsdpReplyTargets(const ARequest: string): TArray<string>;
 var
-  lMsg, lResp: string;
+  lUpper, lLine, lTarget: string;
 begin
-  lMsg := UpperCase(IndyTextEncoding_ASCII.GetString(AData));
-  // only answer discovery probes (M-SEARCH ... Man: "ssdp:discover")
-  if (Pos(cProbeMSearch, lMsg) = 0) or (Pos(cProbeSsdpDiscover, lMsg) = 0) then
+  Result := nil;
+  lUpper := UpperCase(ARequest);
+  // only discovery probes (M-SEARCH ... MAN: "ssdp:discover")
+  if (Pos(cProbeMSearch, lUpper) = 0) or (Pos(cProbeSsdpDiscover, lUpper) = 0) then
     Exit;
-  // unicast reply straight back to the prober with our discover.json LOCATION
-  lResp :=
+  lTarget := '';
+  for lLine in ARequest.Split([#13#10, #10]) do
+    if lLine.Trim.StartsWith(cStHeader, True) then
+    begin
+      lTarget := lLine.Trim.Substring(Length(cStHeader)).Trim;
+      Break;
+    end;
+  if SameText(lTarget, cStAll) then
+    Result := [cStRootDevice, cStMediaServer]
+  else if SameText(lTarget, cStRootDevice) or SameText(lTarget, cStMediaServer) then
+    Result := [lTarget]; // echoed as written: some clients compare it exactly
+end;
+
+function BuildSsdpReply(const ALocation, ASearchTarget: string): string;
+begin
+  Result :=
     'HTTP/1.1 200 OK'#13#10 +
     'CACHE-CONTROL: max-age=1800'#13#10 +
     'EXT:'#13#10 +
-    'LOCATION: ' + FLocation + #13#10 +
+    'LOCATION: ' + ALocation + #13#10 +
     'SERVER: IPTVPlay/1.0 UPnP/1.0 HDHomeRun/1.0'#13#10 +
-    'ST: upnp:rootdevice'#13#10 +
-    'USN: uuid:iptvplay-hdhomerun::upnp:rootdevice'#13#10 +
+    'ST: ' + ASearchTarget + #13#10 +
+    'USN: ' + cDeviceUuid + '::' + ASearchTarget + #13#10 +
     #13#10;
-  try
-    ABinding.SendTo(ABinding.PeerIP, ABinding.PeerPort,
-      ToBytes(lResp, IndyTextEncoding_ASCII), ABinding.IPVersion);
-  except
-    // ignore send failures (prober gone, etc.)
-  end;
+end;
+
+procedure TSsdpServer.DoRead(AThread: TIdUDPListenerThread; const AData: TIdBytes;
+  ABinding: TIdSocketHandle);
+var
+  lTarget: string;
+begin
+  // before: every probe got "ST: upnp:rootdevice", whatever was searched for - a
+  // client asking for another type (or ssdp:all) saw a mismatched answer
+  for lTarget in SsdpReplyTargets(IndyTextEncoding_ASCII.GetString(AData)) do
+    try
+      // unicast reply straight back to the prober with our discover.json LOCATION
+      ABinding.SendTo(ABinding.PeerIP, ABinding.PeerPort,
+        ToBytes(BuildSsdpReply(FLocation, lTarget), IndyTextEncoding_ASCII), ABinding.IPVersion);
+    except
+      // ignore send failures (prober gone, etc.)
+    end;
 end;
 
 procedure TSsdpServer.Start;

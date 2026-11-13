@@ -333,6 +333,8 @@ the guide for up to a day.
   your bouquet order.
 - Plex has no catch-up of the provider's archive. Use its DVR to record instead.
 - After adding or removing channels, let Plex rescan its guide.
+- The container runs as an ordinary user (`PUID`/`PGID`, default `99:100`), not as
+  root. The data folder is handed to that user on start.
 - The tuner and guide addresses have no login. To keep other devices on your network
   out, list your Plex server's IP under **Settings → Media servers: allowed clients**
   (or a prefix such as `192.168.1.` for the whole network). Movies and series are

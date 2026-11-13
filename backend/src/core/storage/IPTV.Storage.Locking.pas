@@ -106,6 +106,7 @@ type
     function LoadLists: TObjectList<TCustomList>;
     function SaveList(const AList: TCustomList): Integer;
     procedure DeleteList(AId: Integer);
+    procedure RunInTransaction(const AProc: TProc<IStore>);
     function FindListByCredentials(const AUser, APass: string): TCustomList;
     function LoadGroups(AListId: Integer): TCustomGroupList;
     function SaveGroup(const AGroup: TCustomGroup): Integer;
@@ -356,6 +357,20 @@ begin
     Result := FWrite.SaveList(AList);
   finally // also after a failed write
     FWriteLock.Release;
+    InvalidateZap;
+  end;
+end;
+
+procedure TLockingStore.RunInTransaction(const AProc: TProc<IStore>);
+begin
+  // the whole transaction under the write lock. AProc gets the UNDERLYING store,
+  // so its calls don't take the (not necessarily re-entrant) lock a second time.
+  FWriteLock.Acquire;
+  try
+    FWrite.RunInTransaction(AProc);
+  finally
+    FWriteLock.Release;
+    InvalidateSources; // also after a rollback
     InvalidateZap;
   end;
 end;

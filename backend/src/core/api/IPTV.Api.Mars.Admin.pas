@@ -922,7 +922,13 @@ begin
   if not ((ABody.GetValue('sources') is TJSONArray) or (ABody.GetValue('lists') is TJSONArray)) then
     raise EMARSHttpException.Create('Invalid import file (no "sources"/"lists")', cHttpBadRequest);
 
-  lCounts := ImportStoreSettings(App.Store, ABody);
+  // one transaction: a failure half-way leaves the old sources and bouquets intact
+  // (before, an error after the wipe left a half-imported setup)
+  App.Store.RunInTransaction(
+    procedure(AStore: IStore)
+    begin
+      lCounts := ImportStoreSettings(AStore, ABody);
+    end);
 
   if ABody.GetValue('config') is TJSONObject then
   begin

@@ -299,7 +299,7 @@ else {
   $tarWin = 'C:\Temp\iptvplay.tar.gz'
   if (Test-Path $ctxWin) { Remove-Item $ctxWin -Recurse -Force }
   New-Item -ItemType Directory -Force $ctxWin | Out-Null
-  foreach ($f in 'Dockerfile', '.dockerignore', 'config.json', 'IPTVPlayService') {
+  foreach ($f in 'Dockerfile', '.dockerignore', 'config.json', 'IPTVPlayService', 'entrypoint.sh') {
     Copy-Item (Join-Path $here $f) (Join-Path $ctxWin $f) -Force
   }
   # the admin UI directory (Dockerfile does COPY webui)

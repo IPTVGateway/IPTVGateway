@@ -117,6 +117,7 @@ type
     function LoadLists: TObjectList<TCustomList>;
     function SaveList(const AList: TCustomList): Integer;
     procedure DeleteList(AId: Integer);
+    procedure RunInTransaction(const AProc: TProc<IStore>);
     function FindListByCredentials(const AUser, APass: string): TCustomList;
 
     function LoadGroups(AListId: Integer): TCustomGroupList;
@@ -2793,6 +2794,19 @@ begin
     AList.Id := Result;
   finally
     FreeAndNil(lQuery);
+  end;
+end;
+
+procedure TSQLiteStore.RunInTransaction(const AProc: TProc<IStore>);
+begin
+  // the writes inside start their own transactions too: those nest as savepoints
+  FConn.StartTransaction;
+  try
+    AProc(Self);
+    FConn.Commit;
+  except
+    FConn.Rollback;
+    raise;
   end;
 end;
 

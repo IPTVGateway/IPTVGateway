@@ -88,6 +88,8 @@ type
     [Test] procedure PathCredentials_DashAndEncoding;
     [Test] procedure ReclassifiedStreamKeepsIdAndListItem;
     [Test] procedure PathCredentials_DashPerField;
+    /// <summary>A transaction that raises leaves nothing behind (settings import).</summary>
+    [Test] procedure RunInTransactionRollsBackOnError;
     [Test] procedure OutputChannelsOrderAndOverrides;
     [Test] procedure GroupReorderControlsOutputOrder;
     [Test] procedure EpgReplaceAndLoadByTvgId;
@@ -4207,6 +4209,41 @@ begin
     Assert.AreEqual('UserOnly', lFound.Name);
   finally
     FreeAndNil(lFound);
+  end;
+end;
+
+procedure TStorageTests.RunInTransactionRollsBackOnError;
+var
+  lInner, lStore: IStore;
+  lLists: TObjectList<TCustomList>;
+begin
+  lInner := NewStore(FDbPath);
+  lStore := TLockingStore.Create(lInner, lInner); // one connection, as on Unraid
+  NewTestList(lStore, 'Keep');
+  Assert.WillRaise(
+    procedure
+    begin
+      lStore.RunInTransaction(
+        procedure(AStore: IStore)
+        var
+          lInside: TObjectList<TCustomList>;
+        begin
+          lInside := AStore.LoadLists; // reads work inside the transaction
+          try
+            AStore.DeleteList(lInside[0].Id);
+          finally
+            FreeAndNil(lInside);
+          end;
+          NewTestList(AStore, 'Half');
+          raise Exception.Create('import failed half-way');
+        end);
+    end, Exception);
+  lLists := lStore.LoadLists;
+  try
+    Assert.AreEqual<Integer>(1, lLists.Count, 'rolled back');
+    Assert.AreEqual('Keep', lLists[0].Name);
+  finally
+    FreeAndNil(lLists);
   end;
 end;
 

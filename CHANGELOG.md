@@ -5,6 +5,29 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+### Security
+- **The container no longer runs as root.** It starts as `PUID`:`PGID` (default
+  `99:100`, Unraid's `nobody:users`); on start the data folder is handed to that
+  user, so existing installs keep working. `PUID=0` keeps the old behaviour.
+- **Failed logins are rate limited** per client IP: after 10 failures within
+  5 minutes that IP gets HTTP 429 for 5 minutes. This covers the admin password and
+  bouquet logins on `player_api`, `get.php`, `xmltv.php`, the stream redirects and
+  the relay. A client with the right login never notices it.
+- **Request flood limit:** MARS's built-in per-IP limiter is now on for the
+  web/API port (`rateLimitPerMinute` in `config.json`, default 600 per minute,
+  0 = off).
+- **CSRF protection:** state-changing admin calls (`POST`/`PUT`/`DELETE` on `/api`)
+  must carry the header `X-IPTV-Client`. The web app sends it. Another website
+  can't, so it can no longer change settings through your browser (important
+  when no admin password is set). Own scripts that call the API must add the header.
+
+### Fixed
+- A settings import runs in one database transaction: if it fails halfway, the old
+  sources and bouquets stay as they were.
+- SSDP (Plex auto-discovery): the reply carries the search target that was asked
+  for (`ST`/`USN`), answers `ssdp:all` per device type, and ignores searches for
+  other device types.
+
 ## [1.2.36] - 2026-11-14
 
 Two rounds of five-part bug hunts (output, storage, ingest/EPG, web app,

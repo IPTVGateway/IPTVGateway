@@ -432,6 +432,21 @@ migration), else defaults; a directory Docker made for a missing file mount is
 ignored. Without the variable: next to the exe, as before. The Unraid template and
 compose therefore only need the data volume.
 
+## Hardening (after 1.2.36)
+
+- **Non-root container:** `deploy/docker/entrypoint.sh` chowns `data`/`lang` to
+  `PUID:PGID` (default 99:100) and `setpriv`s to it; the service stays PID 1.
+- **Failed-login lockout:** `IPTV.Api.AuthThrottle` (`GAuthThrottle`): 10 failures /
+  5 min per IP → 429 for 5 min. Counted in `AfterHandleRequest` (401s; on `/api` only
+  when a password was sent), in `player_api` (auth:0 is a 200) and in the relay.
+  Checked first in `BeforeHandleRequest` and in the relay.
+- **Flood limit:** MARS's own `RateLimit.Requests`/`RateLimit.Window` engine
+  parameters, from `config.json` `rateLimitPerMinute` (0 = off).
+- **CSRF:** non-GET `/api` calls need the `X-IPTV-Client` header (the web app's
+  `api/client.ts` sends it); checked in `BeforeHandleRequest`.
+- **Settings import** runs inside `IStore.RunInTransaction` (the locking store calls
+  the underlying store under its write lock - no re-entrant locking).
+
 ## Log tab (1.2.34)
 
 `TAppContext` wraps the host's log proc: every line also goes to the global

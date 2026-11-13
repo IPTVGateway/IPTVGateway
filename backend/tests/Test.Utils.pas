@@ -83,6 +83,10 @@ type
     [Test] procedure SamePassword_ConstantTimeCompare;
     /// <summary>Provider logins in an Xtream URL path: only path-breaking characters are escaped.</summary>
     [Test] procedure UrlPathSafe_EscapesOnlyPathBreakers;
+    /// <summary>Failed logins lock an IP out after the limit; other IPs are unaffected.</summary>
+    [Test] procedure AuthThrottle_LocksOutAfterTooManyFailures;
+    /// <summary>SSDP replies echo the requested search target and skip foreign ones.</summary>
+    [Test] procedure Ssdp_RepliesWithTheRequestedSearchTarget;
     /// <summary>Credentials in URLs are masked.</summary>
     [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
@@ -100,7 +104,9 @@ uses
   IPTV.Core.Utils,
   IPTV.Source.Epg,
   IPTV.Source.Http,
-  IPTV.Output.Builder;
+  IPTV.Output.Builder,
+  IPTV.Api.AuthThrottle,
+  IPTV.Api.SsdpServer;
 
 procedure TUtilsTests.ContentTypesRoundtrip;
 var
@@ -491,6 +497,54 @@ begin
   Assert.AreEqual('user', UrlPathSafe(' user '));
   Assert.AreEqual('a%2Fb%3Fc%23d%25e%20f', UrlPathSafe('a/b?c#d%e f'));
   Assert.AreEqual('p@ss+w!rd', UrlPathSafe('p@ss+w!rd'), 'everything else stays as typed');
+end;
+
+procedure TUtilsTests.AuthThrottle_LocksOutAfterTooManyFailures;
+const
+  cTestMaxFailures = 3;
+  cTestWindowSec = 60;
+  cTestLockoutSec = 60;
+var
+  lThrottle: TAuthThrottle;
+  lRetryAfter, i: Integer;
+begin
+  lThrottle := TAuthThrottle.Create(cTestMaxFailures, cTestWindowSec, cTestLockoutSec);
+  try
+    for i := 1 to cTestMaxFailures - 1 do
+      lThrottle.RegisterFailure('10.0.0.5');
+    Assert.IsFalse(lThrottle.IsBlocked('10.0.0.5', lRetryAfter), 'below the limit');
+    lThrottle.RegisterFailure('10.0.0.5');
+    Assert.IsTrue(lThrottle.IsBlocked('10.0.0.5', lRetryAfter), 'limit reached');
+    Assert.IsTrue((lRetryAfter > 0) and (lRetryAfter <= cTestLockoutSec), 'Retry-After in range');
+    Assert.IsFalse(lThrottle.IsBlocked('10.0.0.6', lRetryAfter), 'another client is not affected');
+    lThrottle.Reset;
+    Assert.IsFalse(lThrottle.IsBlocked('10.0.0.5', lRetryAfter));
+  finally
+    FreeAndNil(lThrottle);
+  end;
+end;
+
+procedure TUtilsTests.Ssdp_RepliesWithTheRequestedSearchTarget;
+const
+  cProbeHead = 'M-SEARCH * HTTP/1.1'#13#10'HOST: 239.255.255.250:1900'#13#10 +
+    'MAN: "ssdp:discover"'#13#10'MX: 1'#13#10;
+var
+  lTargets: TArray<string>;
+  lReply: string;
+begin
+  lTargets := SsdpReplyTargets(cProbeHead + 'ST: urn:schemas-upnp-org:device:MediaServer:1'#13#10#13#10);
+  Assert.AreEqual<Integer>(1, Length(lTargets));
+  Assert.AreEqual('urn:schemas-upnp-org:device:MediaServer:1', lTargets[0], 'echoed');
+  lTargets := SsdpReplyTargets(cProbeHead + 'st: ssdp:all'#13#10#13#10);
+  Assert.AreEqual<Integer>(2, Length(lTargets), 'ssdp:all -> each type we provide');
+  lTargets := SsdpReplyTargets(cProbeHead + 'ST: urn:dial-multiscreen-org:service:dial:1'#13#10#13#10);
+  Assert.AreEqual<Integer>(0, Length(lTargets), 'not ours: no answer');
+  lTargets := SsdpReplyTargets('NOTIFY * HTTP/1.1'#13#10'ST: ssdp:all'#13#10#13#10);
+  Assert.AreEqual<Integer>(0, Length(lTargets), 'not a discovery probe');
+  lReply := BuildSsdpReply('http://10.0.0.2:7777/discover.json', 'upnp:rootdevice');
+  Assert.IsTrue(lReply.Contains(#13#10'ST: upnp:rootdevice'#13#10));
+  Assert.IsTrue(lReply.Contains('::upnp:rootdevice'#13#10), 'USN matches the ST');
+  Assert.IsTrue(lReply.Contains('LOCATION: http://10.0.0.2:7777/discover.json'));
 end;
 
 initialization

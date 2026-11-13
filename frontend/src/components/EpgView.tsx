@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { api } from '../api/client'
 import type { CustomItem, CustomList, EpgProgramme, StreamItem } from '../types'
 import { useDebounced } from '../hooks/useDebounced'
 import { useT } from '../i18n'
+
+/** A provider logo that 404s shows a broken-image icon; hide it instead. */
+const hideBrokenImg = (e: SyntheticEvent<HTMLImageElement>) => {
+  e.currentTarget.style.display = 'none'
+}
 
 interface Props {
   /** Curated lists (shared from App). */
@@ -169,7 +174,7 @@ function SourceEpg({ now }: { now: number }) {
               className={selected?.id === c.id ? 'epg-channel selected' : 'epg-channel'}
               onClick={() => setSelected(c)}
             >
-              {c.logo && <img className="ch-logo" src={c.logo} alt="" />}
+              {c.logo && <img className="ch-logo" src={c.logo} alt="" onError={hideBrokenImg} />}
               <span className="ch-name">{c.name}</span>
               <span className="muted ch-tvg">{c.tvgId}</span>
             </li>
@@ -386,9 +391,13 @@ function EpgGrid({
     const startHour = Math.floor(now / HOUR_MS) * HOUR_MS
     const minData = starts.length ? Math.min(...starts) : startHour
     const maxData = stops.length ? Math.max(...stops) : startHour + 12 * HOUR_MS
-    const wStart = Math.min(startHour - HOUR_MS, minData)
-    // cover the guide, but cap the width so it never explodes
-    const wEnd = Math.min(Math.max(maxData, wStart + 12 * HOUR_MS), wStart + 48 * HOUR_MS)
+    // anchored on NOW: show the past the guide has (catch-up), at most a day back,
+    // and up to two days ahead. Whole hours, so the ticks read 07:00, 08:00 …
+    const wStart = Math.max(
+      Math.floor(Math.min(startHour - HOUR_MS, minData) / HOUR_MS) * HOUR_MS,
+      startHour - 24 * HOUR_MS,
+    )
+    const wEnd = Math.min(Math.max(maxData, startHour + 12 * HOUR_MS), startHour + 48 * HOUR_MS)
     const x = (ms: number) => ((ms - wStart) / HOUR_MS) * PX_PER_HOUR
     const t: number[] = []
     for (let h = wStart; h <= wEnd; h += HOUR_MS) t.push(h)
@@ -398,8 +407,17 @@ function EpgGrid({
   const nowX = now >= windowStart && now <= windowStart + (totalWidth / PX_PER_HOUR) * HOUR_MS ? xOf(now) : null
   const rowWidth = LABEL_W + totalWidth
 
+  // open at "now" (an hour before it), not at the start of the window; once per
+  // data load, so the minute tick doesn't yank the view back while you scroll
+  const gridRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = gridRef.current
+    if (el && nowX !== null) el.scrollLeft = Math.max(0, nowX - PX_PER_HOUR)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lanes, windowStart])
+
   return (
-    <div className="epg-grid">
+    <div className="epg-grid" ref={gridRef}>
       <div className="epg-grid-head" style={{ width: rowWidth }}>
         <div className="epg-corner" style={{ width: LABEL_W }}>
           {t('Channel')}
@@ -420,7 +438,7 @@ function EpgGrid({
               const info = channelInfo.get(lane.channelTvgId)
               return (
                 <>
-                  {info?.logo && <img className="epg-row-logo" src={info.logo} alt="" />}
+                  {info?.logo && <img className="epg-row-logo" src={info.logo} alt="" onError={hideBrokenImg} />}
                   <span className="epg-row-name">{info?.name || lane.channelTvgId}</span>
                 </>
               )

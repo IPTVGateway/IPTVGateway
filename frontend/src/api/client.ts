@@ -86,6 +86,13 @@ export interface SettingsBundle {
   lists?: (Partial<CustomList> & { groups?: Partial<CustomGroup>[] })[]
 }
 
+/** One line of the service log (GET /api/logs). */
+export interface LogLine {
+  seq: number
+  t: string // ISO-8601 UTC
+  text: string
+}
+
 export interface CatalogQuery {
   sourceId?: number
   type?: ContentType
@@ -113,6 +120,8 @@ function qs(q: CatalogQuery): string {
 
 export const api = {
   health: () => http<{ status: string; version?: string; hasApp?: boolean }>('/health'),
+  // the in-memory service log: lines after `since` (a seq), oldest first
+  logs: (since = 0) => http<{ next: number; lines: LogLine[] }>(`/logs?since=${since}`),
 
   // sources
   listSources: () => http<Source[]>('/sources'),

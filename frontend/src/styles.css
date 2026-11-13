@@ -1992,3 +1992,55 @@ label.inline {
   cursor: pointer;
   padding: 0 4px;
 }
+
+/* Log tab */
+.log-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px;
+  display: flex;
+}
+.log-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.log-head h2 {
+  margin-right: 8px;
+}
+.log-filter {
+  flex: 0 1 320px;
+  min-width: 140px;
+}
+.log-lines {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 6px 10px;
+}
+.log-line {
+  display: flex;
+  gap: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-time {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+.log-line.error .log-text {
+  color: var(--danger, #c62828);
+}
+.log-line.warn .log-text {
+  color: #b26a00;
+}

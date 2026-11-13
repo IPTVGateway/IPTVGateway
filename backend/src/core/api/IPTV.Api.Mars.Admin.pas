@@ -173,6 +173,9 @@ type
     // status of the current global group filter: channels published + real vs dummy EPG
     [GET, Path('media/status'), Produces(TMediaType.APPLICATION_JSON)]
     function GetMediaStatus: TJSONObject;
+    // the in-memory log (Log tab): lines after ?since=<seq>, oldest first
+    [GET, Path('logs'), Produces(TMediaType.APPLICATION_JSON)]
+    function GetLogs([QueryParam('since')] ASince: string): TJSONObject;
     // regenerate the HDHomeRun DeviceID so Plex re-imports the lineup as a fresh device
     [POST, Path('media/device-id/reset'), Produces(TMediaType.APPLICATION_JSON)]
     function ResetDeviceId: TJSONObject;
@@ -838,6 +841,35 @@ begin
     Names.Free;
     L.Free;
   end;
+end;
+
+function TAdminResource.GetLogs(ASince: string): TJSONObject;
+var
+  Lines: TArray<TLogLine>;
+  L: TLogLine;
+  Arr: TJSONArray;
+  O: TJSONObject;
+  Last: Int64;
+begin
+  // no RequireApp: the log is most useful exactly when the app failed to start
+  Result := TJSONObject.Create;
+  Arr := TJSONArray.Create;
+  Last := StrToInt64Def(ASince, 0);
+  if LogRing <> nil then
+  begin
+    Lines := LogRing.Since(Last);
+    for L in Lines do
+    begin
+      O := TJSONObject.Create;
+      O.AddPair('seq', TJSONNumber.Create(L.Seq));
+      O.AddPair('t', DateTimeToIsoUtc(L.TimeUtc));
+      O.AddPair('text', L.Text);
+      Arr.Add(O);
+      Last := L.Seq;
+    end;
+  end;
+  Result.AddPair('next', TJSONNumber.Create(Last));
+  Result.AddPair('lines', Arr);
 end;
 
 function TAdminResource.GetMediaStatus: TJSONObject;

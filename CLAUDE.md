@@ -240,7 +240,7 @@ console program that uses `TSQLiteStore` on a COPY of the NAS DB
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
-npx vitest run     # 103 tests as of catch-up
+npx vitest run     # 105 tests as of 1.2.34
 npm run build      # tsc -b && vite build
 ```
 
@@ -398,6 +398,14 @@ unique, else fall back to the running position 1,2,3 (Plex rejects duplicates).
   first so no stale MARS DCUs are linked), commit the upgrade on its own.
 - MARS 2.x: invalid/empty typed params give 400 -> box-facing params are `string`
   (e.g. player_api `limit`); string results need `[Produces]` (all ours have it).
+
+## Log tab (1.2.34)
+
+`TAppContext` wraps the host's log proc: every line also goes to the global
+`LogRing` (`TLogRing`, last 2000 lines in memory, nothing on disk). `GET /api/logs?since=<seq>`
+(admin auth, works even when App failed to start) returns newer lines; the web
+app's Log tab polls it every 3 s (pause, text filter, "only problems", download).
+A client cursor ahead of the server (= service restarted) gets everything again.
 
 ## Zap cache (1.2.32)
 

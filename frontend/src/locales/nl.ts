@@ -485,6 +485,13 @@ export const nl: Record<string, string> = {
     'Plex/Jellyfin-tuners, het zenderfilter en dummy EPG staan in het tabblad “Media Servers”.',
   // ── Quality probe (measure a channel in all qualities) ────────────────────
   'Measure quality': 'Kwaliteit meten',
+  'No log lines yet.': 'Nog geen logregels.',
+  'Clear view': 'Scherm leegmaken',
+  'Resume': 'Doorgaan',
+  'Pause': 'Pauze',
+  'Only problems': 'Alleen problemen',
+  'Filter (e.g. timeshift, EPG, failed)…': 'Filter (bv. timeshift, EPG, failed)…',
+  'Log': 'Log',
   'Extra EPG sources': 'Extra EPG-bronnen',
   'One XMLTV address per line (.xml or .xml.gz), e.g. a country guide. Channels are matched by name or tvg-id and get these programmes instead of the provider’s own guide, unless that source has “Own EPG before the extra EPG source”. Channel ids and numbers stay the same. Fetched with every refresh or “Update EPG”. The first line wins when guides overlap.':
     'Eén XMLTV-adres per regel (.xml of .xml.gz), bijvoorbeeld een landengids. Zenders worden gekoppeld op naam of tvg-id en krijgen deze programma’s in plaats van de eigen gids van de provider, tenzij die bron “Eigen EPG vóór de extra EPG-bron” heeft. Zender-id’s en -nummers blijven gelijk. Wordt opgehaald bij elke verversing of “EPG bijwerken”. Bij overlap wint de bovenste regel.',

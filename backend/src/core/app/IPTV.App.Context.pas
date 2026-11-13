@@ -15,6 +15,29 @@ uses
   IPTV.Scheduler, IPTV.Api.Server;
 
 type
+  /// One captured log line (for the web app's Log tab).
+  TLogLine = record
+    Seq: Int64;          // 1, 2, 3 ... (never reused within a run)
+    TimeUtc: TDateTime;
+    Text: string;
+  end;
+
+  /// The last N log lines in memory (a ring buffer - nothing written to disk), so
+  /// the admin can read the log in the web app instead of `docker logs`.
+  TLogRing = class
+  private
+    FLock: TObject;
+    FLines: TArray<TLogLine>;
+    FCount: Integer;
+    FNextSeq: Int64;
+  public
+    constructor Create(ACapacity: Integer = 2000);
+    destructor Destroy; override;
+    procedure Add(const AText: string);
+    /// Lines with Seq > ASince, oldest first (at most the buffer).
+    function Since(ASince: Int64): TArray<TLogLine>;
+  end;
+
   TAppContext = class
   private
     FConfig: TAppConfig;
@@ -22,7 +45,8 @@ type
     FIngest: TIngestService;
     FScheduler: TDailyScheduler;
     FServer: TApiServer;
-    FLog: TLogProc;
+    FLog: TLogProc;      // the host's log + the in-memory ring (see TLogRing)
+    FHostLog: TLogProc;  // what the host passed in (console / VCL memo / event log)
     FConfigPath: string;
     FBgOps: Integer; // count of detached background ops (admin-triggered refreshes)
   public
@@ -77,12 +101,72 @@ type
 
 var
   App: TAppContext = nil; // set by the host on Start, cleared on Stop
+  /// Process-wide log ring (outlives App so start/stop lines are kept too).
+  LogRing: TLogRing = nil;
 
 implementation
 
 uses
   System.IOUtils, System.Classes, System.SyncObjs, System.Generics.Collections,
   IPTV.Storage.SQLite, IPTV.Storage.Locking, IPTV.Core.Utils;
+
+{ TLogRing }
+
+constructor TLogRing.Create(ACapacity: Integer);
+begin
+  inherited Create;
+  FLock := TObject.Create;
+  if ACapacity < 10 then
+    ACapacity := 10;
+  SetLength(FLines, ACapacity);
+end;
+
+destructor TLogRing.Destroy;
+begin
+  FLock.Free;
+  inherited;
+end;
+
+procedure TLogRing.Add(const AText: string);
+var
+  L: TLogLine;
+begin
+  TMonitor.Enter(FLock);
+  try
+    Inc(FNextSeq);
+    L.Seq := FNextSeq;
+    L.TimeUtc := NowUtc;
+    L.Text := AText;
+    FLines[(FNextSeq - 1) mod Length(FLines)] := L;
+    if FCount < Length(FLines) then
+      Inc(FCount);
+  finally
+    TMonitor.Exit(FLock);
+  end;
+end;
+
+function TLogRing.Since(ASince: Int64): TArray<TLogLine>;
+var
+  First, Q: Int64;
+begin
+  Result := nil;
+  TMonitor.Enter(FLock);
+  try
+    // a client ahead of us = we restarted (numbering began again): send everything
+    if ASince > FNextSeq then
+      ASince := 0;
+    First := FNextSeq - FCount + 1; // oldest seq still in the buffer
+    if ASince + 1 > First then
+      First := ASince + 1;
+    if First > FNextSeq then
+      Exit;
+    SetLength(Result, FNextSeq - First + 1);
+    for Q := First to FNextSeq do
+      Result[Q - First] := FLines[(Q - 1) mod Length(FLines)];
+  finally
+    TMonitor.Exit(FLock);
+  end;
+end;
 
 const
   STATE_LINEUP_CHANGED = 'lineup_changed_utc';
@@ -93,7 +177,16 @@ constructor TAppContext.Create(const AConfig: TAppConfig; const ALog: TLogProc;
 begin
   inherited Create;
   FConfig := AConfig;
-  FLog := ALog;
+  FHostLog := ALog;
+  // every component logs through FLog: keep a copy for the web app's Log tab
+  FLog :=
+    procedure(const AMsg: string)
+    begin
+      if LogRing <> nil then
+        LogRing.Add(AMsg);
+      if Assigned(FHostLog) then
+        FHostLog(AMsg);
+    end;
   // Where settings are persisted. Default: next to the executable (dev form +
   // console daemon). The Windows Service injects a writable ProgramData path,
   // since its exe dir is typically read-only (Program Files).
@@ -382,5 +475,11 @@ begin
   FreeAndNil(FIngest);
   FStore := nil; // interface ref-count releases the SQLite store
 end;
+
+initialization
+  LogRing := TLogRing.Create(2000);
+
+finalization
+  FreeAndNil(LogRing);
 
 end.

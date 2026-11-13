@@ -1,3 +1,4 @@
+import { LogView } from './components/LogView'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, adminAuth, setUnauthorizedHandler, UnauthorizedError } from './api/client'
 import { LoginGate } from './components/LoginGate'
@@ -24,7 +25,7 @@ const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
   { value: 'dark', label: 'Dark' },
 ]
 
-type View = 'workbench' | 'epg' | 'mediaservers' | 'settings'
+type View = 'workbench' | 'epg' | 'mediaservers' | 'settings' | 'log'
 type Pane = 'sources' | 'catalog' | 'list'
 
 const PANES: { value: Pane; label: string }[] = [
@@ -259,6 +260,12 @@ export function App() {
           >
             {t('Settings')}
           </button>
+          <button
+            className={view === 'log' ? 'view-tab active' : 'view-tab'}
+            onClick={() => setView('log')}
+          >
+            {t('Log')}
+          </button>
         </nav>
         <div className="segmented theme-switch" role="group" aria-label={t('Theme')}>
           {THEME_OPTIONS.map((o) => (
@@ -315,7 +322,11 @@ export function App() {
         )}
       </header>
 
-      {view === 'settings' ? (
+      {view === 'log' ? (
+        <div className="log-wrap">
+          <LogView />
+        </div>
+      ) : view === 'settings' ? (
         <div className="settings-wrap">
           <SettingsView lists={lists} onListsChanged={loadLists} />
         </div>

@@ -64,6 +64,16 @@ if (-not $PSBoundParameters.ContainsKey('PublishTo')) {
   elseif ($env:IPTV_PUBLISH_TO) { $PublishTo = $env:IPTV_PUBLISH_TO }
   else { $PublishTo = '' }
 }
+# registry push by default when deploy\docker\push-registry.local.txt (gitignored)
+# names a repo, e.g. ghcr.io/youruser/iptv-gateway ('docker login' done once).
+# Unraid then sees "update ready" and updates in one click.
+if (-not $PSBoundParameters.ContainsKey('Repo')) {
+  $localRepo = Join-Path $here 'push-registry.local.txt'
+  if (Test-Path $localRepo) {
+    $Repo = (Get-Content $localRepo -TotalCount 1).Trim()
+    if ($Repo -and -not $PSBoundParameters.ContainsKey('Push')) { $Push = [switch]$true }
+  }
+}
 $repo = (Resolve-Path (Join-Path $here '..\..')).Path
 $dproj = Join-Path $repo 'backend\src\host_service\IPTVPlayService.dproj'
 $rsvars = Join-Path $Bds 'bin\rsvars.bat'

@@ -6,8 +6,12 @@
     /boot/config/plugins/dockerMan/templates-user/my-IPTV-Gateway.xml
   Then Docker tab -> Add Container -> Template: "IPTV-Gateway".
 
-  The image is local (built with deploy/docker/build.ps1 then `docker load`),
-  so leave the Repository tag as-is and make sure the image is loaded first.
+  The image is pulled from the GitHub Container Registry
+  (ghcr.io/iptvgateway/iptvgateway:latest), so Unraid shows "update ready" and
+  updates in one click. While the package is private, log in once on Unraid:
+    docker login ghcr.io -u <github-user>   (password: classic token, read:packages)
+  Offline alternative: `docker load -i iptvplay.tar.gz` and set Repository to
+  iptvplay:latest.
 
   PLEX SSDP / NETWORKING: Plex HDHomeRun auto-discovery uses SSDP multicast on
   UDP 1900, which does NOT cross Docker bridge NAT. With this bridge template the
@@ -20,8 +24,8 @@
 -->
 <Container version="2">
   <Name>IPTV-Gateway</Name>
-  <Repository>iptvplay:latest</Repository>
-  <Registry/>
+  <Repository>ghcr.io/iptvgateway/iptvgateway:latest</Repository>
+  <Registry>https://github.com/IPTVGateway/IPTVGateway/pkgs/container/iptvgateway</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>sh</Shell>

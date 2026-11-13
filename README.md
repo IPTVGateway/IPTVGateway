@@ -1,6 +1,6 @@
 # IPTV Gateway
 
-[![frontend](https://github.com/IPTVGateway/iptv-gateway/actions/workflows/frontend.yml/badge.svg)](https://github.com/IPTVGateway/iptv-gateway/actions/workflows/frontend.yml)
+[![frontend](https://github.com/IPTVGateway/IPTVGateway/actions/workflows/frontend.yml/badge.svg)](https://github.com/IPTVGateway/IPTVGateway/actions/workflows/frontend.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Merge the IPTV subscriptions you already have into one clean, curated line-up,

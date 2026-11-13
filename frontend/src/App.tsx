@@ -328,7 +328,16 @@ export function App() {
         </div>
       ) : view === 'settings' ? (
         <div className="settings-wrap">
-          <SettingsView lists={lists} onListsChanged={loadLists} />
+          <SettingsView
+            lists={lists}
+            onListsChanged={loadLists}
+            onImported={() => {
+              // an import replaces sources, lists and groups: reload all of it
+              loadSources()
+              loadLists()
+              loadActiveList()
+            }}
+          />
         </div>
       ) : view === 'mediaservers' ? (
         <div className="settings-wrap">

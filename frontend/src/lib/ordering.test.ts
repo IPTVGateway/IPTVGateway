@@ -51,8 +51,11 @@ describe('reorderByDrag', () => {
   it('moves a later item up to the target position (insert-before)', () => {
     expect(reorderByDrag([1, 2, 3, 4], 4, 2)).toEqual([1, 4, 2, 3])
   })
-  it('moves an earlier item down to just before the target', () => {
-    expect(reorderByDrag([1, 2, 3, 4], 1, 3)).toEqual([2, 1, 3, 4])
+  it('moves an earlier item down to just after the target', () => {
+    expect(reorderByDrag([1, 2, 3, 4], 1, 3)).toEqual([2, 3, 1, 4])
+  })
+  it('dropping on the next row swaps the two', () => {
+    expect(reorderByDrag([1, 2, 3], 1, 2)).toEqual([2, 1, 3])
   })
   it('is a no-op when dragging onto itself or onto a missing id', () => {
     expect(reorderByDrag([1, 2, 3], 2, 2)).toEqual([1, 2, 3])

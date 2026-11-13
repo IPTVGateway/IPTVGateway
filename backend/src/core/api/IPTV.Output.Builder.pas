@@ -135,6 +135,15 @@ function BuildXmltvChannels(const AStore: IStore; const AChannels: TOutputChanne
   const ADisplayNames: TArray<string> = nil;
   const AGuideIds: TArray<string> = nil): string;
 
+/// A list login as a URL PATH segment: percent-encoded (a '/', '?' or '#' in a
+/// password would break the path) and '-' for an empty one (an empty segment,
+/// /live///12, is dropped or rejected by players and routers).
+function PathCred(const S: string): string;
+
+/// The list a box logs in as, given credentials taken from a URL path: as-is,
+/// else percent-decoded, else '-'/'-' as the empty login. Caller frees; nil = none.
+function FindListForPath(const AStore: IStore; const AUser, APass: string): TCustomList;
+
 /// The guide id a channel is published under: its effective tvg-id, or a stable
 /// synthetic id (iptv-<streamItemId>) when it has no tvg-id.
 function ChannelGuideId(const AChannel: TOutputChannel): string;
@@ -148,6 +157,7 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, System.DateUtils, System.StrUtils,
+  System.NetEncoding,
   IPTV.Model.Types, IPTV.Model.Epg, IPTV.Model.Source, IPTV.Core.Utils;
 
 function TimeshiftUpstreamUrl(const AStore: IStore; const AStream: TStreamItem;
@@ -213,8 +223,66 @@ begin
 end;
 
 function XmlEscape(const S: string): string;
+var
+  SB: TStringBuilder;
+  Ch: Char;
 begin
-  Result := S.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;');
+  // control characters (other than tab/CR/LF) are not allowed in XML 1.0 at all:
+  // one stray #1 in a provider title made strict guide parsers reject the file
+  SB := TStringBuilder.Create(S.Length + 16);
+  try
+    for Ch in S do
+      case Ch of
+        '&': SB.Append('&amp;');
+        '<': SB.Append('&lt;');
+        '>': SB.Append('&gt;');
+        '"': SB.Append('&quot;');
+        #9, #10, #13: SB.Append(Ch);
+        #0..#8, #11, #12, #14..#31, #$FFFE, #$FFFF: ; // dropped
+      else
+        SB.Append(Ch);
+      end;
+    Result := SB.ToString;
+  finally
+    SB.Free;
+  end;
+end;
+
+function PathCred(const S: string): string;
+const
+  Unreserved = ['A'..'Z', 'a'..'z', '0'..'9', '-', '.', '_', '~'];
+var
+  B: TBytes;
+  I: Integer;
+begin
+  if S = '' then
+    Exit('-');
+  Result := '';
+  B := TEncoding.UTF8.GetBytes(S);
+  for I := 0 to High(B) do
+    if (B[I] < 128) and CharInSet(Char(B[I]), Unreserved) then
+      Result := Result + Char(B[I])
+    else
+      Result := Result + '%' + IntToHex(B[I], 2);
+end;
+
+function FindListForPath(const AStore: IStore; const AUser, APass: string): TCustomList;
+var
+  U, P: string;
+begin
+  Result := AStore.FindListByCredentials(AUser, APass);
+  if (Result = nil) and (AUser.Contains('%') or APass.Contains('%')) then
+  begin
+    try
+      U := TNetEncoding.URL.URLDecode(AUser);
+      P := TNetEncoding.URL.URLDecode(APass);
+    except
+      Exit(nil);
+    end;
+    Result := AStore.FindListByCredentials(U, P);
+  end;
+  if (Result = nil) and (AUser = '-') and (APass = '-') then
+    Result := AStore.FindListByCredentials('', '');
 end;
 
 function XmltvTime(const ADtUtc: TDateTime): string;
@@ -547,31 +615,30 @@ begin
 end;
 
 // Emit dummy <programme> blocks for one channel across the configured window.
-// Times are computed on whole LOCAL hours and converted to UTC for output.
+// Stepped in UTC on whole hours: local time has a gap at the spring DST change
+// (ToUniversalTime raised ELocalTimeInvalid there) and a double hour in autumn.
 procedure AppendDummy(ASB: TStringBuilder; const AGuideId, AName, ACategory: string;
   const ADummy: TDummyEpgOptions);
 var
-  NowLocal, BlockDays, StartLocal, EndLocal, B, StopLocal: TDateTime;
+  NowU, BlockDays, EndU, B, StopU: TDateTime;
   Guard: Integer;
 begin
   if ADummy.BlockMinutes <= 0 then
     Exit;
-  NowLocal := Now;
+  NowU := NowUtc;
   BlockDays := ADummy.BlockMinutes / (24 * 60);
-  StartLocal := FloorToHour(IncHour(NowLocal, -ADummy.HoursBack));
-  EndLocal := IncHour(NowLocal, ADummy.HoursAhead);
-  B := StartLocal;
+  B := FloorToHour(IncHour(NowU, -ADummy.HoursBack));
+  EndU := IncHour(NowU, ADummy.HoursAhead);
   Guard := 0;
-  while (B < EndLocal) and (Guard < 100000) do
+  while (B < EndU) and (Guard < 100000) do
   begin
     Inc(Guard);
-    StopLocal := B + BlockDays;
+    StopU := B + BlockDays;
     ASB.AppendFormat(
       '  <programme start="%s" stop="%s" channel="%s"><title>%s</title><desc>%s</desc><category>%s</category></programme>'#10,
-      [XmltvTime(TTimeZone.Local.ToUniversalTime(B)),
-       XmltvTime(TTimeZone.Local.ToUniversalTime(StopLocal)),
+      [XmltvTime(B), XmltvTime(StopU),
        XmlEscape(AGuideId), XmlEscape(AName), XmlEscape('Live programma'), XmlEscape(ACategory)]);
-    B := StopLocal;
+    B := StopU;
   end;
 end;
 

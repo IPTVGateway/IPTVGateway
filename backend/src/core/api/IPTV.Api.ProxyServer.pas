@@ -134,8 +134,14 @@ type
   private
     FIO: TIdIOHandler;
     FWritten: Boolean;
+    FAllowFailover: Boolean;
+    FFailedCode: Integer;
   public
     constructor Create(AIO: TIdIOHandler);
+    /// When set, an upstream 4xx/5xx is NOT passed to the client: FailedCode is
+    /// set instead, so the caller can try the next source.
+    property AllowFailover: Boolean read FAllowFailover write FAllowFailover;
+    property FailedCode: Integer read FFailedCode;
     procedure HeadersAvailable(Sender: TObject; AHeaders: TIdHeaderList; var VContinue: Boolean);
     /// True once we've written ANY response (header/body) to the client — after that
     /// we can no longer fail over to another source mid-response.
@@ -160,6 +166,13 @@ begin
     Exit; // intermediate redirect — wait for the final response
   if FWritten then
     Exit;
+  if (Code >= 400) and FAllowFailover then
+  begin
+    // nothing written yet: let the caller fail over to another source
+    FFailedCode := Code;
+    VContinue := False;
+    Exit;
+  end;
   FWritten := True;
 
   if Code >= 400 then
@@ -269,6 +282,12 @@ begin
   LStore := App.Store;
   // /live/{user}/{pass}/{id}   (or movie|series|stream)
   Parts := ARequestInfo.Document.Split(['/']);
+  // catch-up, query flavour: /streaming/timeshift.php?username=&password=&stream=&start=&duration=
+  // -> rewritten to the path form below
+  if (Length(Parts) = 3) and SameText(Parts[1], 'streaming') and SameText(Parts[2], 'timeshift.php') then
+    Parts := ['', 'timeshift', ARequestInfo.Params.Values['username'], ARequestInfo.Params.Values['password'],
+      ARequestInfo.Params.Values['duration'], ARequestInfo.Params.Values['start'],
+      ARequestInfo.Params.Values['stream']];
   if Length(Parts) < 5 then
   begin
     AResponseInfo.ResponseNo := 400;
@@ -304,7 +323,7 @@ begin
     S := S.Substring(0, Dot);
   StreamId := StrToIntDef(S, 0);
 
-  List := LStore.FindListByCredentials(User, Pass);
+  List := FindListForPath(LStore, User, Pass); // '-' = empty login, %-encoding
   if List = nil then
   begin
     AResponseInfo.ResponseNo := 401;
@@ -367,6 +386,7 @@ begin
       // don't raise on 4xx/5xx; TRelaySession maps the status to the client
       Up.HTTPOptions := Up.HTTPOptions + [hoNoProtocolErrorException];
       Up.OnHeadersAvailable := Session.HeadersAvailable;
+      Session.AllowFailover := Idx < High(Candidates);
       // Attach a TLS IOHandler unconditionally (Indy keeps it in PassThrough for
       // plain-http legs and only negotiates TLS for https) — a plain-http upstream
       // very commonly 302-redirects to an https streaming node, which would fail
@@ -386,12 +406,21 @@ begin
            IfThen(Idx > 0, ' (failover)', '')]));
       try
         Up.Get(Candidates[Idx], Fwd); // blocks, pumping bytes until upstream ends / client closes
+        if Session.FailedCode > 0 then
+        begin
+          // upstream said 4xx/5xx and nothing reached the box: try the next source
+          if Assigned(FLog) then
+            FLog(Format('proxy relay %s: provider answered HTTP %d - trying next source',
+              [IdPart, Session.FailedCode]));
+          Continue;
+        end;
         Break; // returned normally: streamed, or an upstream-error header was written
       except
         on E: Exception do
           // If nothing reached the client yet AND another source is available, fail
           // over to it. Otherwise (response already started, or last candidate) stop.
-          if (Fwd.Bytes = 0) and (not Session.Wrote) and (Idx < High(Candidates)) then
+          if ((Fwd.Bytes = 0) and (not Session.Wrote) or (Session.FailedCode > 0)) and
+             (Idx < High(Candidates)) then
           begin
             if Assigned(FLog) then
               FLog(Format('proxy relay %s: source unreachable (%s) — trying next source',

@@ -36,6 +36,8 @@ type
     [Test] procedure Timeshift_UrlShiftsStartToPortalClock;
     [Test] procedure XtreamBase64_IsOneLine;
     [Test] procedure EpgKeys_MatchProviderAndGuideNames;
+    [Test] procedure EpgIdKey_StripsOnlyCountryCodes;
+    [Test] procedure FillMissingStops_UsesNextStart;
     [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
 
@@ -43,7 +45,7 @@ implementation
 
 uses
   System.SysUtils, System.DateUtils, System.NetEncoding,
-  IPTV.Model.Types, IPTV.Core.Utils;
+  IPTV.Model.Types, IPTV.Model.Epg, IPTV.Core.Utils, IPTV.Source.Epg;
 
 procedure TUtilsTests.ContentTypesRoundtrip;
 var
@@ -318,6 +320,43 @@ begin
   Assert.AreEqual('http://p.tv/xmltv.php?USERNAME=***&Password=***',
     MaskUrlSecrets('http://p.tv/xmltv.php?USERNAME=bob&Password=x'), 'case-insensitive');
   Assert.AreEqual('http://p.tv/guide.xml', MaskUrlSecrets('http://p.tv/guide.xml'), 'nothing to hide');
+end;
+
+procedure TUtilsTests.EpgIdKey_StripsOnlyCountryCodes;
+begin
+  Assert.AreEqual('bbcone', EpgIdKey('bbc.one.uk'));
+  Assert.AreEqual('bbcone', EpgIdKey('bbc.one'), '"one" is not a country');
+  Assert.AreEqual('sporthd', EpgIdKey('sport.hd'));
+  Assert.AreEqual('rtl4', EpgIdKey('RTL.4.nl'));
+end;
+
+procedure TUtilsTests.FillMissingStops_UsesNextStart;
+var
+  L: TEpgProgrammeList;
+
+  function Add(const ACh: string; AStartH, AStopH: Integer): TEpgProgramme;
+  begin
+    Result := TEpgProgramme.Create;
+    Result.ChannelTvgId := ACh;
+    Result.StartUtc := EncodeDateTime(2026, 11, 13, AStartH, 0, 0, 0);
+    if AStopH >= 0 then
+      Result.StopUtc := EncodeDateTime(2026, 11, 13, AStopH, 0, 0, 0);
+    L.Add(Result);
+  end;
+
+begin
+  L := TEpgProgrammeList.Create(True);
+  try
+    Add('a', 10, -1);
+    Add('b', 10, 11);
+    Add('a', 12, -1);
+    FillMissingStops(L);
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 12, 0, 0, 0), L[0].StopUtc, 'ends at the next start');
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 11, 0, 0, 0), L[1].StopUtc, 'a real stop is kept');
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 13, 0, 0, 0), L[2].StopUtc, 'the last gets an hour');
+  finally
+    L.Free;
+  end;
 end;
 
 initialization

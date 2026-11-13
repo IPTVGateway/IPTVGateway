@@ -61,12 +61,21 @@ var
 begin
   G := AGroup.ToLower;
   U := AUrl.ToLower;
-  if U.Contains('/movie/') or G.Contains('vod') or G.Contains('film') then
+  // the Xtream-style URL path is the most reliable hint: a live group called
+  // "NL| FILM" or "VODAFONE SPORT" must stay live
+  if U.Contains('/movie/') then
     Exit(Ord(ctMovie));
-  if U.Contains('/series/') or G.Contains('serie') then
+  if U.Contains('/series/') then
     Exit(Ord(ctSeries));
-  if G.Contains('radio') then
+  if TRegEx.IsMatch(G, '(^|[^a-z])radio([^a-z]|$)') then
     Exit(Ord(ctRadio));
+  if U.Contains('/live/') then
+    Exit(Ord(ctLive));
+  // otherwise whole words in the group name only
+  if TRegEx.IsMatch(G, '(^|[^a-z])(vod|films?|movies?)([^a-z]|$)') then
+    Exit(Ord(ctMovie));
+  if TRegEx.IsMatch(G, '(^|[^a-z])(series?|tv shows?)([^a-z]|$)') then
+    Exit(Ord(ctSeries));
   Result := Ord(ctLive);
 end;
 

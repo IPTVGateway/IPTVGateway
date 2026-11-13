@@ -313,7 +313,8 @@ else {
   $saveCmd = if ($NoSave) { '' } else { "docker save $saveRefs | gzip > $tarWsl" }
   $runner = @"
 #!/bin/bash
-set -e
+# pipefail: a failing 'docker save' in 'save | gzip' must fail the build
+set -eo pipefail
 docker info >/dev/null 2>&1 || service docker start >/dev/null 2>&1 || true
 for i in `$(seq 1 40); do
   docker info >/dev/null 2>&1 && break

@@ -458,7 +458,13 @@ begin
       try
         try
           Log(Format('Extra EPG %d: %s', [I + 1, Urls[I]]));
-          Progs := ReadExtraXmltv(Urls[I], Slot, Guide);
+          // keep only channels some list channel matches, already while parsing
+          Progs := ReadExtraXmltv(Urls[I], Slot, Guide,
+            function(AInfo: TEpgChannelInfo): Boolean
+            begin
+              Result := ListKeys.ContainsKey(EpgIdKey(AInfo.Id)) or
+                ListKeys.ContainsKey(EpgNameKey(AInfo.Name));
+            end);
           try
             KeepIds.Clear;
             Kept := nil;

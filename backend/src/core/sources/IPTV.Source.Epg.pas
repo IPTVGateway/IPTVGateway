@@ -17,6 +17,7 @@ unit IPTV.Source.Epg;
 interface
 
 uses
+  System.SysUtils,
   IPTV.Model.Source, IPTV.Model.Epg, IPTV.Source.Intf;
 
 type
@@ -31,13 +32,21 @@ type
 /// Read a whole third-party XMLTV guide (an "extra EPG source", .xml or .xml.gz):
 /// every <channel> (id + first display-name) and every programme. Programme
 /// channel ids get EXTRA_EPG_PREFIX and SourceId = ASourceId (a negative slot id).
+/// AKeepChannel (optional) decides per <channel> whether its programmes are kept;
+/// the others are skipped while scanning (a big guide never sits fully in memory).
+/// AChannels always lists every channel.
 function ReadExtraXmltv(const AUrl: string; ASourceId: Integer;
-  out AChannels: TArray<TEpgChannelInfo>): TEpgProgrammeList;
+  out AChannels: TArray<TEpgChannelInfo>;
+  const AKeepChannel: TFunc<TEpgChannelInfo, Boolean> = nil): TEpgProgrammeList;
+
+/// XMLTV allows a programme without stop: it then ends where the next programme
+/// of the same channel starts (the last one gets an hour). In list order.
+procedure FillMissingStops(AList: TEpgProgrammeList);
 
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.DateUtils, System.StrUtils,
+  System.Classes, System.DateUtils, System.StrUtils,
   System.Character, System.Generics.Collections,
   System.Net.HttpClient, System.NetEncoding,
   IPTV.Model.Types, IPTV.Source.Http;
@@ -65,6 +74,12 @@ begin
   // "YYYYMMDDHHMMSS +HHMM" -> UTC
   S := AValue.Trim;
   SpacePos := S.IndexOf(' ');
+  // "20261113120000+0100" (no space) is seen in the wild too
+  if (SpacePos < 0) and (S.Length > 14) and CharInSet(S.Chars[14], ['+', '-']) then
+  begin
+    S := S.Substring(0, 14) + ' ' + S.Substring(14);
+    SpacePos := 14;
+  end;
   TzPart := '';
   if SpacePos > 0 then
   begin
@@ -102,31 +117,42 @@ end;
 // a bare substring search makes 'start' match inside 'vps-start="..."' /
 // 'pdc-start="..."' (both valid XMLTV <programme> attributes) and read the wrong
 // value. Returns the position just AFTER the opening quote, or 0 if not found.
-function FindAttrValueStart(const AXml, AName: string; AFrom, ATo: Integer): Integer;
+// Both quote styles are valid XML (name="v" and name='v'); AQuote returns the one used.
+function FindAttrValueStart(const AXml, AName: string; AFrom, ATo: Integer;
+  out AQuote: Char): Integer;
 var
   Needle: string;
   P: Integer;
+  Q: Char;
 begin
-  Needle := AName + '="';
-  P := PosEx(Needle, AXml, AFrom);
-  while (P > 0) and (P < ATo) do
+  for Q in ['"', ''''] do
   begin
-    if (P = 1) or CharInSet(AXml[P - 1], [' ', #9, #10, #13, '<']) then
-      Exit(P + Length(Needle));
-    P := PosEx(Needle, AXml, P + 1);
+    Needle := AName + '=' + Q;
+    P := PosEx(Needle, AXml, AFrom);
+    while (P > 0) and (P < ATo) do
+    begin
+      if (P = 1) or CharInSet(AXml[P - 1], [' ', #9, #10, #13, '<']) then
+      begin
+        AQuote := Q;
+        Exit(P + Length(Needle));
+      end;
+      P := PosEx(Needle, AXml, P + 1);
+    end;
   end;
+  AQuote := '"';
   Result := 0;
 end;
 
 function AttrVal(const ABlock, AName: string): string;
 var
   P, E: Integer;
+  Q: Char;
 begin
   Result := '';
-  P := FindAttrValueStart(ABlock, AName, 1, Length(ABlock) + 1);
+  P := FindAttrValueStart(ABlock, AName, 1, Length(ABlock) + 1, Q);
   if P = 0 then
     Exit;
-  E := PosEx('"', ABlock, P);
+  E := PosEx(Q, ABlock, P);
   if E > 0 then
     Result := Copy(ABlock, P, E - P);
 end;
@@ -140,12 +166,13 @@ end;
 function AttrValIn(const AXml, AName: string; AFrom, ATo: Integer): string;
 var
   P, E: Integer;
+  Q: Char;
 begin
   Result := '';
-  P := FindAttrValueStart(AXml, AName, AFrom, ATo);
+  P := FindAttrValueStart(AXml, AName, AFrom, ATo, Q);
   if P = 0 then
     Exit;
-  E := PosEx('"', AXml, P);
+  E := PosEx(Q, AXml, P);
   if (E > 0) and (E <= ATo) then
     Result := Copy(AXml, P, E - P);
 end;
@@ -247,7 +274,8 @@ begin
 
       // read the channel id WITHOUT copying the block; only materialise the block
       // for programmes we actually keep (most are discarded for unlisted channels)
-      Channel := AttrValIn(Xml, 'channel', PStart, PEnd);
+      // decoded: an id like "Sky&amp;Co.uk" is "Sky&Co.uk" on the M3U side
+      Channel := XmlDecode(AttrValIn(Xml, 'channel', PStart, PEnd));
       if KeepAll or Keep.ContainsKey(LowerCase(Channel)) then
       begin
         Block := Copy(Xml, PStart, PEnd - PStart);
@@ -269,27 +297,55 @@ begin
         end;
       end;
     until False;
+    FillMissingStops(Result);
   finally
     Keep.Free;
   end;
 end;
 
+procedure FillMissingStops(AList: TEpgProgrammeList);
+var
+  Open: TDictionary<string, TEpgProgramme>; // channel -> programme waiting for a stop
+  P, Prev: TEpgProgramme;
+begin
+  Open := TDictionary<string, TEpgProgramme>.Create;
+  try
+    for P in AList do
+    begin
+      if Open.TryGetValue(P.ChannelTvgId, Prev) and (P.StartUtc > Prev.StartUtc) then
+      begin
+        Prev.StopUtc := P.StartUtc;
+        Open.Remove(P.ChannelTvgId);
+      end;
+      if P.StopUtc = 0 then
+        Open.AddOrSetValue(P.ChannelTvgId, P);
+    end;
+    for P in Open.Values do
+      P.StopUtc := IncHour(P.StartUtc, 1);
+  finally
+    Open.Free;
+  end;
+end;
+
 function ReadExtraXmltv(const AUrl: string; ASourceId: Integer;
-  out AChannels: TArray<TEpgChannelInfo>): TEpgProgrammeList;
+  out AChannels: TArray<TEpgChannelInfo>;
+  const AKeepChannel: TFunc<TEpgChannelInfo, Boolean>): TEpgProgrammeList;
 const
   CH_OPEN = '<channel';
   CH_CLOSE = '</channel>';
   PROG_OPEN = '<programme';
   PROG_CLOSE = '</programme>';
 var
-  Xml, Block: string;
+  Xml, Block, Channel: string;
   PStart, PEnd, Cursor: Integer;
   Info: TEpgChannelInfo;
   Prog: TEpgProgramme;
   Parser: TXmltvEpgReader;
+  Keep: TDictionary<string, Byte>; // raw channel ids whose programmes we keep
 begin
   AChannels := nil;
   Result := TEpgProgrammeList.Create(True);
+  Keep := TDictionary<string, Byte>.Create;
   Xml := HttpGetText(AUrl, '', TimeoutBulkMs, ''); // gunzips .gz transparently
   Parser := TXmltvEpgReader.Create; // only for ParseXmltvTime (no interface ref taken)
   try
@@ -314,7 +370,11 @@ begin
       Info.Id := XmlDecode(AttrVal(Block, 'id'));
       Info.Name := XmlDecode(TagText(Block, 'display-name'));
       if Info.Id <> '' then
+      begin
         AChannels := AChannels + [Info];
+        if not Assigned(AKeepChannel) or AKeepChannel(Info) then
+          Keep.AddOrSetValue(Info.Id, 0);
+      end;
     until False;
 
     Cursor := 1;
@@ -326,10 +386,14 @@ begin
       if PEnd = 0 then
         Break;
       Cursor := PEnd + Length(PROG_CLOSE);
+      // skip unwanted channels without copying their block
+      Channel := XmlDecode(AttrValIn(Xml, 'channel', PStart, PEnd));
+      if not Keep.ContainsKey(Channel) then
+        Continue;
       Block := Copy(Xml, PStart, PEnd - PStart);
       Prog := TEpgProgramme.Create;
       Prog.SourceId := ASourceId;
-      Prog.ChannelTvgId := EXTRA_EPG_PREFIX + XmlDecode(AttrVal(Block, 'channel'));
+      Prog.ChannelTvgId := EXTRA_EPG_PREFIX + Channel;
       Prog.StartUtc := Parser.ParseXmltvTime(AttrVal(Block, 'start'));
       Prog.StopUtc := Parser.ParseXmltvTime(AttrVal(Block, 'stop'));
       if Prog.StartUtc = 0 then
@@ -341,8 +405,10 @@ begin
         Result.Add(Prog);
       end;
     until False;
+    FillMissingStops(Result);
   finally
     Parser.Free;
+    Keep.Free;
   end;
 end;
 

@@ -79,6 +79,9 @@ type
     [Test] procedure ManyExcludeTokensDoNotBreakQuery;
     [Test] procedure PerSourceFiltersApplyInAllSourcesView;
     [Test] procedure FindListByCredentials_DefaultAndNamed;
+    [Test] procedure DisabledSourceOrTypeIsNotOffered;
+    [Test] procedure SeriesEpisodesResolveOnlyOnTheirList;
+    [Test] procedure PathCredentials_DashAndEncoding;
     [Test] procedure OutputChannelsOrderAndOverrides;
     [Test] procedure GroupReorderControlsOutputOrder;
     [Test] procedure EpgReplaceAndLoadByTvgId;
@@ -93,7 +96,7 @@ uses
   System.SysUtils, System.IOUtils, System.DateUtils, System.Generics.Collections,
   IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
   IPTV.Model.CustomList, IPTV.Storage.Intf, IPTV.Storage.SQLite, IPTV.Storage.Locking,
-  IPTV.Core.Utils, IPTV.Ingest.Service;
+  IPTV.Core.Utils, IPTV.Ingest.Service, IPTV.Output.Builder;
 
 { helpers }
 
@@ -3135,6 +3138,206 @@ begin
   Found := Store.FindListByCredentials('box', 'new');
   try
     Assert.IsNotNull(Found, 'new password accepted');
+  finally
+    Found.Free;
+  end;
+end;
+
+function SaveTestSource(const AStore: IStore; ATypes: TContentTypes; AEnabled: Boolean;
+  AId: Integer = 0): Integer;
+var
+  Src: TSourceConfig;
+begin
+  Src := TSourceConfig.Create;
+  try
+    Src.Id := AId;
+    Src.Name := 'P';
+    Src.Kind := skXtream;
+    Src.Url := 'http://prov:8080/';
+    Src.Username := 'u';
+    Src.Password := 'p';
+    Src.Enabled := AEnabled;
+    Src.ContentTypes := ATypes;
+    Result := AStore.SaveSource(Src);
+  finally
+    Src.Free;
+  end;
+end;
+
+function AddTestItem(const AStore: IStore; AListId, AStreamId: Integer; ACt: TContentType): Integer;
+var
+  It: TCustomItem;
+begin
+  It := TCustomItem.Create;
+  try
+    It.ListId := AListId;
+    It.StreamItemId := AStreamId;
+    It.ContentType := ACt;
+    Result := AStore.SaveItem(It);
+  finally
+    It.Free;
+  end;
+end;
+
+function StreamIdByUpstream(const AStore: IStore; const AUpstreamId: string): Integer;
+var
+  L: TStreamItemList;
+  S: TStreamItem;
+begin
+  Result := 0;
+  L := AStore.LoadStreams(Default(TCatalogFilter));
+  try
+    for S in L do
+      if S.UpstreamId = AUpstreamId then
+        Exit(S.Id);
+  finally
+    L.Free;
+  end;
+end;
+
+function NewTestList(const AStore: IStore; const AName: string): Integer;
+var
+  Lst: TCustomList;
+begin
+  Lst := TCustomList.Create;
+  try
+    Lst.Name := AName;
+    Lst.Enabled := True;
+    Result := AStore.SaveList(Lst);
+  finally
+    Lst.Free;
+  end;
+end;
+
+// a source that is switched off, or a content type switched off on it, is never
+// offered to a box (output list, redirect lookup) - its items stay on the list
+procedure TStorageTests.DisabledSourceOrTypeIsNotOffered;
+var
+  Store: IStore;
+  Snap: TSourceSnapshot;
+  SrcId, ListId, LiveId, MovieId: Integer;
+  Out: TOutputChannelList;
+  S: TStreamItem;
+begin
+  Store := NewStore(FDbPath);
+  SrcId := SaveTestSource(Store, [ctLive, ctMovie], True);
+  Snap := TSourceSnapshot.Create(SrcId);
+  try
+    Snap.Streams.Add(MakeStream(SrcId, ctLive, 'l1', 'Live One', 'G', '', 'http://prov/live/u/p/l1.ts'));
+    Snap.Streams.Add(MakeStream(SrcId, ctMovie, 'm1', 'Movie One', 'G', '', 'http://prov/movie/u/p/m1.mkv'));
+    Store.MergeSnapshot(Snap);
+  finally
+    Snap.Free;
+  end;
+  LiveId := StreamIdByUpstream(Store, 'l1');
+  MovieId := StreamIdByUpstream(Store, 'm1');
+  ListId := NewTestList(Store, 'L');
+  AddTestItem(Store, ListId, LiveId, ctLive);
+  AddTestItem(Store, ListId, MovieId, ctMovie);
+
+  Out := Store.LoadOutputChannels(ListId);
+  try Assert.AreEqual<Integer>(2, Out.Count, 'both offered'); finally Out.Free; end;
+
+  // movies switched off on the source
+  SaveTestSource(Store, [ctLive], True, SrcId);
+  Out := Store.LoadOutputChannels(ListId);
+  try
+    Assert.AreEqual<Integer>(1, Out.Count, 'movie no longer offered');
+    Assert.AreEqual('Live One', Out[0].Name);
+  finally
+    Out.Free;
+  end;
+  Assert.IsNull(Store.LoadListStreamById(ListId, MovieId), 'no redirect to a switched-off type');
+  S := Store.LoadListStreamById(ListId, LiveId);
+  try Assert.IsNotNull(S); finally S.Free; end;
+
+  // whole source switched off
+  SaveTestSource(Store, [ctLive], False, SrcId);
+  Out := Store.LoadOutputChannels(ListId);
+  try Assert.AreEqual<Integer>(0, Out.Count, 'disabled source offers nothing'); finally Out.Free; end;
+  Assert.IsNull(Store.LoadListStreamById(ListId, LiveId));
+end;
+
+// Xtream series episodes get stable ids of our own; they resolve to the provider
+// episode URL, but only via a list that carries the series
+procedure TStorageTests.SeriesEpisodesResolveOnlyOnTheirList;
+var
+  Store: IStore;
+  Snap: TSourceSnapshot;
+  SrcId, ListA, ListB, SerId: Integer;
+  Ids, Again: TArray<Integer>;
+  S: TStreamItem;
+begin
+  Store := NewStore(FDbPath);
+  SrcId := SaveTestSource(Store, [ctSeries], True);
+  Snap := TSourceSnapshot.Create(SrcId);
+  try
+    Snap.Streams.Add(MakeStream(SrcId, ctSeries, 'ser1', 'Some Show', 'G', '', 'http://prov/series/u/p/ser1.ts'));
+    Store.MergeSnapshot(Snap);
+  finally
+    Snap.Free;
+  end;
+  SerId := StreamIdByUpstream(Store, 'ser1');
+  ListA := NewTestList(Store, 'A');
+  ListB := NewTestList(Store, 'B');
+  AddTestItem(Store, ListA, SerId, ctSeries);
+
+  Ids := Store.EnsureEpisodeIds(SerId, ['901', '902'], ['mkv', '']);
+  Assert.AreEqual<Integer>(2, Length(Ids));
+  Assert.IsTrue(Ids[0] >= EPISODE_ID_BASE, 'outside the catalog id range');
+  Assert.AreNotEqual(Ids[0], Ids[1]);
+  Again := Store.EnsureEpisodeIds(SerId, ['902', '901'], ['', 'mkv']);
+  Assert.AreEqual(Ids[0], Again[1], 'stable per upstream episode');
+  Assert.AreEqual(Ids[1], Again[0]);
+
+  S := Store.LoadListStreamById(ListA, Ids[0]);
+  try
+    Assert.IsNotNull(S);
+    Assert.AreEqual('http://prov:8080/series/u/p/901.mkv', S.UpstreamUrl);
+    Assert.AreEqual(SrcId, S.SourceId);
+  finally
+    S.Free;
+  end;
+  S := Store.LoadListStreamById(ListA, Ids[1]);
+  try
+    Assert.AreEqual('http://prov:8080/series/u/p/902.mp4', S.UpstreamUrl, 'no extension -> mp4');
+  finally
+    S.Free;
+  end;
+  Assert.IsNull(Store.LoadListStreamById(ListB, Ids[0]), 'not via a list without the series');
+end;
+
+procedure TStorageTests.PathCredentials_DashAndEncoding;
+var
+  Store: IStore;
+  Lst: TCustomList;
+  Found: TCustomList;
+begin
+  Assert.AreEqual('-', PathCred(''));
+  Assert.AreEqual('a%2Fb%20c%3F', PathCred('a/b c?'));
+  Assert.AreEqual('box_1.x~', PathCred('box_1.x~'));
+
+  Store := NewStore(FDbPath);
+  NewTestList(Store, 'Open'); // no login
+  Lst := TCustomList.Create;
+  try
+    Lst.Name := 'Locked'; Lst.Enabled := True;
+    Lst.OutputUsername := 'me'; Lst.OutputPassword := 'p/w d';
+    Store.SaveList(Lst);
+  finally
+    Lst.Free;
+  end;
+  Found := FindListForPath(Store, '-', '-');
+  try
+    Assert.IsNotNull(Found, '"-" is the empty login');
+    Assert.AreEqual('Open', Found.Name);
+  finally
+    Found.Free;
+  end;
+  Found := FindListForPath(Store, 'me', PathCred('p/w d'));
+  try
+    Assert.IsNotNull(Found, 'percent-encoded password from our own URL');
+    Assert.AreEqual('Locked', Found.Name);
   finally
     Found.Free;
   end;

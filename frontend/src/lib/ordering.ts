@@ -36,7 +36,9 @@ export function byChannelNumber(
 }
 
 /**
- * Move `draggedId` to the position of `targetId` within `ids` (insert-before).
+ * Move `draggedId` to the position of `targetId` within `ids`: dragging UP lands
+ * before the target, dragging DOWN lands after it (so dropping on the next row
+ * really moves it).
  * Returns a new array; returns the input unchanged if either id is missing or
  * they are the same. Used by drag-and-drop reordering of channels in a group.
  */
@@ -44,9 +46,10 @@ export function reorderByDrag(ids: number[], draggedId: number, targetId: number
   if (draggedId === targetId) return ids
   const from = ids.indexOf(draggedId)
   if (from < 0 || ids.indexOf(targetId) < 0) return ids
+  const down = from < ids.indexOf(targetId)
   const next = ids.slice()
   next.splice(from, 1)
-  next.splice(next.indexOf(targetId), 0, draggedId)
+  next.splice(next.indexOf(targetId) + (down ? 1 : 0), 0, draggedId)
   return next
 }
 

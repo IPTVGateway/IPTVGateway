@@ -100,6 +100,7 @@ export interface CatalogQuery {
   search?: string // name contains
   prefix?: string // name starts-with, e.g. "NL:"
   category?: string // upstream category/group id (drill into one group)
+  inCategory?: boolean // drilled: filter on `category` even when it is ''
   limit?: number // page size (streams only)
   offset?: number // page offset
 }
@@ -112,6 +113,7 @@ function qs(q: CatalogQuery): string {
   if (q.search) p.set('search', q.search)
   if (q.prefix) p.set('prefix', q.prefix)
   if (q.category) p.set('category', q.category)
+  if (q.inCategory) p.set('inCategory', '1')
   if (q.limit) p.set('limit', String(q.limit))
   if (q.offset) p.set('offset', String(q.offset))
   const s = p.toString()

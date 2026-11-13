@@ -138,12 +138,15 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   const streamQuery: CatalogQuery | null = useMemo(() => {
     if (!drill && !flatSearch) return null
     return {
-      sourceId: sourceId === '' ? undefined : sourceId,
-      type,
+      // a drilled group belongs to ONE source and type (upstream ids repeat across
+      // sources, so with "All sources" the group's own source must be sent)
+      sourceId: drill ? drill.sourceId : sourceId === '' ? undefined : sourceId,
+      type: drill ? drill.contentType : type,
       onlyNew: onlyNew || undefined,
       search: searchTerm || undefined,
       prefix: prefixTerm || undefined,
       category: drill ? drill.upstreamId : undefined,
+      inCategory: drill ? true : undefined, // also for a group with an empty id
     }
   }, [drill, flatSearch, sourceId, type, onlyNew, searchTerm, prefixTerm])
 

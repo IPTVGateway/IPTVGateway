@@ -37,7 +37,10 @@ export function LogView() {
   useEffect(() => {
     if (paused) return
     let cancelled = false
+    let inFlight = false // a slow answer must not overlap the next tick (duplicate lines)
     async function poll() {
+      if (inFlight) return
+      inFlight = true
       try {
         const r = await api.logs(since.current)
         if (cancelled) return
@@ -51,6 +54,8 @@ export function LogView() {
         })
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        inFlight = false
       }
     }
     void poll()

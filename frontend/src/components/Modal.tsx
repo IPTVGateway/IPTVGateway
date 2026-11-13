@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { useT } from '../i18n'
 
 interface Props {
@@ -21,9 +21,21 @@ export function Modal({ title, onClose, children, footer, wide }: Props) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+  // close only on a click that STARTED on the backdrop: selecting text in an input
+  // and releasing the mouse outside the dialog must not close it
+  const downOnBackdrop = useRef(false)
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(e) => {
+        downOnBackdrop.current = e.target === e.currentTarget
+      }}
+      onClick={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget) onClose()
+        downOnBackdrop.current = false
+      }}
+    >
       <div className={wide ? 'modal modal-wide' : 'modal'} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h3>{title}</h3>

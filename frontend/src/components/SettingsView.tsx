@@ -7,6 +7,8 @@ interface Props {
   lists: CustomList[]
   /** Refresh the app-level lists after a create/edit/delete. */
   onListsChanged: () => void
+  /** after a settings import (sources + lists changed) */
+  onImported?: () => void
 }
 
 /**
@@ -14,13 +16,13 @@ interface Props {
  * output-list management (name + optional output credentials + enabled). Lists
  * are what an IPTV box authenticates as; an empty username = the default list.
  */
-export function SettingsView({ lists, onListsChanged }: Props) {
+export function SettingsView({ lists, onListsChanged, onImported }: Props) {
   return (
     <div className="settings-view">
       <LanguagePicker />
       <ServiceSettings />
       <ListManager lists={lists} onChanged={onListsChanged} />
-      <SettingsIO onChanged={onListsChanged} />
+      <SettingsIO onChanged={onImported ?? onListsChanged} />
     </div>
   )
 }

@@ -66,6 +66,8 @@ type
     procedure MarkStreamsSeen(const AIds: TArray<Integer>);
     function LoadStreamById(AId: Integer): TStreamItem;
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
+    function EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+      AExts: TArray<string>): TArray<Integer>;
     function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
     function DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
     function LoadKnownTvgIds: TArray<TTvgIdInfo>;
@@ -120,6 +122,14 @@ implementation
 uses
   System.Hash, System.StrUtils, System.Generics.Defaults, System.DateUtils, System.Math,
   IPTV.Core.Utils;
+
+const
+  // the stream's source (alias src, LEFT JOINed) is enabled and offers the
+  // stream's content type (alias s). A stream without a source row passes.
+  SQL_SOURCE_ACTIVE = '''
+    (src.id IS NULL OR (src.enabled = 1 AND
+      (',' || REPLACE(src.content_types, ' ', '') || ',') LIKE ('%,' || s.content_type || ',%')))
+    ''';
 
 // Strong IPTV group/name delimiters. We deliberately exclude '-' and '.' since
 // VOD titles use them freely, which would explode the discovered-prefix list.
@@ -328,6 +338,15 @@ begin
   Exec('CREATE TABLE IF NOT EXISTS epg_channels (source_id INTEGER NOT NULL, ' +
     'channel_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '''')');
   Exec('CREATE INDEX IF NOT EXISTS idx_epgch_src ON epg_channels(source_id)');
+  // stable box-facing ids for Xtream series episodes (get_series_info)
+  Exec('''
+    CREATE TABLE IF NOT EXISTS series_episodes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      stream_id INTEGER NOT NULL,
+      upstream_episode_id TEXT NOT NULL,
+      ext TEXT NOT NULL DEFAULT '',
+      UNIQUE(stream_id, upstream_episode_id))
+    ''');
   // per-item tvg-id override (empty => use the upstream stream's tvg-id)
   AddColumn('list_items', 'tvg_id_override TEXT NOT NULL DEFAULT ''''');
   // manual group drag-order (0 => unset, falls back to A→Z; favorites still first)
@@ -775,13 +794,26 @@ begin
   // there are no FK cascades, so clean dependents by hand. Remove list_items that
   // point at this source's streams FIRST, else they dangle (orphaned rows that
   // LoadOutputChannels silently drops and the UI can never repair).
-  FConn.ExecSQL(
-    'DELETE FROM list_items WHERE stream_item_id IN ' +
-    '(SELECT id FROM streams WHERE source_id=:id)', [AId]);
-  FConn.ExecSQL('DELETE FROM streams WHERE source_id=:id', [AId]);
-  FConn.ExecSQL('DELETE FROM categories WHERE source_id=:id', [AId]);
-  FConn.ExecSQL('DELETE FROM epg WHERE source_id=:id', [AId]);
-  FConn.ExecSQL('DELETE FROM sources WHERE id=:id', [AId]);
+  // one transaction: a failure half-way must not leave a source without streams
+  // (or list items pointing nowhere)
+  FConn.StartTransaction;
+  try
+    FConn.ExecSQL(
+      'DELETE FROM list_items WHERE stream_item_id IN ' +
+      '(SELECT id FROM streams WHERE source_id=:id)', [AId]);
+    FConn.ExecSQL(
+      'DELETE FROM series_episodes WHERE stream_id IN ' +
+      '(SELECT id FROM streams WHERE source_id=:id)', [AId]);
+    FConn.ExecSQL('DELETE FROM streams WHERE source_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM categories WHERE source_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM epg WHERE source_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM sources WHERE id=:id', [AId]);
+    FConn.Commit;
+  except
+    FConn.Rollback;
+    raise;
+  end;
   TouchLineup;
 end;
 
@@ -1207,7 +1239,8 @@ begin
   Result := TStreamItemList.Create(True);
   Q := NewQuery;
   try
-    Sql := 'SELECT * FROM streams' + StreamWhere(AFilter) + ' ORDER BY name COLLATE NOCASE';
+    // id as tiebreak: equal names in an undefined order made paging repeat or skip rows
+    Sql := 'SELECT * FROM streams' + StreamWhere(AFilter) + ' ORDER BY name COLLATE NOCASE, id';
     if AFilter.Limit > 0 then
       Sql := Sql + ' LIMIT :limit OFFSET :offset';
     Q.SQL.Text := Sql;
@@ -1296,11 +1329,13 @@ begin
       // exact case-insensitive name (conservative — avoids failing over to a wrong
       // channel). Same content type; skip self and empty URLs.
       Q.SQL.Text :=
-        'SELECT upstream_url FROM streams ' +
-        'WHERE id <> :id AND content_type = :ct AND upstream_url <> '''' AND (' +
-        '  (:tvg <> '''' AND tvg_id = :tvg) OR ' +
-        '  (:tvg = '''' AND name = :nm COLLATE NOCASE)) ' +
-        'ORDER BY source_id';
+        '''
+        SELECT s.upstream_url FROM streams s
+        LEFT JOIN sources src ON src.id = s.source_id
+        WHERE s.id <> :id AND s.content_type = :ct AND s.upstream_url <> ''
+          AND ((:tvg <> '' AND s.tvg_id = :tvg) OR (:tvg = '' AND s.name = :nm COLLATE NOCASE))
+          AND
+        ''' + SQL_SOURCE_ACTIVE + ' ORDER BY s.source_id';
       Q.ParamByName('id').AsInteger := AStreamItemId;
       Q.ParamByName('ct').AsWideString := Ct;
       Q.ParamByName('tvg').AsWideString := Tvg;
@@ -1308,7 +1343,7 @@ begin
       Q.Open;
       while not Q.Eof do
       begin
-        L.Add(Q.FieldByName('upstream_url').AsString);
+        L.Add(Q.Fields[0].AsString);
         Q.Next;
       end;
       Result := L.ToArray;
@@ -1329,13 +1364,93 @@ begin
   Result := nil;
   Q := NewQuery;
   try
+    if AStreamItemId >= EPISODE_ID_BASE then
+    begin
+      // a series episode: allowed when its series is on this list
+      Q.Open(
+        '''
+        SELECT e.upstream_episode_id AS eid, e.ext AS ext, s.id AS sid, s.source_id AS srcid,
+               s.name AS nm, src.url AS surl, src.username AS su, src.password AS sp
+        FROM series_episodes e
+        JOIN streams s ON s.id = e.stream_id
+        JOIN list_items i ON i.stream_item_id = s.id
+        LEFT JOIN sources src ON src.id = s.source_id
+        WHERE e.id = :e AND i.list_id = :l AND src.id IS NOT NULL AND
+        ''' + SQL_SOURCE_ACTIVE + ' LIMIT 1',
+        [AStreamItemId - EPISODE_ID_BASE, AListId]);
+      if not Q.IsEmpty then
+      begin
+        Result := TStreamItem.Create;
+        Result.Id := AStreamItemId;
+        Result.SourceId := Q.FieldByName('srcid').AsInteger;
+        Result.ContentType := ctSeries;
+        Result.UpstreamId := Q.FieldByName('eid').AsString;
+        Result.Name := Q.FieldByName('nm').AsString;
+        // built from the source's CURRENT url/credentials (a credential swap keeps working)
+        Result.UpstreamUrl := Format('%s/series/%s/%s/%s.%s',
+          [Q.FieldByName('surl').AsString.Trim.TrimRight(['/']), Q.FieldByName('su').AsString.Trim,
+           Q.FieldByName('sp').AsString.Trim, Result.UpstreamId,
+           System.StrUtils.IfThen(Q.FieldByName('ext').AsString = '', 'mp4', Q.FieldByName('ext').AsString)]);
+      end;
+      Exit;
+    end;
     Q.Open(
-      'SELECT s.* FROM streams s JOIN list_items i ON i.stream_item_id = s.id ' +
-      'WHERE i.list_id = :l AND s.id = :id LIMIT 1', [AListId, AStreamItemId]);
+      '''
+      SELECT s.* FROM streams s
+      JOIN list_items i ON i.stream_item_id = s.id
+      LEFT JOIN sources src ON src.id = s.source_id
+      WHERE i.list_id = :l AND s.id = :id AND
+      ''' + SQL_SOURCE_ACTIVE + ' LIMIT 1', [AListId, AStreamItemId]);
     if not Q.IsEmpty then
       Result := ReadStream(Q);
   finally
     Q.Free;
+  end;
+end;
+
+function TSQLiteStore.EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+  AExts: TArray<string>): TArray<Integer>;
+var
+  Ins, Sel: TFDQuery;
+  I: Integer;
+  Ext: string;
+begin
+  SetLength(Result, Length(AUpstreamIds));
+  if Length(AUpstreamIds) = 0 then
+    Exit;
+  Ins := NewQuery;
+  Sel := NewQuery;
+  try
+    Ins.SQL.Text := '''
+      INSERT INTO series_episodes(stream_id, upstream_episode_id, ext) VALUES(:s, :u, :x)
+      ON CONFLICT(stream_id, upstream_episode_id) DO UPDATE SET ext = excluded.ext
+      ''';
+    Sel.SQL.Text := 'SELECT id FROM series_episodes WHERE stream_id = :s AND upstream_episode_id = :u';
+    FConn.StartTransaction;
+    try
+      for I := 0 to High(AUpstreamIds) do
+      begin
+        Ext := '';
+        if I <= High(AExts) then
+          Ext := AExts[I];
+        Ins.ParamByName('s').AsInteger := ASeriesStreamId;
+        Ins.ParamByName('u').AsWideString := AUpstreamIds[I];
+        Ins.ParamByName('x').AsWideString := Ext;
+        Ins.ExecSQL;
+        Sel.ParamByName('s').AsInteger := ASeriesStreamId;
+        Sel.ParamByName('u').AsWideString := AUpstreamIds[I];
+        Sel.Open;
+        Result[I] := EPISODE_ID_BASE + Sel.Fields[0].AsInteger;
+        Sel.Close;
+      end;
+      FConn.Commit;
+    except
+      FConn.Rollback;
+      raise;
+    end;
+  finally
+    Ins.Free;
+    Sel.Free;
   end;
 end;
 
@@ -2053,6 +2168,17 @@ var
   OwnFuture: TDictionary<string, Byte>;
   C: TOutputChannel;
   HasOwn: Boolean;
+  Wanted: TList<string>;
+  Lo, Hi, J: Integer;
+
+  function Placeholders(N: Integer): string;
+  var
+    I: Integer;
+  begin
+    Result := '';
+    for I := 0 to N - 1 do
+      Result := Result + IfThen(I > 0, ',', '') + ':p' + I.ToString;
+  end;
 
   procedure AddKey(const AKey, AId: string; ASlot: Integer);
   var
@@ -2097,7 +2223,7 @@ begin
       'SELECT c.source_id AS sid, c.channel_id AS cid, c.display_name AS dn FROM epg_channels c ' +
       'WHERE c.source_id < 0 AND EXISTS (SELECT 1 FROM epg e WHERE e.channel_tvg_id = :pfx || c.channel_id ' +
       '  AND e.source_id = c.source_id AND e.stop_utc > :now) ' +
-      'ORDER BY c.source_id DESC', [EXTRA_EPG_PREFIX, NowS]);
+      'ORDER BY c.source_id DESC, c.channel_id', [EXTRA_EPG_PREFIX, NowS]);
     while not Q.Eof do
     begin
       K := EXTRA_EPG_PREFIX + Q.FieldByName('cid').AsWideString;
@@ -2118,13 +2244,36 @@ begin
     Q.Close;
     if PreferOwn.Count > 0 then
     begin
-      Q.Open('SELECT DISTINCT channel_tvg_id AS t FROM epg WHERE source_id > 0 AND stop_utc > :now', [NowS]);
-      while not Q.Eof do
-      begin
-        OwnFuture.AddOrSetValue(Q.FieldByName('t').AsWideString, 0);
-        Q.Next;
+      // only the ids of THIS list's prefer-own channels (not every guide id of every
+      // source: that was a full scan of the epg table per box request)
+      Wanted := TList<string>.Create;
+      try
+        for C in AChannels do
+          if (C.ContentType = ctLive) and PreferOwn.ContainsKey(C.SourceId) then
+            for K in C.EpgReadIds do
+              if (K <> '') and not Wanted.Contains(K) then
+                Wanted.Add(K);
+        Lo := 0;
+        while Lo < Wanted.Count do
+        begin
+          Hi := Min(Lo + 500, Wanted.Count) - 1;
+          Q.SQL.Text := 'SELECT DISTINCT channel_tvg_id AS t FROM epg WHERE source_id > 0 AND stop_utc > :now ' +
+            'AND channel_tvg_id IN (' + Placeholders(Hi - Lo + 1) + ')';
+          Q.ParamByName('now').AsWideString := NowS;
+          for J := Lo to Hi do
+            Q.ParamByName('p' + (J - Lo).ToString).AsWideString := Wanted[J];
+          Q.Open;
+          while not Q.Eof do
+          begin
+            OwnFuture.AddOrSetValue(Q.FieldByName('t').AsWideString, 0);
+            Q.Next;
+          end;
+          Q.Close;
+          Lo := Hi + 1;
+        end;
+      finally
+        Wanted.Free;
       end;
-      Q.Close;
     end;
 
     for C in AChannels do
@@ -2322,9 +2471,16 @@ end;
 
 procedure TSQLiteStore.DeleteList(AId: Integer);
 begin
-  FConn.ExecSQL('DELETE FROM list_items WHERE list_id=:id', [AId]);
-  FConn.ExecSQL('DELETE FROM list_groups WHERE list_id=:id', [AId]);
-  FConn.ExecSQL('DELETE FROM lists WHERE id=:id', [AId]);
+  FConn.StartTransaction;
+  try
+    FConn.ExecSQL('DELETE FROM list_items WHERE list_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM list_groups WHERE list_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM lists WHERE id=:id', [AId]);
+    FConn.Commit;
+  except
+    FConn.Rollback;
+    raise;
+  end;
 end;
 
 function TSQLiteStore.FindListByCredentials(const AUser, APass: string): TCustomList;
@@ -2451,8 +2607,15 @@ end;
 procedure TSQLiteStore.DeleteGroup(AId: Integer);
 begin
   // detach items from the group, then remove it
-  FConn.ExecSQL('UPDATE list_items SET custom_group_id=0 WHERE custom_group_id=:id', [AId]);
-  FConn.ExecSQL('DELETE FROM list_groups WHERE id=:id', [AId]);
+  FConn.StartTransaction;
+  try
+    FConn.ExecSQL('UPDATE list_items SET custom_group_id=0 WHERE custom_group_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM list_groups WHERE id=:id', [AId]);
+    FConn.Commit;
+  except
+    FConn.Rollback;
+    raise;
+  end;
   TouchLineup;
 end;
 
@@ -2534,7 +2697,9 @@ begin
       'FROM list_items i ' +
       'JOIN streams s ON s.id = i.stream_item_id ' +
       'LEFT JOIN list_groups g ON g.id = i.custom_group_id ' +
-      'WHERE i.list_id = :l ' +
+      'LEFT JOIN sources src ON src.id = s.source_id ' +
+      // a disabled source / content type is never offered to a box
+      'WHERE i.list_id = :l AND ' + SQL_SOURCE_ACTIVE + ' ' +
       // favorites first, then the manual group drag-order (sort_order>0), then any
       // un-positioned groups A→Z; WITHIN a group honour the operator's channel
       // numbers (drag/sort-by-Nr) — numbered first in number order, then unnumbered A→Z.

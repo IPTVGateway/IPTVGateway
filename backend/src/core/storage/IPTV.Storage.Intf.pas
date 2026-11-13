@@ -10,6 +10,11 @@ uses
   IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
   IPTV.Model.CustomList;
 
+const
+  /// Series episodes handed to boxes get ids from this base up (EPISODE_ID_BASE +
+  /// series_episodes.id), so they never collide with catalog stream ids.
+  EPISODE_ID_BASE = 1000000000;
+
 type
   /// A name-prefix discovered in a source's ingested streams, with how many
   /// streams carry it. Powers the "pick a filter prefix" UI when editing a source.
@@ -133,7 +138,15 @@ type
     /// Single stream by id, but ONLY if it is an item on the given list — so the
     /// credential-scoped output (redirect / proxy relay) can't serve a stream that
     /// isn't on the authenticated list. nil if absent or not on the list.
+    /// Also resolves a series EPISODE id (>= EPISODE_ID_BASE, see EnsureEpisodeIds)
+    /// when its series is on the list: the result then carries the episode's URL.
+    /// Streams of a disabled source / content type are never returned.
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
+    /// Stable box-facing ids for the upstream episodes of a series stream (Xtream
+    /// get_series_info): one row per (series, upstream episode id); AExts[i] is the
+    /// container extension. Returns EPISODE_ID_BASE + row id per input.
+    function EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+      AExts: TArray<string>): TArray<Integer>;
     /// Upstream URLs of the SAME channel from OTHER sources (stream failover):
     /// matched by tvg-id when the stream has one, else by exact (case-insensitive)
     /// name; same content type; excludes the stream itself and empty URLs.

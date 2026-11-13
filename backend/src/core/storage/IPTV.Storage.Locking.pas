@@ -70,6 +70,8 @@ type
     procedure MarkStreamsSeen(const AIds: TArray<Integer>);
     function LoadStreamById(AId: Integer): TStreamItem;
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
+    function EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+      AExts: TArray<string>): TArray<Integer>;
     function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
     function DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
     function LoadKnownTvgIds: TArray<TTvgIdInfo>;
@@ -507,6 +509,14 @@ begin
       FCacheLock.Release;
     end;
   end;
+end;
+
+function TLockingStore.EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+  AExts: TArray<string>): TArray<Integer>;
+begin
+  // only adds/updates episode rows: nothing cached can change
+  FWriteLock.Acquire;
+  try Result := FWrite.EnsureEpisodeIds(ASeriesStreamId, AUpstreamIds, AExts); finally FWriteLock.Release; end;
 end;
 
 function TLockingStore.LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;

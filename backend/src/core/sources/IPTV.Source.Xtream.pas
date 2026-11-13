@@ -14,6 +14,7 @@ unit IPTV.Source.Xtream;
 interface
 
 uses
+  System.JSON,
   IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Source.Intf;
 
 type
@@ -30,10 +31,15 @@ type
     function Read(const ASource: TSourceConfig): TSourceSnapshot;
   end;
 
+/// One player_api.php call on an upstream Xtream portal, e.g. AQuery =
+/// 'action=get_series_info&series_id=12'. Caller frees; nil when the answer
+/// isn't JSON. Raises on network errors.
+function XtreamApiGet(const ASource: TSourceConfig; const AQuery: string): TJSONValue;
+
 implementation
 
 uses
-  System.SysUtils, System.JSON, System.Generics.Collections,
+  System.SysUtils, System.Generics.Collections,
   System.NetEncoding, System.DateUtils, System.Math,
   IPTV.Model.Types, IPTV.Source.Http, IPTV.Core.Utils;
 
@@ -106,6 +112,15 @@ begin
       ASnapshot.Streams.Add(S); // own immediately so a GetValue type-mismatch can't leak it
       S.SourceId := ASource.Id;
       S.ContentType := TContentType(AContentType);
+      // radio arrives in get_live_streams, flagged stream_type=radio_streams
+      if (S.ContentType = ctLive) and SameText(Obj.GetValue<string>('stream_type', ''), 'radio_streams') then
+        S.ContentType := ctRadio;
+      // live and radio share one call: drop the type the operator switched off
+      if not ASource.EnabledFor(S.ContentType) then
+      begin
+        ASnapshot.Streams.Remove(S); // owned list: frees it
+        Continue;
+      end;
       S.UpstreamId := StreamId;
       S.Name := Obj.GetValue<string>('name', '');
       S.Logo := Obj.GetValue<string>('stream_icon', Obj.GetValue<string>('cover', ''));
@@ -176,6 +191,16 @@ begin
   end;
 end;
 
+function XtreamApiGet(const ASource: TSourceConfig; const AQuery: string): TJSONValue;
+begin
+  Result := TJSONObject.ParseJSONValue(HttpGetString(
+    Format('%s/player_api.php?username=%s&password=%s&%s',
+      [ASource.Url.Trim.TrimRight(['/']),
+       TNetEncoding.URL.Encode(ASource.Username.Trim),
+       TNetEncoding.URL.Encode(ASource.Password.Trim), AQuery]),
+    ASource.UserAgent, TimeoutPortalMs, ASource.Referer));
+end;
+
 procedure ApplyCategoryNames(ASnapshot: TSourceSnapshot);
 var
   Cat: TCategory;
@@ -193,7 +218,10 @@ begin
     begin
       Key := ContentTypeNames[S.ContentType] + '|' + S.CategoryUpstreamId;
       if Names.TryGetValue(Key, N) then
-        S.GroupTitle := N;
+        S.GroupTitle := N
+      else if (S.ContentType = ctRadio) and
+        Names.TryGetValue(ContentTypeNames[ctLive] + '|' + S.CategoryUpstreamId, N) then
+        S.GroupTitle := N; // radio sits in the live categories
     end;
   finally
     Names.Free;

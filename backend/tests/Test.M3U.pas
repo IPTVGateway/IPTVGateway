@@ -22,12 +22,13 @@ type
     [Test] procedure IdStaysDistinctPerStreamAcrossSwap;
     [Test] procedure TolerantParserSkipsJunkAndKeepsGoodEntries;
     [Test] procedure DropsExtinfWithoutUrlLine;
+    [Test] procedure GuessesContentTypeFromUrlThenWholeWords;
   end;
 
 implementation
 
 uses
-  IPTV.Model.Catalog, IPTV.Source.M3U;
+  System.SysUtils, IPTV.Model.Types, IPTV.Model.Catalog, IPTV.Source.M3U;
 
 function Parse(const AContent: string): TSourceSnapshot;
 var
@@ -237,6 +238,42 @@ begin
     Assert.AreEqual<Integer>(1, Snap.Streams.Count, 'only the channel with a URL survives');
     Assert.AreEqual('Real Channel', Snap.Streams[0].Name);
     Assert.AreEqual('http://provider/real.ts', Snap.Streams[0].UpstreamUrl);
+  finally
+    Snap.Free;
+  end;
+end;
+
+// the /live/ /movie/ /series/ URL path wins; group names only count as whole words
+procedure TM3UTests.GuessesContentTypeFromUrlThenWholeWords;
+var
+  Snap: TSourceSnapshot;
+
+  function TypeOf(const AName: string): TContentType;
+  var
+    S: TStreamItem;
+  begin
+    for S in Snap.Streams do
+      if S.Name = AName then
+        Exit(S.ContentType);
+    raise Exception.Create('missing ' + AName);
+  end;
+
+begin
+  Snap := Parse(
+    '#EXTM3U'#10 +
+    '#EXTINF:-1 group-title="NL| FILM",Film1 Action'#10 + 'http://p:80/live/u/p/1.ts'#10 +
+    '#EXTINF:-1 group-title="VODAFONE SPORT",Sport X'#10 + 'http://p:80/x/2.ts'#10 +
+    '#EXTINF:-1 group-title="Films 2024",Some Movie'#10 + 'http://p:80/x/3.mp4'#10 +
+    '#EXTINF:-1 group-title="NL",Other Movie'#10 + 'http://p:80/movie/u/p/4.mkv'#10 +
+    '#EXTINF:-1 group-title="Radio NL",Radio 1'#10 + 'http://p:80/live/u/p/5.ts'#10 +
+    '#EXTINF:-1 group-title="Netflix Series",Ep 1'#10 + 'http://p:80/x/6.mp4'#10);
+  try
+    Assert.AreEqual(Ord(ctLive), Ord(TypeOf('Film1 Action')), 'live URL beats "FILM" group');
+    Assert.AreEqual(Ord(ctLive), Ord(TypeOf('Sport X')), '"VODAFONE" is not "vod"');
+    Assert.AreEqual(Ord(ctMovie), Ord(TypeOf('Some Movie')));
+    Assert.AreEqual(Ord(ctMovie), Ord(TypeOf('Other Movie')), '/movie/ URL');
+    Assert.AreEqual(Ord(ctRadio), Ord(TypeOf('Radio 1')));
+    Assert.AreEqual(Ord(ctSeries), Ord(TypeOf('Ep 1')));
   finally
     Snap.Free;
   end;

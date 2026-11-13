@@ -174,7 +174,10 @@ begin
       Cfg := TAppConfig.Load(ExeDir + 'config.json'); // template or defaults
     // Keep the DB off the (read-only) exe dir unless the operator set an explicit path.
     if SameText(Cfg.DatabasePath, ExeDefaultDbPath) or (Cfg.DatabasePath = '') then
-      Cfg.DatabasePath := SvcDefaultDbPath;
+      Cfg.DatabasePath := SvcDefaultDbPath
+    else if TPath.IsRelativePath(Cfg.DatabasePath) then
+      // a relative path would land in the service's working dir (System32)
+      Cfg.DatabasePath := TPath.Combine(AppDataRoot, Cfg.DatabasePath);
     FRunner := TAppRunner.Create(Cfg, SvcLog, SvcConfigPath); // worker thread starts the app
     SvcLog(Format('IPTV Gateway service starting on port %d (HTTPS=%s). Data root: %s',
       [Cfg.HttpPort, BoolToStr(Cfg.UseHttps, True), AppDataRoot]));

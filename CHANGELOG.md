@@ -39,6 +39,58 @@ Fixes from a five-part bug hunt (output, storage, ingest/EPG, web app, app/secur
   another list (stale callback).
 - Web app: closing the include/exclude filter dialog saves only the filters, not
   other unsaved edits in the source form.
+- **Series** play on boxes: `get_series_info` now returns the seasons and episodes.
+  For Xtream sources they come from the provider; each episode gets a stable id
+  of our own that only resolves through a bouquet that has the series. An M3U
+  series item is offered as one episode. **Movies**: `get_vod_info` answers, and
+  `get_vod_streams` carries the real `container_extension`. A movie or episode
+  keeps its own container (`.mkv` stays `.mkv`); only live follows the box's
+  `.ts`/`.m3u8` choice.
+- A **disabled source**, or a content type switched off on a source, is no longer
+  offered to boxes (lists, redirects, relay, failover). The channels stay in the
+  bouquet and come back when it is switched on again.
+- Catalog with **"All sources"**: opening a group shows that group's streams from
+  its own source. A group with an empty id (M3U entries without a group) opens too.
+- Proxy mode with HTTPS: boxes are told the relay port is plain `http`
+  (`https_port=0`), so streams connect.
+- The relay also serves catch-up in the query form (`streaming/timeshift.php`).
+- Stream failover (proxy mode) now also switches source when the provider answers
+  with an HTTP error (4xx/5xx), not only when it can't be reached.
+- **Radio**: Xtream `radio_streams` are recognised as radio (and follow the radio
+  switch of the source). Radio channels on a bouquet are listed for boxes with the
+  live channels, the way Xtream portals do it.
+- M3U content type: the `/live/`, `/movie/` and `/series/` URL path decides first,
+  and group names count as whole words only. "NL| FILM" (live) and "VODAFONE" are
+  no longer taken for movies.
+- Dummy EPG no longer fails at the spring daylight-saving change (blocks are
+  computed in UTC).
+- XMLTV output drops control characters that strict guide parsers reject.
+- XMLTV input: single-quoted attributes, a time zone without a space
+  (`20261113120000+0100`), encoded channel ids (`&amp;`) and programmes without a
+  `stop` (they end at the next programme) are understood.
+- Extra EPG sources are filtered while reading, so a big guide no longer sits in
+  memory as a whole.
+- Extra EPG matching: an id's last part is only dropped when it is a real country
+  code (`bbc.one` stays `bbcone`, `sport.hd` stays `sporthd`). Ties between guide
+  channels are resolved deterministically. The "prefer own EPG" check reads only
+  the guide ids of the bouquet's own channels.
+- Plex / HDHomeRun and relay URLs encode the bouquet login. An empty login is
+  written as `-`, instead of an empty path segment (`/live///12`) that players
+  drop. `lineup.post` also accepts POST.
+- Catalog paging is stable with equal names (no repeated or skipped rows).
+- Deleting a source, bouquet or group happens in one transaction. Deleting a
+  source also removes its guide channel list.
+- Windows Service: a relative `databasePath` is placed under
+  `C:\ProgramData\IPTVGateway`, not in the service's working folder.
+- Web app: drag-reordering a channel **down** drops it after the target row, so
+  dropping on the next row moves it.
+- Web app: a dialog only closes on a click that started on the backdrop, so
+  selecting text and releasing outside no longer closes it.
+- Web app: the Log tab skips a poll while the previous one is still running, so no
+  duplicate lines.
+- Web app: after a settings import the sources, bouquets and the open bouquet are
+  reloaded.
+- Build: the WSL Docker step fails properly when `docker save` fails.
 
 ## [1.2.35] - 2026-11-13
 

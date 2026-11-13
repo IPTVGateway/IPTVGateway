@@ -67,13 +67,15 @@ type
       [QueryParam('search')] ASearch: string; [QueryParam('prefix')] APrefix: string;
       [QueryParam('category')] ACategory: string;
       [QueryParam('limit')] ALimit: Integer; [QueryParam('offset')] AOffset: Integer;
-      [QueryParam('includeHidden')] AIncludeHidden: string): TJSONArray;
+      [QueryParam('includeHidden')] AIncludeHidden: string;
+      [QueryParam('inCategory')] AInCategory: string): TJSONArray;
     [GET, Path('catalog/streams/count'), Produces(TMediaType.APPLICATION_JSON)]
     function CountStreams([QueryParam('sourceId')] ASourceId: Integer;
       [QueryParam('type')] AType: string; [QueryParam('onlyNew')] AOnlyNew: string;
       [QueryParam('search')] ASearch: string; [QueryParam('prefix')] APrefix: string;
       [QueryParam('category')] ACategory: string;
-      [QueryParam('includeHidden')] AIncludeHidden: string): TJSONObject;
+      [QueryParam('includeHidden')] AIncludeHidden: string;
+      [QueryParam('inCategory')] AInCategory: string): TJSONObject;
     [POST, Path('catalog/categories/seen'), Consumes(TMediaType.APPLICATION_JSON)]
     procedure MarkCategoriesSeen([BodyParam] ABody: TJSONObject);
     [POST, Path('catalog/streams/seen'), Consumes(TMediaType.APPLICATION_JSON)]
@@ -229,7 +231,8 @@ begin
 end;
 
 function MakeFilter(ASourceId: Integer; const AType, AOnlyNew, ASearch, APrefix, ACategory: string;
-  ALimit: Integer = 0; AOffset: Integer = 0; AIncludeHidden: Boolean = False): TCatalogFilter;
+  ALimit: Integer = 0; AOffset: Integer = 0; AIncludeHidden: Boolean = False;
+  AInCategory: Boolean = False): TCatalogFilter;
 begin
   Result := Default(TCatalogFilter);
   Result.SourceId := ASourceId;
@@ -241,7 +244,9 @@ begin
   Result.OnlyNew := IsTrue(AOnlyNew);
   Result.Search := ASearch;
   Result.Prefix := APrefix;
-  if ACategory <> '' then
+  // AInCategory: the drilled group has an EMPTY upstream id (an M3U group-less
+  // bucket) - an absent and an empty query param look the same otherwise
+  if (ACategory <> '') or AInCategory then
   begin
     Result.HasCategory := True;
     Result.CategoryUpstreamId := ACategory;
@@ -510,13 +515,13 @@ begin
 end;
 
 function TAdminResource.GetStreams(ASourceId: Integer; AType, AOnlyNew, ASearch, APrefix, ACategory: string;
-  ALimit, AOffset: Integer; AIncludeHidden: string): TJSONArray;
+  ALimit, AOffset: Integer; AIncludeHidden, AInCategory: string): TJSONArray;
 var
   L: TStreamItemList;
 begin
   RequireApp;
   L := App.Store.LoadStreams(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, ACategory,
-    ALimit, AOffset, IsTrue(AIncludeHidden)));
+    ALimit, AOffset, IsTrue(AIncludeHidden), IsTrue(AInCategory)));
   try
     Result := StreamsToJson(L);
   finally
@@ -524,12 +529,13 @@ begin
   end;
 end;
 
-function TAdminResource.CountStreams(ASourceId: Integer; AType, AOnlyNew, ASearch, APrefix, ACategory, AIncludeHidden: string): TJSONObject;
+function TAdminResource.CountStreams(ASourceId: Integer; AType, AOnlyNew, ASearch, APrefix, ACategory,
+  AIncludeHidden, AInCategory: string): TJSONObject;
 begin
   RequireApp;
   Result := TJSONObject.Create.AddPair('count',
     TJSONNumber.Create(App.Store.CountStreams(MakeFilter(ASourceId, AType, AOnlyNew, ASearch, APrefix, ACategory,
-      0, 0, IsTrue(AIncludeHidden)))));
+      0, 0, IsTrue(AIncludeHidden), IsTrue(AInCategory)))));
 end;
 
 procedure TAdminResource.MarkCategoriesSeen(ABody: TJSONObject);

@@ -65,8 +65,11 @@ type
     [Context] Response: IMARSResponse;
   public
     // Plex/HDHomeRun hits this to (re)scan; we have nothing to scan, just say OK.
+    // Real tuners take POST (lineup.post?scan=start); some clients use GET.
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Scan: TJSONObject;
+    [POST, Produces(TMediaType.APPLICATION_JSON)]
+    function ScanPost: TJSONObject;
   end;
 
 implementation
@@ -128,7 +131,7 @@ function M3uProxyPrefix(const AList: TCustomList): string;
 begin
   if App.Config.PlexM3uProxy then
     Result := Format('http://%s:%d/live/%s/%s/',
-      [PlexHost, App.Config.ProxyPort, AList.OutputUsername, AList.OutputPassword])
+      [PlexHost, App.Config.ProxyPort, PathCred(AList.OutputUsername), PathCred(AList.OutputPassword)])
   else
     Result := ''; // BuildM3U then emits the raw upstream URL
 end;
@@ -138,10 +141,10 @@ function HdhrStreamUrl(const AList: TCustomList; AStreamItemId: Integer): string
 begin
   if App.Config.PlexHdhrProxy then
     Result := Format('http://%s:%d/live/%s/%s/%d.ts',
-      [PlexHost, App.Config.ProxyPort, AList.OutputUsername, AList.OutputPassword, AStreamItemId])
+      [PlexHost, App.Config.ProxyPort, PathCred(AList.OutputUsername), PathCred(AList.OutputPassword), AStreamItemId])
   else
     Result := Format('%s/live/%s/%s/%d',
-      [BaseUrl, AList.OutputUsername, AList.OutputPassword, AStreamItemId]);
+      [BaseUrl, PathCred(AList.OutputUsername), PathCred(AList.OutputPassword), AStreamItemId]);
 end;
 
 { TPlexPlaylistResource }
@@ -299,6 +302,11 @@ begin
     Exit(TJSONObject.Create);
   end;
   Result := TJSONObject.Create.AddPair('ScanInProgress', TJSONNumber.Create(0));
+end;
+
+function THdhrLineupPostResource.ScanPost: TJSONObject;
+begin
+  Result := Scan;
 end;
 
 initialization

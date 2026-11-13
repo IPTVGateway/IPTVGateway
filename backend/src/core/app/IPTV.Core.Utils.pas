@@ -647,6 +647,14 @@ begin
   Result := EpgKeyAlias(string.Join('', Keep));
 end;
 
+const
+  EPG_COUNTRY_CODES: array[0..63] of string = (
+    'nl', 'be', 'de', 'uk', 'gb', 'fr', 'es', 'it', 'pt', 'us', 'ca', 'au', 'at', 'ch',
+    'pl', 'tr', 'gr', 'se', 'no', 'dk', 'fi', 'ie', 'ro', 'hu', 'cz', 'sk', 'hr', 'rs',
+    'si', 'bg', 'al', 'ar', 'br', 'mx', 'in', 'pk', 'ru', 'ua', 'il', 'ae', 'sa', 'eg',
+    'ma', 'tn', 'dz', 'nz', 'za', 'ph', 'id', 'my', 'th', 'vn', 'jp', 'kr', 'hk', 'sg',
+    'lu', 'lt', 'lv', 'ee', 'cy', 'mk', 'ba', 'xk');
+
 function EpgIdKey(const AId: string): string;
 var
   S: string;
@@ -655,9 +663,10 @@ begin
   S := AId.Trim.ToLower;
   if S.StartsWith('extra:') then
     S := S.Substring(6);
-  // drop a trailing country suffix: "NPO.1.nl" / "npo1.nl" / "bbc.one.uk"
+  // drop a trailing COUNTRY suffix: "NPO.1.nl" / "npo1.nl" / "bbc.one.uk" - only
+  // real country codes ("bbc.one" or "sport.hd" keep their last part)
   Dot := S.LastIndexOf('.');
-  if (Dot > 0) and (S.Length - Dot - 1 in [2, 3]) then
+  if (Dot > 0) and MatchText(S.Substring(Dot + 1), EPG_COUNTRY_CODES) then
     S := S.Substring(0, Dot);
   Result := '';
   for I := 1 to Length(S) do

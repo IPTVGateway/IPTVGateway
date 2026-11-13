@@ -1,7 +1,7 @@
 # Third-party notices
 
-IPTV Gateway's own code is MIT-licensed (see [LICENSE](LICENSE)). It vendors or
-depends on the following third-party software, each under its own licence:
+IPTV Gateway's own code is MIT-licensed (see [LICENSE](LICENSE)). It depends on the
+following third-party software (MARS as a git submodule), each under its own licence:
 
 | Component | Where | Licence |
 |---|---|---|

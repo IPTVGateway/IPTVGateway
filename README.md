@@ -188,7 +188,7 @@ backend/
   src/host_winsvc/   native Windows Service
   src/host_vcl/      development host (VCL form)
   tests/             DUnitX test suite
-  3thParty/          vendored MARS-Curiosity (MPL 2.0)
+  3thParty/MARS      MARS-Curiosity (MPL 2.0), git submodule
 frontend/            admin web app
 deploy/              Dockerfile + Unraid template, systemd unit, Linux64 sysroot
 docs/                user guide
@@ -222,6 +222,15 @@ build a bouquet with its own login, set up the guide and connect your box.
 ### Build from source
 
 Requirements: **RAD Studio 13** (Delphi 13.1) and **Node.js 20+**.
+
+The REST framework (MARS-Curiosity) is a **git submodule**, so clone recursively:
+
+```bash
+git clone --recursive https://github.com/IPTVGateway/IPTVGateway.git
+# already cloned?  git submodule update --init --recursive --depth 1
+```
+
+(The "Download ZIP" archives on GitHub don't include submodules.)
 
 ```powershell
 # backend: open backend/src/IPTVGateway_Group.groupproj in RAD Studio, or:

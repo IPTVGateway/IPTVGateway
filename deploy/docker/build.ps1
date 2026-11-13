@@ -102,6 +102,14 @@ if ($Version) { Write-Host "    version: $Version" -ForegroundColor DarkGray }
 if (-not $SkipBuild) {
   if (-not (Test-Path $rsvars)) { throw "rsvars.bat not found at $rsvars - pass -Bds <RAD Studio dir>" }
   if (-not (Test-Path $dproj))  { throw "project not found: $dproj" }
+  # MARS (+ its delphi-jose-jwt) is a git submodule: empty after a clone without --recursive
+  $marsCheck = @('backend\3thParty\MARS\Source\MARS.Core.Engine.pas',
+                 'backend\3thParty\MARS\ThirdParty\delphi-jose-jwt\Source\JOSE\JOSE.Core.JWT.pas')
+  foreach ($m in $marsCheck) {
+    if (-not (Test-Path (Join-Path $repo $m))) {
+      throw "MARS submodule missing ($m). Run:  git submodule update --init --recursive --depth 1"
+    }
+  }
   Write-Host "==> Building Linux64 ($Config) ..." -ForegroundColor Cyan
   # The Delphi linker records the path of its temp file in the binary; with the
   # default %TEMP% that is C:\Users\<you>\AppData\Local\Temp - i.e. your Windows

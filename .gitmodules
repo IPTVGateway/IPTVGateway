@@ -1,0 +1,4 @@
+[submodule "backend/3thParty/MARS"]
+	path = backend/3thParty/MARS
+	url = https://github.com/andrea-magni/MARS.git
+	shallow = true

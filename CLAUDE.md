@@ -105,7 +105,7 @@ TAppContext.Start:
 
 ### Two HTTP surfaces, one MARS engine (mounted at site root, `BasePath=''`)
 
-REST framework is **MARS-Curiosity** (vendored in `backend/3thParty/MARS`).
+REST framework is **MARS-Curiosity** (git submodule `backend/3thParty/MARS`).
 Resources self-register via `MARSRegister` in their `initialization`; the engine
 discovers them with the `IPTV.Api.Mars.*` wildcard. `IPTV.Api.Server` sets up the
 engine + `TMARShttpServerIndy` and keeps the `Create(config)/Start/Stop` surface.
@@ -165,8 +165,8 @@ When extending, keep the ordering rule and the "no video through us" rule.
 
 > Requires RAD Studio 13. Run dependency install before first build.
 
-**Backend** (`backend/`): MARS-Curiosity is vendored in
-`3thParty/MARS` and already on each host project's unit + include search
+**Backend** (`backend/`): MARS-Curiosity is a git submodule in
+`3thParty/MARS` (clone with `--recursive`) and already on each host project's unit + include search
 path — no package install needed. Copy `config.sample.json` to `config.json`
 next to the exe and edit it.
 Build via the IDE (open `IPTVGateway_Group.groupproj`, or a `.dproj` directly) or
@@ -258,9 +258,9 @@ All four `.dproj` exist and set, in their Base PropertyGroup:
 - `DCC_ExeOutput` = a shared repo-root `.Output\$(Platform)\$(Config)` (relative
   prefix per project depth: `..\..\..` for `host_*`, `..\..` for `tests`)
 - `DCC_UnitSearchPath` (+ `DCC_IncludePath`) for the `core` subfolders and the
-  vendored MARS `Source` (host projects only; tests don't need MARS).
+  MARS submodule's `Source` (host projects only; tests don't need MARS).
 
-MARS is vendored, so no package install is needed. `IPTVGateway_Group.groupproj`
+MARS comes as a git submodule, so no package install is needed. `IPTVGateway_Group.groupproj`
 in `backend/src` groups the projects; you can also open a `.dproj` directly.
 `$(ProductVersion)` resolves to `37.0` in the IDE (RAD Studio 13.1) but is empty
 on a bare `dcc64`/`msbuild` CLI run — pass `/p:ProductVersion=37.0` for CLI builds.
@@ -384,16 +384,17 @@ unique, else fall back to the running position 1,2,3 (Plex rejects duplicates).
   when it has upcoming programmes; the extra guide only fills gaps.
 - Several providers per tvg-id: `KeepOneSourcePerChannel` (most upcoming wins).
 
-## Vendored MARS 2.0.3 + upgrades (1.2.33)
+## MARS 2.0.3 as a git submodule
 
-- MARS lives in `backend/3thParty/MARS` (no version in the folder name, so the
-  `.dproj` paths never change). Only `Source/`, `ThirdParty/mORMot`,
-  `ThirdParty/delphi-jose-jwt` (v4: search paths `Source`, `Source\Common`,
-  `Source\JOSE`) are kept. Pins + what was taken: `backend/3thParty/DEPENDENCIES.md`.
-- Upgrade ONLY with `tools/update-mars.ps1 -Tag v.x.y.z` (fetches the pinned jose
-  submodule commit too - it is empty in a release tarball), read the printed
-  upgrade notes, rebuild Win32 + Linux64 (clear the project's DCU folder
-  first so no stale MARS DCUs are linked), commit the upgrade on its own.
+- `backend/3thParty/MARS` is a **shallow git submodule** of andrea-magni/MARS, pinned
+  to a release tag; its own submodule delphi-jose-jwt (v4: search paths `Source`,
+  `Source\Common`, `Source\JOSE`) is needed for Linux64. Clone with `--recursive`
+  (or `git submodule update --init --recursive --depth 1`); `build.ps1` refuses to
+  build when the folder is empty. Pins: `backend/3thParty/DEPENDENCIES.md`.
+- Upgrade ONLY with `tools/update-mars.ps1 -Tag v.x.y.z` (checkout tag + nested
+  submodules, updates DEPENDENCIES.md, prints the upgrade notes), clear the
+  project's DCU folder, rebuild Win32 + Linux64, run the tests, and commit the new
+  submodule pointer on its own.
 - MARS 2.x: invalid/empty typed params give 400 -> box-facing params are `string`
   (e.g. player_api `limit`); string results need `[Produces]` (all ours have it).
 

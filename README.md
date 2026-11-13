@@ -23,7 +23,35 @@ actually chose.
 
 ---
 
+## Why
+
+- **Set up once, use on every box.** You arrange your channels, groups and
+  numbers once, on one server. Every box that logs in with the same bouquet
+  credentials gets exactly the same layout: same order, same numbers, same names,
+  same guide. Add a new box by entering one server address, username and password.
+- **Your bouquet replaces box favourites.** You no longer build a favourites list
+  on each box (and lose it when you reset the app or swap boxes). The bouquet
+  shows only the channels you chose, in your order, so it works like a favourites
+  list on every device.
+- **One change, everywhere.** Rename a channel, move it, or swap it to a better
+  quality or another provider, and every box picks it up on its next refresh.
+  Nothing has to be configured on the box again.
+- **Different people, different line-ups.** Make several bouquets on the same
+  sources, for example "Living room", "Kids" and "Plex". Each bouquet has its own
+  login.
+
 ## Features
+
+**Bouquets and logins**
+- **Multiple bouquets (output lists)** on the same catalog. Each one has its own
+  groups, channel selection, names and numbering.
+- **Each bouquet has its own username and password**, and a box logs in with
+  them as if the gateway were a normal Xtream provider. Boxes that share a login
+  share the layout. A login can be left empty: the bouquet then becomes the
+  default for boxes that send no or unknown credentials.
+- Bouquets can be switched on or off. You choose which one Plex/Jellyfin gets.
+- Settings export and import: configuration, sources, bouquets and groups in one
+  file, handy for moving to another machine.
 
 **Sources**
 - Xtream Codes portals and M3U / M3U_plus playlists, merged into one catalog.
@@ -36,9 +64,17 @@ actually chose.
 - Include and exclude name filters (prefix/suffix) that never delete anything.
 - Prefix/suffix stripping, including decorative letters such as `ʀᴀᴡ` and `ʳᵉᶜ`.
 - Change tracking: new channels and groups are flagged until you mark them seen.
-- Your own groups (★ favourites on top), drag-and-drop ordering and A→Z sorting.
+- Your own groups, drag-and-drop ordering of groups and channels (also on a
+  tablet), and A→Z sorting. Mark groups ★ favourite to pin them to the top on
+  every box.
+- Mix providers within a group, for example NPO from one provider and sport from
+  another. The box sees one line-up and never knows which provider is behind a
+  channel.
 - Per channel you can set its name, logo, number, group and tvg-id (EPG).
-- **Bouquet renumbering**: every group starts on its own hundred (100, 200…).
+- **Bouquet renumbering**: every group starts on its own hundred (100, 200…), so
+  channel numbers are the same on every box and in Plex.
+- Clean-up tools: remove duplicates, empty a group, and clean names after the fact.
+- **EPG-id suggestions**: matches channels without a guide to the right tvg-id.
 - **Quality variants**: swap a whole group to another quality or provider
   (RAW / HD / UHD / 4K+…) and keep the numbers and overrides.
 - **📊 Quality probe**: measures every variant of a channel (codec, resolution,

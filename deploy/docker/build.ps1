@@ -65,18 +65,21 @@ if (-not $PSBoundParameters.ContainsKey('PublishTo')) {
   else { $PublishTo = '' }
 }
 # registry push by default when deploy\docker\push-registry.local.txt (gitignored)
-# names a repo, e.g. ghcr.io/youruser/iptv-gateway ('docker login' done once).
-# Unraid then sees "update ready" and updates in one click.
+# names one repo PER LINE, e.g. ghcr.io/youruser/iptv-gateway and youruser/iptv-gateway
+# (Docker Hub); 'docker login' to each done once. The FIRST line is the one written
+# into the Unraid template of the bundle. Unraid then sees "update ready".
 # NB: PowerShell variables are case-INSENSITIVE, so the registry repo lives in
 # $Registry - '$Repo' would be overwritten by '$repo' (the repo root) below.
-$Registry = $Repo
+$Registries = @()
+if ($Repo) { $Registries = @($Repo) }
 if (-not $PSBoundParameters.ContainsKey('Repo')) {
   $localRepo = Join-Path $here 'push-registry.local.txt'
   if (Test-Path $localRepo) {
-    $Registry = (Get-Content $localRepo -TotalCount 1).Trim()
-    if ($Registry -and -not $PSBoundParameters.ContainsKey('Push')) { $Push = [switch]$true }
+    $Registries = @(Get-Content $localRepo | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+    if ($Registries.Count -gt 0 -and -not $PSBoundParameters.ContainsKey('Push')) { $Push = [switch]$true }
   }
 }
+$Registry = if ($Registries.Count -gt 0) { $Registries[0] } else { '' }
 $repo = (Resolve-Path (Join-Path $here '..\..')).Path
 $dproj = Join-Path $repo 'backend\src\host_service\IPTVPlayService.dproj'
 $rsvars = Join-Path $Bds 'bin\rsvars.bat'
@@ -249,8 +252,11 @@ function Publish-Bundle($srcDir, $destDir) {
 
 # tag + push to the registry (docker runs natively or in WSL). Assumes 'docker login' done.
 function Push-Image {
-  $tags = @("$Registry`:latest")
-  if ($Version) { $tags += "$Registry`:$Version" }
+  $tags = @()
+  foreach ($r in $Registries) {
+    $tags += "$r`:latest"
+    if ($Version) { $tags += "$r`:$Version" }
+  }
   foreach ($t in $tags) {
     Write-Host "==> push $t ..." -ForegroundColor Cyan
     if (Get-Command docker -ErrorAction SilentlyContinue) {

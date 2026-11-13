@@ -208,7 +208,7 @@ See [deploy/docker/README.md](deploy/docker/README.md) and
 
 **Docker:**
 ```bash
-docker pull ghcr.io/iptvgateway/iptvgateway:latest
+docker pull ghcr.io/iptvgateway/iptvgateway:latest   # or: docker pull mvanrijnen/iptvgateway:latest (Docker Hub)
 docker compose -f deploy/docker/docker-compose.yml up -d
 # admin UI: http://<host>:7777/
 ```

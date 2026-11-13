@@ -2335,8 +2335,10 @@ begin
   Q := NewQuery;
   try
     if AUser = '' then
-      // optional credentials: fall back to the single enabled default list
-      Q.Open('SELECT * FROM lists WHERE enabled=1 ORDER BY id LIMIT 1')
+      // optional credentials: an empty login only reaches a bouquet that itself
+      // has NO login - never one that is protected by a username/password
+      Q.Open('SELECT * FROM lists WHERE enabled=1 AND COALESCE(output_username,'''')='''' ' +
+        'ORDER BY id LIMIT 1')
     else
       Q.Open('SELECT * FROM lists WHERE enabled=1 AND output_username=:u AND output_password=:p LIMIT 1',
         [AUser, APass]);

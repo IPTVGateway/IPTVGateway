@@ -36,6 +36,7 @@ type
     [Test] procedure Timeshift_UrlShiftsStartToPortalClock;
     [Test] procedure XtreamBase64_IsOneLine;
     [Test] procedure EpgKeys_MatchProviderAndGuideNames;
+    [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
 
 implementation
@@ -305,6 +306,18 @@ begin
   Assert.AreEqual('rtlz', EpgNameKey('NL| RTL Z'), 'single letter kept');
   Assert.AreEqual('bbcnl', EpgNameKey('BBC NL 8K'), 'trailing NL is part of the name');
   Assert.AreEqual('animalplanet', EpgNameKey('ANIMAL PLANET '#$0280#$1D00#$1D21' (S)'));
+end;
+
+procedure TUtilsTests.MaskUrlSecrets_HidesCredentials;
+begin
+  Assert.AreEqual('http://p.tv/player_api.php?username=***&password=***&action=x',
+    MaskUrlSecrets('http://p.tv/player_api.php?username=bob&password=s3cr3t&action=x'));
+  Assert.AreEqual('http://p.tv/live/***/***/123.ts', MaskUrlSecrets('http://p.tv/live/bob/s3cr3t/123.ts'));
+  Assert.AreEqual('http://p.tv/timeshift/***/***/60/2026-11-12:20-30/9.ts',
+    MaskUrlSecrets('http://p.tv/timeshift/bob/s3cr3t/60/2026-11-12:20-30/9.ts'));
+  Assert.AreEqual('http://p.tv/xmltv.php?USERNAME=***&Password=***',
+    MaskUrlSecrets('http://p.tv/xmltv.php?USERNAME=bob&Password=x'), 'case-insensitive');
+  Assert.AreEqual('http://p.tv/guide.xml', MaskUrlSecrets('http://p.tv/guide.xml'), 'nothing to hide');
 end;
 
 initialization

@@ -90,6 +90,11 @@ function EpgNameKey(const AName: string): string;
 /// separators removed: "NPO.1.nl" and "npo1.nl" -> "npo1".
 function EpgIdKey(const AId: string): string;
 
+/// A URL with credentials hidden, for messages/logs: query keys username/password/
+/// pass/pw/user/token/auth/mac -> ***, and the Xtream path form
+/// /live|movie|series|timeshift/USER/PASS/ -> /live/***/***/.
+function MaskUrlSecrets(const AUrl: string): string;
+
 /// Base64 of the UTF-8 text on ONE line, as Xtream portals send EPG title and
 /// description. The RTL's TNetEncoding.Base64 wraps every 76 chars with CR/LF,
 /// which some players reject (empty per-channel EPG on Formuler/MyTVOnline).
@@ -121,7 +126,7 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Character, System.DateUtils,
-  System.Generics.Collections, System.Hash, System.IOUtils, System.NetEncoding, System.StrUtils
+  System.Generics.Collections, System.Hash, System.IOUtils, System.NetEncoding, System.StrUtils, System.RegularExpressions
 {$IFDEF MSWINDOWS}
   , Winapi.Windows, Winapi.PsAPI
 {$ENDIF}
@@ -661,6 +666,14 @@ begin
   Result := EpgKeyAlias(Result);
 end;
 
+
+function MaskUrlSecrets(const AUrl: string): string;
+begin
+  Result := TRegEx.Replace(AUrl, '(/(live|movie|series|timeshift)/)[^/?#]+/[^/?#]+/', '$1***/***/',
+    [roIgnoreCase]);
+  Result := TRegEx.Replace(Result, '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&#]*', '$1***',
+    [roIgnoreCase]);
+end;
 
 function XtreamBase64(const S: string): string;
 var

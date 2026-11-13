@@ -21,19 +21,21 @@ if (-not $RepoRoot) { $RepoRoot = (Resolve-Path (Join-Path (Split-Path -Parent $
 $mars = Join-Path $RepoRoot 'backend\3thParty\MARS'
 $deps = Join-Path $RepoRoot 'backend\3thParty\DEPENDENCIES.md'
 
-function Git { git @args; if ($LASTEXITCODE -ne 0) { throw "git $($args -join ' ') failed" } }
+# NB: PowerShell command names are case-insensitive - a function called 'Git'
+# would shadow (and recursively call) git.exe itself.
+function Invoke-Git { & git.exe @args; if ($LASTEXITCODE -ne 0) { throw "git $($args -join ' ') failed" } }
 
 if (-not (Test-Path (Join-Path $mars '.git'))) {
   Write-Host '==> submodule not initialised yet - initialising' -ForegroundColor Cyan
-  Git -C $RepoRoot submodule update --init --recursive --depth 1
+  Invoke-Git -C $RepoRoot submodule update --init --recursive --depth 1
 }
 
 Write-Host "==> MARS $Tag" -ForegroundColor Cyan
-Git -C $mars fetch --depth 1 origin tag $Tag
-Git -C $mars -c advice.detachedHead=false checkout $Tag
-Git -C $mars submodule update --init --recursive --depth 1
-$commit = (git -C $mars rev-parse HEAD).Trim()
-$jose = (git -C $mars rev-parse "HEAD:ThirdParty/delphi-jose-jwt").Trim()
+Invoke-Git -C $mars fetch --depth 1 origin tag $Tag
+Invoke-Git -C $mars -c advice.detachedHead=false checkout $Tag
+Invoke-Git -C $mars submodule update --init --recursive --depth 1
+$commit = (& git.exe -C $mars rev-parse HEAD).Trim()
+$jose = (& git.exe -C $mars rev-parse "HEAD:ThirdParty/delphi-jose-jwt").Trim()
 Write-Host "    commit $commit"
 Write-Host "    delphi-jose-jwt $jose"
 

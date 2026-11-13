@@ -2761,11 +2761,24 @@ begin
     Lst.Free;
   end;
 
-  // empty credentials -> default (single enabled) list
+  // SECURITY: empty credentials must NOT open a bouquet that has a login
+  Found := Store.FindListByCredentials('', '');
+  Assert.IsNull(Found, 'empty login never reaches a protected bouquet');
+  Found := Store.FindListByCredentials('', 'secret');
+  Assert.IsNull(Found, 'not with only the password either');
+
+  // ...but a bouquet WITHOUT a login is the default for boxes without one
+  Lst := TCustomList.Create;
+  try
+    Lst.Name := 'Open'; Lst.Enabled := True;
+    Store.SaveList(Lst);
+  finally
+    Lst.Free;
+  end;
   Found := Store.FindListByCredentials('', '');
   try
     Assert.IsNotNull(Found);
-    Assert.AreEqual('Default', Found.Name);
+    Assert.AreEqual('Open', Found.Name, 'the login-free bouquet, not the protected one');
   finally
     Found.Free;
   end;

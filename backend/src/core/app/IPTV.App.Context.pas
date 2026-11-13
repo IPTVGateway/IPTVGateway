@@ -103,6 +103,9 @@ var
   App: TAppContext = nil; // set by the host on Start, cleared on Stop
   /// Process-wide log ring (outlives App so start/stop lines are kept too).
   LogRing: TLogRing = nil;
+  /// The admin password as soon as the context exists (before App is set), so
+  /// /api/logs can be protected even while the service is still starting.
+  AdminPasswordEarly: string = '';
 
 implementation
 
@@ -177,6 +180,7 @@ constructor TAppContext.Create(const AConfig: TAppConfig; const ALog: TLogProc;
 begin
   inherited Create;
   FConfig := AConfig;
+  AdminPasswordEarly := AConfig.AdminPassword;
   FHostLog := ALog;
   // every component logs through FLog: keep a copy for the web app's Log tab
   FLog :=
@@ -354,7 +358,19 @@ begin
       Lists.Free;
     end;
   end;
-  Result := FStore.FindListByCredentials('', '');
+  // no explicit choice: the first enabled bouquet (by id)
+  Lists := FStore.LoadLists;
+  try
+    for I := 0 to Lists.Count - 1 do
+      if Lists[I].Enabled then
+      begin
+        Result := Lists.Extract(Lists[I]);
+        Exit;
+      end;
+  finally
+    Lists.Free;
+  end;
+  Result := nil;
 end;
 
 procedure TAppContext.UpdateMediaConfig(const AVisibleGroups: TArray<string>;

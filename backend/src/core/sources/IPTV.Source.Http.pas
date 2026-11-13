@@ -62,7 +62,8 @@ implementation
 
 uses
   System.Classes, System.NetConsts, System.Net.URLClient, System.ZLib,
-  IdHTTP, IdGlobal, IdCookieManager;
+  IdHTTP, IdGlobal, IdCookieManager,
+  IPTV.Core.Utils;
 
 type
   // IPVersion is protected on TIdHTTP in this Indy; a same-unit descendant cast
@@ -273,7 +274,7 @@ begin
     // then DELETE the old programmes and store only the partial set).
     if (H.Response.ContentLength > 0) and (Length(Result) < H.Response.ContentLength) then
       raise Exception.CreateFmt('truncated response from %s: expected %d bytes, got %d',
-        [AUrl, H.Response.ContentLength, Length(Result)]);
+        [MaskUrlSecrets(AUrl), H.Response.ContentLength, Length(Result)]);
   finally
     H.Free;
   end;
@@ -316,13 +317,13 @@ begin
         // surface real HTTP errors instead of returning the error-page body (which
         // parses to nothing → a silently empty/cleared catalog). Mirrors the Indy path.
         if Resp.StatusCode >= 400 then
-          raise Exception.CreateFmt('HTTP %d fetching %s', [Resp.StatusCode, AUrl]);
+          raise Exception.CreateFmt('HTTP %d fetching %s', [Resp.StatusCode, MaskUrlSecrets(AUrl)]);
         // truncation guard (see the Indy path): a short body vs a declared
         // Content-Length means a mid-transfer drop — fail instead of persisting
         // an incomplete playlist/EPG.
         if (Resp.ContentLength > 0) and (Length(Result) < Resp.ContentLength) then
           raise Exception.CreateFmt('truncated response from %s: expected %d bytes, got %d',
-            [AUrl, Resp.ContentLength, Length(Result)]);
+            [MaskUrlSecrets(AUrl), Resp.ContentLength, Length(Result)]);
         Break;
       finally
         MS.Free;

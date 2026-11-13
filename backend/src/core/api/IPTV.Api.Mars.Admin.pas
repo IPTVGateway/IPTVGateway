@@ -845,13 +845,21 @@ end;
 
 function TAdminResource.GetLogs(ASince: string): TJSONObject;
 var
+  Pw: string;
   Lines: TArray<TLogLine>;
   L: TLogLine;
   Arr: TJSONArray;
   O: TJSONObject;
   Last: Int64;
 begin
-  // no RequireApp: the log is most useful exactly when the app failed to start
+  // no RequireApp (the log is most useful when the app failed to start), but the
+  // admin password IS checked: provider errors in the log may name hosts/accounts
+  Pw := AdminPasswordEarly;
+  if App <> nil then
+    Pw := App.Config.AdminPassword;
+  if (Pw <> '') and (Request.GetHeaderParamValue('X-Admin-Password') <> Pw) and
+     (Request.GetQueryParamValue('pw') <> Pw) then
+    raise EMARSHttpException.Create('Unauthorized', 401);
   Result := TJSONObject.Create;
   Arr := TJSONArray.Create;
   Last := StrToInt64Def(ASince, 0);

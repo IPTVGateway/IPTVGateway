@@ -101,7 +101,7 @@ end;
 function MaskUrl(const AUrl: string): string;
 begin
   Result := TRegEx.Replace(AUrl,
-    '(/(live|movie|series|stream)/)[^/]+/[^/]+', '$1***/***', [roIgnoreCase]);
+    '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+', '$1***/***', [roIgnoreCase]);
   Result := TRegEx.Replace(Result,
     '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*', '$1***', [roIgnoreCase]);
 end;
@@ -117,8 +117,11 @@ end;
 // else is treated as an admin-UI/static request.
 function IsBackendRoute(const AFirstSeg: string): Boolean;
 const
-  ROUTES: array[0..11] of string =
+  // catch-up: timeshift/{u}/{p}/... and streaming/timeshift.php MUST be listed,
+  // else the SPA fallback answers them with index.html (200) and the box spins
+  ROUTES: array[0..13] of string =
     ('api', 'player_api.php', 'get.php', 'xmltv.php', 'live', 'movie', 'series',
+     'timeshift', 'streaming',
      'plex', 'discover.json', 'lineup.json', 'lineup_status.json', 'lineup.post');
 var
   R: string;
@@ -257,7 +260,7 @@ begin
         //     /live/{user}/{pass}/{id}, so the password sits in the path (no '=').
         //  2) query keys — get.php/player_api.php (?username=&password=), admin ?pw=, tokens, mac.
         LMasked := TRegEx.Replace(AURL.URL,
-          '(/(live|movie|series|stream)/)[^/]+/[^/]+', '$1***/***', [roIgnoreCase]);
+          '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+', '$1***/***', [roIgnoreCase]);
         LMasked := TRegEx.Replace(LMasked,
           '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*', '$1***', [roIgnoreCase]);
         // client IP first: shows which box/app asked (e.g. two boxes fighting

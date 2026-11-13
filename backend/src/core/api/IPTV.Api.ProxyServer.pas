@@ -54,7 +54,7 @@ const
 // (?username=&password=&token=). Never log either verbatim.
 function MaskCreds(const AUrl: string): string;
 begin
-  Result := TRegEx.Replace(AUrl, '(/(live|movie|series|stream)/)[^/]+/[^/]+/',
+  Result := TRegEx.Replace(AUrl, '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+/',
     '$1***/***/', [roIgnoreCase]);
   Result := TRegEx.Replace(Result, '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*',
     '$1***', [roIgnoreCase]);

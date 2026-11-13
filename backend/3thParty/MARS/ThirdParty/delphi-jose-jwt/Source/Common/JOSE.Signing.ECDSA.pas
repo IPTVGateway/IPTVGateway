@@ -1,0 +1,81 @@
+{******************************************************************************}
+{                                                                              }
+{  Delphi JOSE-JWT Library                                                     }
+{  Copyright (c) 2015 Paolo Rossi                                              }
+{  https://github.com/paolo-rossi/delphi-jose-jwt                              }
+{                                                                              }
+{  Licensed under the MIT license                                              }
+{                                                                              }
+{******************************************************************************}
+
+unit JOSE.Signing.ECDSA;
+
+{$I ..\JOSE.inc}
+
+interface
+
+{$IFDEF RSA_SIGNING}
+
+uses
+  System.SysUtils,
+  JOSE.Crypto.Algorithms,
+  JOSE.Signing.Base;
+
+type
+  TECDSAAlgorithm = JOSE.Crypto.Algorithms.TECDSAAlgorithm;
+  TECDSAAlgorithmHelper = JOSE.Crypto.Algorithms.TECDSAAlgorithmHelper;
+
+  TECDSA = class(TSigningBase)
+  public
+    class function Sign(const AInput, APrivateKey: TBytes; AAlg: TECDSAAlgorithm): TBytes;
+    class function Verify(const AInput, ASignature, APublicKey: TBytes; AAlg: TECDSAAlgorithm): Boolean;
+    /// <summary>
+    ///   Verifies against the public key carried by ACertificate. The
+    ///   certificate is only a key container: its chain, validity dates,
+    ///   revocation status and key usage are not checked
+    /// </summary>
+    class function VerifyWithCertificate(const AInput, ASignature, ACertificate: TBytes; AAlg: TECDSAAlgorithm): Boolean;
+
+    class function VerifyPublicKey(const AKey: TBytes): Boolean;
+    class function VerifyPrivateKey(const AKey: TBytes): Boolean;
+  end;
+
+{$ENDIF}
+
+implementation
+
+{$IFDEF RSA_SIGNING}
+
+uses
+  JOSE.Providers;
+
+{ TECDSA }
+
+class function TECDSA.Sign(const AInput, APrivateKey: TBytes; AAlg: TECDSAAlgorithm): TBytes;
+begin
+  Result := TJOSEProviders.ECDSA.Sign(AInput, APrivateKey, AAlg);
+end;
+
+class function TECDSA.Verify(const AInput, ASignature, APublicKey: TBytes; AAlg: TECDSAAlgorithm): Boolean;
+begin
+  Result := TJOSEProviders.ECDSA.Verify(AInput, ASignature, APublicKey, AAlg);
+end;
+
+class function TECDSA.VerifyPrivateKey(const AKey: TBytes): Boolean;
+begin
+  Result := TJOSEProviders.ECDSA.VerifyPrivateKey(AKey);
+end;
+
+class function TECDSA.VerifyPublicKey(const AKey: TBytes): Boolean;
+begin
+  Result := TJOSEProviders.ECDSA.VerifyPublicKey(AKey);
+end;
+
+class function TECDSA.VerifyWithCertificate(const AInput, ASignature, ACertificate: TBytes; AAlg: TECDSAAlgorithm): Boolean;
+begin
+  Result := TJOSEProviders.ECDSA.VerifyWithCertificate(AInput, ASignature, ACertificate, AAlg);
+end;
+
+{$ENDIF}
+
+end.

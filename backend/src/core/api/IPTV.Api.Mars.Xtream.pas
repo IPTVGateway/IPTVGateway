@@ -24,7 +24,7 @@ type
       [QueryParam('password')] APass: string;
       [QueryParam('action')] AAction: string;
       [QueryParam('stream_id')] AStreamId: string;
-      [QueryParam('limit')] ALimit: Integer): TJSONValue;
+      [QueryParam('limit')] ALimit: string): TJSONValue; // string: boxes send 'limit=' empty (MARS 2 would 400)
   end;
 
   [Path('get.php')]
@@ -589,7 +589,7 @@ end;
 
 { TPlayerApiResource }
 
-function TPlayerApiResource.PlayerApi(AUser, APass, AAction, AStreamId: string; ALimit: Integer): TJSONValue;
+function TPlayerApiResource.PlayerApi(AUser, APass, AAction, AStreamId: string; ALimit: string): TJSONValue;
 var
   List: TCustomList;
 begin
@@ -602,7 +602,7 @@ begin
   end;
   try
     if AAction = 'get_short_epg' then
-      Result := BuildEpgListings(List, AStreamId, IfThen(ALimit > 0, ALimit, 4), True)
+      Result := BuildEpgListings(List, AStreamId, IfThen(StrToIntDef(ALimit, 0) > 0, StrToIntDef(ALimit, 0), 4), True)
     else if AAction = 'get_simple_data_table' then
       Result := BuildEpgListings(List, AStreamId, 0, False)
     else

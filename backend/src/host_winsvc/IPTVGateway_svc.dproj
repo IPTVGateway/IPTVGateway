@@ -55,8 +55,8 @@
         <SanitizedProjectName>IPTVGateway_svc</SanitizedProjectName>
         <DCC_DcuOutput>D:\Data\Delphi\DCU\$(ProductVersion)\$(ProjectName)\$(Platform)\$(Config)</DCC_DcuOutput>
         <DCC_ExeOutput>..\..\..\.Output\$(Platform)\$(Config)</DCC_ExeOutput>
-        <DCC_UnitSearchPath>..\core\app;..\core\model;..\core\sources;..\core\storage;..\core\ingest;..\core\scheduler;..\core\api;..\..\3thParty\MARS-v.1.6.4\Source;..\..\3thParty\MARS-v.1.6.4\ThirdParty\mORMot\Source;..\..\3thParty\MARS-v.1.6.4\ThirdParty\delphi-jose-jwt\Source;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
-        <DCC_IncludePath>..\..\3thParty\MARS-v.1.6.4\Source;..\..\3thParty\MARS-v.1.6.4\ThirdParty\mORMot\Source;..\..\3thParty\MARS-v.1.6.4\ThirdParty\delphi-jose-jwt\Source;$(DCC_IncludePath)</DCC_IncludePath>
+        <DCC_UnitSearchPath>..\core\app;..\core\model;..\core\sources;..\core\storage;..\core\ingest;..\core\scheduler;..\core\api;..\..\3thParty\MARS\Source;..\..\3thParty\MARS\ThirdParty\mORMot\Source;..\..\3thParty\MARS\ThirdParty\delphi-jose-jwt\Source;..\..\3thParty\MARS\ThirdParty\delphi-jose-jwt\Source\Common;..\..\3thParty\MARS\ThirdParty\delphi-jose-jwt\Source\JOSE;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_IncludePath>..\..\3thParty\MARS\Source;..\..\3thParty\MARS\ThirdParty\mORMot\Source;..\..\3thParty\MARS\ThirdParty\delphi-jose-jwt\Source;..\..\3thParty\MARS\ThirdParty\delphi-jose-jwt\Source\Common;..\..\3thParty\MARS\ThirdParty\delphi-jose-jwt\Source\JOSE;$(DCC_IncludePath)</DCC_IncludePath>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;Vcl;$(DCC_Namespace)</DCC_Namespace>
         <VerInfo_Locale>1043</VerInfo_Locale>
         <VerInfo_Keys>CompanyName=;FileDescription=IPTV Gateway Windows Service;FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProductName=IPTV Gateway;ProductVersion=1.0.0.0;Comments=;CFBundleName=</VerInfo_Keys>

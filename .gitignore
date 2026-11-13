@@ -79,17 +79,8 @@ backend/src/**/_run/
 # ── Vendored third-party: keep only what the build uses ───────────────
 # FastMM5 is not linked by any project
 backend/3thParty/FastMM5-*/
-# MARS-Curiosity: the build needs Source/ + ThirdParty/{mORMot,delphi-jose-jwt}
-backend/3thParty/MARS-v.1.6.4/Demos/
-backend/3thParty/MARS-v.1.6.4/Packages/
-backend/3thParty/MARS-v.1.6.4/Setup/
-backend/3thParty/MARS-v.1.6.4/Utils/
-backend/3thParty/MARS-v.1.6.4/docs/
-backend/3thParty/MARS-v.1.6.4/media/
-backend/3thParty/MARS-v.1.6.4/tests/
-backend/3thParty/MARS-v.1.6.4/www/
-backend/3thParty/MARS-v.1.6.4/ThirdParty/DCS/
-backend/3thParty/MARS-v.1.6.4/ThirdParty/Neslib.Yaml/
+# MARS-Curiosity: only Source/ + ThirdParty/{mORMot,delphi-jose-jwt} are vendored
+# (tools/update-mars.ps1 copies just those; see backend/3thParty/DEPENDENCIES.md)
 
 # ── Exceptions: needed to build from a fresh clone ────────────────────
 !deploy/linux-sysroot/**

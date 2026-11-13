@@ -1,6 +1,6 @@
 {
   "name": "iptvplay-backend",
-  "description": "IPTVPlay backend: ingest Xtream/M3U sources, curate a list, serve it as an Xtream portal. REST via MARS-Curiosity (vendored in 3thParty/MARS-v.1.6.4).",
+  "description": "IPTVPlay backend: ingest Xtream/M3U sources, curate a list, serve it as an Xtream portal. REST via MARS-Curiosity (vendored in 3thParty/MARS).",
   "version": "0.1.0",
   "homepage": "",
   "mainsrc": "src",

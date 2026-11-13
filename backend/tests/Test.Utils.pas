@@ -38,6 +38,11 @@ type
     [Test] procedure EpgKeys_MatchProviderAndGuideNames;
     [Test] procedure EpgIdKey_StripsOnlyCountryCodes;
     [Test] procedure FillMissingStops_UsesNextStart;
+    [Test] procedure XmltvAttr_BothQuoteStyles;
+    [Test] procedure FirstEpgUrl_TakesFirstOfList;
+    [Test] procedure PublicBaseUrl_Normalised;
+    [Test] procedure DecodeBytes_Latin1AndCyrillic;
+    [Test] procedure SwapUrlExt_OnlyInPath;
     [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
 
@@ -45,7 +50,8 @@ implementation
 
 uses
   System.SysUtils, System.DateUtils, System.NetEncoding,
-  IPTV.Model.Types, IPTV.Model.Epg, IPTV.Core.Utils, IPTV.Source.Epg;
+  IPTV.Model.Types, IPTV.Model.Epg, IPTV.Core.Utils, IPTV.Source.Epg, IPTV.Source.Http,
+  IPTV.Output.Builder;
 
 procedure TUtilsTests.ContentTypesRoundtrip;
 var
@@ -357,6 +363,53 @@ begin
   finally
     L.Free;
   end;
+end;
+
+procedure TUtilsTests.XmltvAttr_BothQuoteStyles;
+begin
+  Assert.AreEqual('npo1.nl', AttrVal('<programme start="1" channel="npo1.nl">', 'channel'));
+  Assert.AreEqual('npo1.nl', AttrVal('<programme start=''1'' channel=''npo1.nl''>', 'channel'));
+  Assert.AreEqual('1', AttrVal('<programme vps-start="9" start="1">', 'start'), 'not inside vps-start');
+  Assert.AreEqual('', AttrVal('<programme start="1">', 'channel'), 'absent');
+end;
+
+procedure TUtilsTests.FirstEpgUrl_TakesFirstOfList;
+begin
+  Assert.AreEqual('http://a/guide.xml', FirstEpgUrl(' http://a/guide.xml , http://b/g.xml.gz'));
+  Assert.AreEqual('http://a/guide.xml', FirstEpgUrl('http://a/guide.xml'));
+end;
+
+procedure TUtilsTests.PublicBaseUrl_Normalised;
+var
+  lUrl: string;
+begin
+  Assert.IsTrue(NormalizePublicBaseUrl(' 192.168.1.10:9000/ ', lUrl));
+  Assert.AreEqual('http://192.168.1.10:9000', lUrl, 'scheme added, slash dropped');
+  Assert.IsTrue(NormalizePublicBaseUrl('https://tv.example.org', lUrl));
+  Assert.AreEqual('https://tv.example.org', lUrl);
+  Assert.IsTrue(NormalizePublicBaseUrl('', lUrl), 'empty = not configured');
+  Assert.IsFalse(NormalizePublicBaseUrl('http://', lUrl), 'no host');
+  Assert.AreEqual('localhost', SafeUrlHost('not a url', 'localhost'), 'never raises');
+end;
+
+procedure TUtilsTests.DecodeBytes_Latin1AndCyrillic;
+var
+  lBytes: TBytes;
+begin
+  // "Caf<e9> au lait" in ISO-8859-1 (not valid UTF-8)
+  lBytes := TBytes.Create(Ord('C'), Ord('a'), Ord('f'), $E9, Ord(' '), Ord('a'), Ord('u'));
+  Assert.AreEqual('Caf' + #$00E9 + ' au', DecodeBytes(lBytes), 'Western, not Cyrillic');
+  // "Привет" in Windows-1251
+  lBytes := TBytes.Create($CF, $F0, $E8, $E2, $E5, $F2);
+  Assert.AreEqual(#$041F#$0440#$0438#$0432#$0435#$0442, DecodeBytes(lBytes));
+end;
+
+procedure TUtilsTests.SwapUrlExt_OnlyInPath;
+begin
+  Assert.AreEqual('http://p/live/u/p/1.m3u8', SwapUrlExt('http://p/live/u/p/1.ts', 'm3u8'));
+  Assert.AreEqual('http://p/1.m3u8?t=a.b', SwapUrlExt('http://p/1.ts?t=a.b', 'm3u8'));
+  Assert.AreEqual('mkv', UrlExt('http://p/movie/u/p/5.mkv?x=1'));
+  Assert.AreEqual('php', UrlExt('http://p/play.php?id=5.ts'), 'a dot in the query is no extension');
 end;
 
 initialization

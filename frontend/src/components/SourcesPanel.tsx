@@ -264,6 +264,17 @@ export function SourcesPanel({ onChanged }: Props) {
   }
 
   async function remove(id: number) {
+    // deleting a source also drops all of its channels from every bouquet
+    const src = sources.find((x) => x.id === id)
+    if (
+      !window.confirm(
+        t('Delete source “{name}”? All its channels are removed from every bouquet.').replace(
+          '{name}',
+          src?.name ?? `#${id}`,
+        ),
+      )
+    )
+      return
     setError(null)
     try {
       await api.deleteSource(id)
@@ -723,9 +734,19 @@ export function FilterEditor({ kind, tokens, onChange, prefixes, prefixBusy, edi
   }, [prefixes, search])
 
   function add(token: string) {
-    const t = token.trim()
-    if (t && !selected.has(t)) onChange([...tokens, t])
+    addMany([token])
   }
+  // add several tokens in ONE onChange: calling add() per token would build each
+  // next array from the same stale `tokens`, so only the last one would survive
+  function addMany(raw: string[]) {
+    const next = [...tokens]
+    for (const tok of raw) {
+      const v = tok.trim()
+      if (v && !next.includes(v)) next.push(v)
+    }
+    if (next.length !== tokens.length) onChange(next)
+  }
+  const splitTokens = (text: string) => text.split(/[,;\r\n]+/)
   function remove(token: string) {
     onChange(tokens.filter((t) => t !== token))
   }
@@ -746,11 +767,7 @@ export function FilterEditor({ kind, tokens, onChange, prefixes, prefixBusy, edi
   function commitDraft() {
     // a pasted list arrives with line breaks (or ;) — each line is its own token,
     // never one giant item (the backend refuses items over 200 chars)
-    draft
-      .split(/[,;\r\n]+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .forEach(add)
+    addMany(splitTokens(draft))
     setDraft('')
   }
 
@@ -797,11 +814,7 @@ export function FilterEditor({ kind, tokens, onChange, prefixes, prefixBusy, edi
             const text = e.clipboardData.getData('text')
             if (!/[\r\n]/.test(text)) return
             e.preventDefault()
-            text
-              .split(/[,;\r\n]+/)
-              .map((t) => t.trim())
-              .filter(Boolean)
-              .forEach(add)
+            addMany(splitTokens(text))
           }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { byChannelNumber, byNameCI, compareGroups, CONTENT_TYPES, reorderByDrag } from './ordering'
-import type { CustomGroup } from '../types'
+import { bouquetOrder, byChannelNumber, byNameCI, compareGroups, CONTENT_TYPES, reorderByDrag } from './ordering'
+import type { CustomGroup, CustomItem } from '../types'
 
 function grp(name: string, isFavorite = false): CustomGroup {
   return { id: 1, listId: 1, name, contentType: 'live', isFavorite }
@@ -67,5 +67,23 @@ describe('reorderByDrag', () => {
 describe('CONTENT_TYPES', () => {
   it('is the canonical four in order', () => {
     expect(CONTENT_TYPES).toEqual(['live', 'movie', 'series', 'radio'])
+  })
+})
+
+describe('bouquetOrder', () => {
+  const g = (id: number, name: string, isFavorite = false) =>
+    ({ id, listId: 1, name, contentType: 'live', isFavorite }) as CustomGroup
+  const it_ = (id: number, gid: number, name: string, channelNumber = 0) =>
+    ({ id, listId: 1, streamItemId: id, customGroupId: gid, contentType: 'live', displayName: name, channelNumber }) as CustomItem
+
+  it('favorite groups first, then A→Z, upstream group last; channels A→Z case-insensitive', () => {
+    const groups = [g(1, 'news'), g(2, 'Sport', true), g(3, 'Kids')]
+    const items = [it_(1, 1, 'b'), it_(2, 0, 'Up'), it_(3, 3, 'K'), it_(4, 2, 'zz'), it_(5, 2, 'AA'), it_(6, 1, 'A')]
+    expect(bouquetOrder(groups, items).map((i) => i.id)).toEqual([5, 4, 3, 6, 1, 2])
+  })
+
+  it('orders channels by number in number mode', () => {
+    const items = [it_(1, 1, 'A', 3), it_(2, 1, 'B', 1), it_(3, 1, 'C', 0)]
+    expect(bouquetOrder([g(1, 'X')], items, 'number').map((i) => i.id)).toEqual([2, 1, 3])
   })
 })

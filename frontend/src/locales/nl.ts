@@ -546,4 +546,10 @@ export const nl: Record<string, string> = {
   'Numbers': 'Nummers',
   'Renumber {n} channels': '{n} zenders hernummeren',
   '{n} channels renumbered': '{n} zenders hernummerd',
+
+  // ── confirmations / log ───────────────────────────────────────────────────
+  'Delete source “{name}”? All its channels are removed from every bouquet.':
+    'Bron “{name}” verwijderen? Al haar zenders worden uit elk bouquet verwijderd.',
+  'Delete group': 'Groep verwijderen',
+  'Download': 'Downloaden',
 }

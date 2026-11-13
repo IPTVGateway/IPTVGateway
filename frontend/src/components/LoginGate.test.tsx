@@ -9,7 +9,7 @@ vi.mock('../api/client', () => {
   class UnauthorizedError extends Error {}
   let pw = ''
   return {
-    api: { health: vi.fn() },
+    api: { health: vi.fn(), getConfig: vi.fn() },
     adminAuth: {
       get: () => pw,
       set: (v: string) => {
@@ -31,7 +31,7 @@ beforeEach(() => {
 
 describe('LoginGate', () => {
   it('logs in with the correct password', async () => {
-    vi.mocked(api.health).mockResolvedValue({ status: 'ok' })
+    vi.mocked(api.getConfig).mockResolvedValue({} as never)
     const onAuthed = vi.fn()
     render(<LoginGate onAuthed={onAuthed} />)
     await userEvent.type(screen.getByPlaceholderText('Password'), 'secret')
@@ -41,7 +41,7 @@ describe('LoginGate', () => {
   })
 
   it('shows an error and clears the password on a wrong password', async () => {
-    vi.mocked(api.health).mockRejectedValue(new (UnauthorizedError as unknown as { new (): Error })())
+    vi.mocked(api.getConfig).mockRejectedValue(new (UnauthorizedError as unknown as { new (): Error })())
     const onAuthed = vi.fn()
     render(<LoginGate onAuthed={onAuthed} />)
     await userEvent.type(screen.getByPlaceholderText('Password'), 'nope')
@@ -49,5 +49,19 @@ describe('LoginGate', () => {
     expect(await screen.findByText('Incorrect password')).toBeInTheDocument()
     expect(onAuthed).not.toHaveBeenCalled()
     expect(adminAuth.get()).toBe('') // cleared so the next attempt starts fresh
+  })
+
+  it('validates against an authenticated endpoint, not the open /api/health', async () => {
+    // health always answers 200 (it is not password-protected) — must not let a
+    // wrong password in
+    vi.mocked(api.health).mockResolvedValue({ status: 'ok' })
+    vi.mocked(api.getConfig).mockRejectedValue(new (UnauthorizedError as unknown as { new (): Error })())
+    const onAuthed = vi.fn()
+    render(<LoginGate onAuthed={onAuthed} />)
+    await userEvent.type(screen.getByPlaceholderText('Password'), 'wrong')
+    await userEvent.click(screen.getByRole('button', { name: 'Log in' }))
+    expect(await screen.findByText('Incorrect password')).toBeInTheDocument()
+    expect(onAuthed).not.toHaveBeenCalled()
+    expect(api.getConfig).toHaveBeenCalled()
   })
 })

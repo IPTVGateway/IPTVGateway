@@ -43,69 +43,90 @@ function ReadExtraXmltv(const AUrl: string; ASourceId: Integer;
 /// of the same channel starts (the last one gets an hour). In list order.
 procedure FillMissingStops(AList: TEpgProgrammeList);
 
+/// Value of attribute AName in one XML tag/block (double or single quotes), '' if absent.
+function AttrVal(const ABlock, AName: string): string;
+
+/// The first URL of an EPG setting / M3U url-tvg (it may list several, comma-separated).
+function FirstEpgUrl(const AValue: string): string;
+
 implementation
 
 uses
-  System.Classes, System.DateUtils, System.StrUtils,
+  System.Classes, System.DateUtils, System.StrUtils, System.Math,
   System.Character, System.Generics.Collections,
   System.Net.HttpClient, System.NetEncoding,
   IPTV.Model.Types, IPTV.Source.Http;
 
 function TXmltvEpgReader.ResolveUrl(const ASource: TSourceConfig): string;
 begin
-  if ASource.EpgUrl <> '' then
-    Exit(ASource.EpgUrl);
+  if ASource.EpgUrl.Trim <> '' then
+    // url-tvg may list several guides ("a.xml,b.xml.gz"): use the first
+    Exit(FirstEpgUrl(ASource.EpgUrl));
   if ASource.Kind = skXtream then
+    // trimmed like every other Xtream URL: a stray space in the password made only
+    // the guide fail (silently: "EPG empty - kept the previous guide")
     Result := Format('%s/xmltv.php?username=%s&password=%s',
-      [ASource.Url.TrimRight(['/']),
-       TNetEncoding.URL.Encode(ASource.Username),
-       TNetEncoding.URL.Encode(ASource.Password)])
+      [ASource.Url.Trim.TrimRight(['/']),
+       TNetEncoding.URL.Encode(ASource.Username.Trim),
+       TNetEncoding.URL.Encode(ASource.Password.Trim)])
   else
     Result := '';
 end;
 
-function TXmltvEpgReader.ParseXmltvTime(const AValue: string): TDateTime;
+function FirstEpgUrl(const AValue: string): string;
 var
-  S, TzPart: string;
+  Parts: TArray<string>;
+  P: string;
+begin
+  Result := AValue.Trim;
+  Parts := AValue.Split([',']);
+  for P in Parts do
+    if P.Trim <> '' then
+      Exit(P.Trim);
+end;
+
+function TXmltvEpgReader.ParseXmltvTime(const AValue: string): TDateTime;
+const
+  cXmltvMinDigits = 12; // YYYYMMDDHHMM (seconds optional)
+  cXmltvFullDigits = 14; // YYYYMMDDHHMMSS
+var
+  S, Digits, TzPart: string;
   Y, Mo, D, H, Mi, Se: Word;
-  OffSign, OffH, OffM, SpacePos: Integer;
+  OffSign, OffH, OffM, N: Integer;
   Local: TDateTime;
 begin
-  // "YYYYMMDDHHMMSS +HHMM" -> UTC
+  // "YYYYMMDDHHMM[SS] [±HH[[:]MM]]" -> UTC. The zone may follow without a space
+  // ("20261113120000+0100") and may be hours only ("+01").
   S := AValue.Trim;
-  SpacePos := S.IndexOf(' ');
-  // "20261113120000+0100" (no space) is seen in the wild too
-  if (SpacePos < 0) and (S.Length > 14) and CharInSet(S.Chars[14], ['+', '-']) then
-  begin
-    S := S.Substring(0, 14) + ' ' + S.Substring(14);
-    SpacePos := 14;
-  end;
-  TzPart := '';
-  if SpacePos > 0 then
-  begin
-    // accept both the standard "±HHMM" and the colon form "±HH:MM" (some panels
-    // emit it) — strip the colon so half-hour zones (e.g. +05:30) keep their minutes.
-    TzPart := S.Substring(SpacePos + 1).Trim.Replace(':', '');
-    S := S.Substring(0, SpacePos);
-  end;
-  if S.Length < 14 then
+  N := 0;
+  while (N < S.Length) and CharInSet(S.Chars[N], ['0'..'9']) do
+    Inc(N);
+  Digits := S.Substring(0, N);
+  // accept both "±HHMM" and the colon form "±HH:MM" (half-hour zones keep minutes)
+  TzPart := S.Substring(N).Trim.Replace(':', '');
+  if Digits.Length < cXmltvMinDigits then
     Exit(0);
-  Y := StrToIntDef(S.Substring(0, 4), 0);
-  Mo := StrToIntDef(S.Substring(4, 2), 1);
-  D := StrToIntDef(S.Substring(6, 2), 1);
-  H := StrToIntDef(S.Substring(8, 2), 0);
-  Mi := StrToIntDef(S.Substring(10, 2), 0);
-  Se := StrToIntDef(S.Substring(12, 2), 0);
+  Y := StrToIntDef(Digits.Substring(0, 4), 0);
+  Mo := StrToIntDef(Digits.Substring(4, 2), 1);
+  D := StrToIntDef(Digits.Substring(6, 2), 1);
+  H := StrToIntDef(Digits.Substring(8, 2), 0);
+  Mi := StrToIntDef(Digits.Substring(10, 2), 0);
+  if Digits.Length >= cXmltvFullDigits then
+    Se := StrToIntDef(Digits.Substring(12, 2), 0)
+  else
+    Se := 0;
   // a single malformed timestamp (e.g. month 13) must NOT abort the whole EPG
   // read — return 0 and let the caller skip just this value
   if not TryEncodeDateTime(Y, Mo, D, H, Mi, Se, 0, Local) then
     Exit(0);
   Result := Local;
-  if TzPart.Length >= 5 then
+  if (TzPart.Length >= 3) and CharInSet(TzPart.Chars[0], ['+', '-']) then
   begin
-    if TzPart[Low(string)] = '-' then OffSign := 1 else OffSign := -1; // to UTC
+    if TzPart.Chars[0] = '-' then OffSign := 1 else OffSign := -1; // to UTC
     OffH := StrToIntDef(TzPart.Substring(1, 2), 0);
-    OffM := StrToIntDef(TzPart.Substring(3, 2), 0);
+    OffM := 0;
+    if TzPart.Length >= 5 then
+      OffM := StrToIntDef(TzPart.Substring(3, 2), 0);
     Result := IncMinute(Local, OffSign * (OffH * 60 + OffM));
   end;
 end;
@@ -121,23 +142,28 @@ end;
 function FindAttrValueStart(const AXml, AName: string; AFrom, ATo: Integer;
   out AQuote: Char): Integer;
 var
-  Needle: string;
-  P: Integer;
+  P, L, Last: Integer;
   Q: Char;
 begin
-  for Q in ['"', ''''] do
+  // walk ONLY the window [AFrom, ATo): a PosEx for a needle that isn't in this
+  // block would scan to the end of a 100+ MB guide - per programme
+  L := Length(AName);
+  Last := Min(ATo, Length(AXml) + 1) - L - 2; // room for name + '=' + quote
+  P := Max(AFrom, 1);
+  while P <= Last do
   begin
-    Needle := AName + '=' + Q;
-    P := PosEx(Needle, AXml, AFrom);
-    while (P > 0) and (P < ATo) do
+    if (AXml[P] = AName[1]) and (AXml[P + L] = '=') and
+       ((P = 1) or CharInSet(AXml[P - 1], [' ', #9, #10, #13, '<'])) and
+       CompareMem(@AXml[P], @AName[1], L * SizeOf(Char)) then
     begin
-      if (P = 1) or CharInSet(AXml[P - 1], [' ', #9, #10, #13, '<']) then
+      Q := AXml[P + L + 1];
+      if (Q = '"') or (Q = '''') then
       begin
         AQuote := Q;
-        Exit(P + Length(Needle));
+        Exit(P + L + 2);
       end;
-      P := PosEx(Needle, AXml, P + 1);
     end;
+    Inc(P);
   end;
   AQuote := '"';
   Result := 0;
@@ -239,8 +265,8 @@ const
   PROG_OPEN = '<programme';
   PROG_CLOSE = '</programme>';
 var
-  Url, Xml, Block, Channel: string;
-  Keep: TDictionary<string, Byte>;
+  Url, Xml, Block, Channel, lWanted: string;
+  Keep: TDictionary<string, string>; // lower-case id -> the id as the list spells it
   KeepAll: Boolean;
   T: string;
   PStart, PEnd, Cursor: Integer;
@@ -251,11 +277,12 @@ begin
   if Url = '' then
     Exit;
 
-  Keep := TDictionary<string, Byte>.Create;
+  Keep := TDictionary<string, string>.Create;
+  try
   try
     for T in AKeepTvgIds do
       if T <> '' then
-        Keep.AddOrSetValue(LowerCase(T), 0);
+        Keep.AddOrSetValue(LowerCase(T), T);
     KeepAll := Keep.Count = 0;
 
     // hybrid fetch (http via Indy / https via OS TLS) + per-provider UA;
@@ -276,8 +303,12 @@ begin
       // for programmes we actually keep (most are discarded for unlisted channels)
       // decoded: an id like "Sky&amp;Co.uk" is "Sky&Co.uk" on the M3U side
       Channel := XmlDecode(AttrValIn(Xml, 'channel', PStart, PEnd));
-      if KeepAll or Keep.ContainsKey(LowerCase(Channel)) then
+      if KeepAll or Keep.TryGetValue(LowerCase(Channel), lWanted) then
       begin
+        // stored under the list's spelling: matching is case-insensitive, but the
+        // guide is served by exact id (npo1.nl in the guide, NPO1.nl on the list)
+        if not KeepAll then
+          Channel := lWanted;
         Block := Copy(Xml, PStart, PEnd - PStart);
         Prog := TEpgProgramme.Create;
         Prog.SourceId := ASource.Id;
@@ -298,6 +329,10 @@ begin
       end;
     until False;
     FillMissingStops(Result);
+  except
+    Result.Free; // a failed download / parse must not leak what was read so far
+    raise;
+  end;
   finally
     Keep.Free;
   end;
@@ -342,13 +377,16 @@ var
   Prog: TEpgProgramme;
   Parser: TXmltvEpgReader;
   Keep: TDictionary<string, Byte>; // raw channel ids whose programmes we keep
+  lChans: TList<TEpgChannelInfo>;   // appending to an array was quadratic (40k channels)
 begin
   AChannels := nil;
   Result := TEpgProgrammeList.Create(True);
   Keep := TDictionary<string, Byte>.Create;
-  Xml := HttpGetText(AUrl, '', TimeoutBulkMs, ''); // gunzips .gz transparently
+  lChans := TList<TEpgChannelInfo>.Create;
   Parser := TXmltvEpgReader.Create; // only for ParseXmltvTime (no interface ref taken)
   try
+  try
+    Xml := HttpGetText(AUrl, '', TimeoutBulkMs, ''); // gunzips .gz transparently
     // channels: <channel id="NPO.1.nl"><display-name lang="nl">NPO 1</display-name>…
     Cursor := 1;
     repeat
@@ -371,7 +409,7 @@ begin
       Info.Name := XmlDecode(TagText(Block, 'display-name'));
       if Info.Id <> '' then
       begin
-        AChannels := AChannels + [Info];
+        lChans.Add(Info);
         if not Assigned(AKeepChannel) or AKeepChannel(Info) then
           Keep.AddOrSetValue(Info.Id, 0);
       end;
@@ -406,9 +444,15 @@ begin
       end;
     until False;
     FillMissingStops(Result);
+    AChannels := lChans.ToArray;
+  except
+    Result.Free;
+    raise;
+  end;
   finally
     Parser.Free;
     Keep.Free;
+    lChans.Free;
   end;
 end;
 

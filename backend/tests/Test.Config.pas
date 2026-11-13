@@ -23,6 +23,7 @@ type
     [Test] procedure DaemonConfigPathInDataFolder;
     [Test] procedure EnvAdminPasswordIsNotSaved;
     [Test] procedure CorruptConfigIsKeptAsBackup;
+    [Test] procedure InterruptedSaveIsRecovered;
   end;
 
 implementation
@@ -218,6 +219,27 @@ begin
     Assert.AreEqual<Integer>(1, Length(TDirectory.GetFiles(Dir, 'config.json.corrupt-*')), 'backup made');
   finally
     TDirectory.Delete(Dir, True);
+  end;
+end;
+
+// only config.json.tmp left (a save cut off between delete and move in older
+// versions): Load takes it instead of starting on defaults
+procedure TConfigTests.InterruptedSaveIsRecovered;
+var
+  lDir, lPath: string;
+  lCfg: TAppConfig;
+begin
+  lDir := TPath.Combine(TPath.GetTempPath, 'iptvcfgr_' + TGUID.NewGuid.ToString);
+  ForceDirectories(lDir);
+  lPath := TPath.Combine(lDir, 'config.json');
+  try
+    TFile.WriteAllText(lPath + '.tmp', '{"httpPort": 9123}');
+    lCfg := TAppConfig.Load(lPath);
+    Assert.AreEqual(9123, lCfg.HttpPort);
+    Assert.IsTrue(TFile.Exists(lPath), 'swapped into place');
+    Assert.IsFalse(TFile.Exists(lPath + '.tmp'));
+  finally
+    TDirectory.Delete(lDir, True);
   end;
 end;
 

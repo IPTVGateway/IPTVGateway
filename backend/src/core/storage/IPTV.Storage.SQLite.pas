@@ -68,6 +68,8 @@ type
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
     function EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
       AExts: TArray<string>): TArray<Integer>;
+    function FindEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+      AExts: TArray<string>): TArray<Integer>;
     function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
     function DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
     function LoadKnownTvgIds: TArray<TTvgIdInfo>;
@@ -126,8 +128,16 @@ uses
 const
   // the stream's source (alias src, LEFT JOINed) is enabled and offers the
   // stream's content type (alias s). A stream without a source row passes.
-  SQL_SOURCE_ACTIVE = '''
+  // starts with a space: safe right after a multiline literal ending in AND
+  cSqlSourceActive = ' ' + '''
     (src.id IS NULL OR (src.enabled = 1 AND
+      (',' || REPLACE(src.content_types, ' ', '') || ',') LIKE ('%,' || s.content_type || ',%')))
+    ''';
+
+  // the same test without a join (streams aliased s): no source row, or an active one
+  // starts with a space: safe right after a multiline literal ending in AND
+  cSqlSourceActiveExists = ' ' + '''
+    NOT EXISTS (SELECT 1 FROM sources src WHERE src.id = s.source_id AND NOT (src.enabled = 1 AND
       (',' || REPLACE(src.content_types, ' ', '') || ',') LIKE ('%,' || s.content_type || ',%')))
     ''';
 
@@ -319,7 +329,12 @@ procedure TSQLiteStore.Init;
     try
       Exec('ALTER TABLE ' + ATable + ' ADD COLUMN ' + AColumnDef);
     except
-      // column already exists — ignore (SQLite has no ADD COLUMN IF NOT EXISTS)
+      on E: Exception do
+        // the column already exists - expected (SQLite has no ADD COLUMN IF NOT
+        // EXISTS). Anything else (locked / IO on a FUSE share) must surface now,
+        // not later as "no such column".
+        if not E.Message.ToLower.Contains('duplicate column') then
+          raise;
     end;
   end;
 
@@ -392,6 +407,8 @@ begin
   Exec('CREATE INDEX IF NOT EXISTS idx_streams_name ON streams(name COLLATE NOCASE)');
   Exec('CREATE INDEX IF NOT EXISTS idx_cats_source ON categories(source_id, content_type)');
   Exec('CREATE INDEX IF NOT EXISTS idx_epg_chan ON epg(channel_tvg_id, start_utc)');
+  Exec('CREATE INDEX IF NOT EXISTS idx_epg_src ON epg(source_id)');
+  Exec('CREATE INDEX IF NOT EXISTS idx_streams_tvg ON streams(tvg_id)');
   Exec('CREATE INDEX IF NOT EXISTS idx_items_list ON list_items(list_id)');
   // enforce unique credentials only when a username is actually set
   Exec('''
@@ -466,8 +483,10 @@ begin
     NewExc := StrArrayToCsv(CleanFilterTokens(CsvToStrArray(Exc)));
     if (NewInc <> Inc) or (NewExc <> Exc) then
     begin
+      // explicit types: a plain open array binds strings as ANSI on Win32 (CP1252),
+      // which turned Unicode tokens like the heavy bar into '?'
       FConn.ExecSQL('UPDATE sources SET include_filters = :i, exclude_filters = :e WHERE id = :id',
-        [NewInc, NewExc, Id]);
+        [NewInc, NewExc, Id], [ftWideString, ftWideString, ftInteger]);
       Changed := True;
     end;
   end;
@@ -849,9 +868,11 @@ procedure TSQLiteStore.MergeSnapshot(const ASnapshot: TSourceSnapshot);
 var
   Cat: TCategory;
   S: TStreamItem;
-  Now_, Key: string;
-  CatKeys, StrKeys: TDictionary<string, Boolean>;
-  LoadQ, CatIns, CatUpd, StrIns, StrUpd: TFDQuery;
+  Now_, Key, lOldCt: string;
+  CatKeys, StrKeys, lSnapKeys: TDictionary<string, Boolean>;
+  lTypeByUid: TDictionary<string, string>; // upstream id -> stored content type
+  LoadQ, CatIns, CatUpd, StrIns, StrUpd, lReKey: TFDQuery;
+  lIsM3U: Boolean;
 
   function LoadKeys(const ATable: string): TDictionary<string, Boolean>;
   begin
@@ -867,15 +888,34 @@ var
     end;
   end;
 
+  procedure BindReKey(const ANew, AOld, AUid: string);
+  begin
+    lReKey.ParamByName('n').AsWideString := ANew;
+    lReKey.ParamByName('s').AsInteger := ASnapshot.SourceId;
+    lReKey.ParamByName('o').AsWideString := AOld;
+    lReKey.ParamByName('u').AsWideString := AUid;
+  end;
+
 begin
   Now_ := DateTimeToIsoUtc(NowUtc);
   LoadQ := NewQuery; CatIns := NewQuery; CatUpd := NewQuery; StrIns := NewQuery; StrUpd := NewQuery;
-  CatKeys := nil; StrKeys := nil;
+  lReKey := NewQuery;
+  CatKeys := nil; StrKeys := nil; lSnapKeys := nil; lTypeByUid := nil;
   try
     // one read each instead of a SELECT per row; lets us decide insert vs update
     // (and so flag is_new) in memory.
     CatKeys := LoadKeys('categories');
     StrKeys := LoadKeys('streams');
+    lTypeByUid := TDictionary<string, string>.Create;
+    for Key in StrKeys.Keys do
+      lTypeByUid.AddOrSetValue(Key.Substring(Key.IndexOf('|') + 1), Key.Substring(0, Key.IndexOf('|')));
+    lSnapKeys := TDictionary<string, Boolean>.Create;
+    for S in ASnapshot.Streams do
+      lSnapKeys.AddOrSetValue(ContentTypeNames[S.ContentType] + '|' + S.UpstreamId, True);
+    LoadQ.Close;
+    LoadQ.Open('SELECT kind FROM sources WHERE id=:s', [ASnapshot.SourceId]);
+    lIsM3U := (not LoadQ.IsEmpty) and SameText(LoadQ.Fields[0].AsString, SourceKindNames[skM3U]);
+    LoadQ.Close;
 
     // prepared once, reused per row (no SQL re-parse per item)
     CatIns.SQL.Text := 'INSERT INTO categories(source_id,upstream_id,content_type,name,is_new) VALUES(:s,:u,:c,:n,1)';
@@ -916,6 +956,34 @@ begin
       for S in ASnapshot.Streams do
       begin
         Key := ContentTypeNames[S.ContentType] + '|' + S.UpstreamId;
+        // The same upstream item now arrives as another content type (the reader's
+        // classification changed, e.g. Xtream radio_streams live -> radio, or an M3U
+        // "NL| FILM" group movie -> live): re-key the stored row in place, so the
+        // id, the curated list items and the seen-state stay. Only when the old
+        // type is gone from this snapshot, and only where the upstream id names the
+        // same thing across types (M3U: URL-derived; Xtream: live <-> radio share
+        // the live stream ids - a VOD id 123 is not live channel 123).
+        if (not StrKeys.ContainsKey(Key)) and lTypeByUid.TryGetValue(S.UpstreamId, lOldCt) and
+           (lOldCt <> ContentTypeNames[S.ContentType]) and
+           not lSnapKeys.ContainsKey(lOldCt + '|' + S.UpstreamId) and
+           (lIsM3U or (MatchText(lOldCt, ['live', 'radio']) and (S.ContentType in [ctLive, ctRadio]))) then
+        begin
+          lReKey.SQL.Text := '''
+            UPDATE list_items SET content_type = :n
+            WHERE stream_item_id IN (SELECT id FROM streams WHERE source_id = :s AND content_type = :o AND upstream_id = :u)
+            ''';
+          BindReKey(ContentTypeNames[S.ContentType], lOldCt, S.UpstreamId);
+          lReKey.ExecSQL;
+          lReKey.SQL.Text := '''
+            UPDATE streams SET content_type = :n
+            WHERE source_id = :s AND content_type = :o AND upstream_id = :u
+            ''';
+          BindReKey(ContentTypeNames[S.ContentType], lOldCt, S.UpstreamId);
+          lReKey.ExecSQL;
+          StrKeys.Remove(lOldCt + '|' + S.UpstreamId);
+          StrKeys.AddOrSetValue(Key, True);
+          lTypeByUid.AddOrSetValue(S.UpstreamId, ContentTypeNames[S.ContentType]);
+        end;
         if StrKeys.ContainsKey(Key) then
         begin
           StrUpd.ParamByName('n').AsWideString := S.Name;
@@ -958,8 +1026,8 @@ begin
       raise;
     end;
   finally
-    CatKeys.Free; StrKeys.Free;
-    StrUpd.Free; StrIns.Free; CatUpd.Free; CatIns.Free; LoadQ.Free;
+    CatKeys.Free; StrKeys.Free; lSnapKeys.Free; lTypeByUid.Free;
+    lReKey.Free; StrUpd.Free; StrIns.Free; CatUpd.Free; CatIns.Free; LoadQ.Free;
   end;
   // new rows arrive with hidden=0: re-apply this source's filters to them
   RecomputeHidden(ASnapshot.SourceId, True);
@@ -1363,7 +1431,7 @@ begin
         WHERE s.id <> :id AND s.content_type = :ct AND s.upstream_url <> ''
           AND ((:tvg <> '' AND s.tvg_id = :tvg) OR (:tvg = '' AND s.name = :nm COLLATE NOCASE))
           AND
-        ''' + SQL_SOURCE_ACTIVE + ' ORDER BY s.source_id';
+        ''' + cSqlSourceActive + ' ORDER BY s.source_id';
       Q.ParamByName('id').AsInteger := AStreamItemId;
       Q.ParamByName('ct').AsWideString := Ct;
       Q.ParamByName('tvg').AsWideString := Tvg;
@@ -1392,7 +1460,7 @@ begin
   Result := nil;
   Q := NewQuery;
   try
-    if AStreamItemId >= EPISODE_ID_BASE then
+    if AStreamItemId >= cEpisodeIdBase then
     begin
       // a series episode: allowed when its series is on this list
       Q.Open(
@@ -1404,8 +1472,8 @@ begin
         JOIN list_items i ON i.stream_item_id = s.id
         LEFT JOIN sources src ON src.id = s.source_id
         WHERE e.id = :e AND i.list_id = :l AND src.id IS NOT NULL AND
-        ''' + SQL_SOURCE_ACTIVE + ' LIMIT 1',
-        [AStreamItemId - EPISODE_ID_BASE, AListId]);
+        ''' + cSqlSourceActive + ' LIMIT 1',
+        [AStreamItemId - cEpisodeIdBase, AListId]);
       if not Q.IsEmpty then
       begin
         Result := TStreamItem.Create;
@@ -1428,11 +1496,51 @@ begin
       JOIN list_items i ON i.stream_item_id = s.id
       LEFT JOIN sources src ON src.id = s.source_id
       WHERE i.list_id = :l AND s.id = :id AND
-      ''' + SQL_SOURCE_ACTIVE + ' LIMIT 1', [AListId, AStreamItemId]);
+      ''' + cSqlSourceActive + ' LIMIT 1', [AListId, AStreamItemId]);
     if not Q.IsEmpty then
       Result := ReadStream(Q);
   finally
     Q.Free;
+  end;
+end;
+
+function TSQLiteStore.FindEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+  AExts: TArray<string>): TArray<Integer>;
+var
+  lQuery: TFDQuery;
+  lKnown: TDictionary<string, TPair<Integer, string>>; // upstream id -> (row id, ext)
+  lHit: TPair<Integer, string>;
+  lExt: string;
+  i: Integer;
+begin
+  SetLength(Result, Length(AUpstreamIds));
+  if Length(AUpstreamIds) = 0 then
+    Exit;
+  lKnown := TDictionary<string, TPair<Integer, string>>.Create;
+  lQuery := NewQuery;
+  try
+    lQuery.SQL.Text := 'SELECT id, upstream_episode_id, ext FROM series_episodes WHERE stream_id = :s';
+    lQuery.ParamByName('s').AsInteger := ASeriesStreamId;
+    lQuery.Open;
+    while not lQuery.Eof do
+    begin
+      lKnown.AddOrSetValue(lQuery.FieldByName('upstream_episode_id').AsWideString,
+        TPair<Integer, string>.Create(lQuery.FieldByName('id').AsInteger, lQuery.FieldByName('ext').AsWideString));
+      lQuery.Next;
+    end;
+    for i := 0 to High(AUpstreamIds) do
+    begin
+      lExt := '';
+      if i <= High(AExts) then
+        lExt := AExts[i];
+      if lKnown.TryGetValue(AUpstreamIds[i], lHit) and (lHit.Value = lExt) then
+        Result[i] := cEpisodeIdBase + lHit.Key
+      else
+        Result[i] := 0;
+    end;
+  finally
+    FreeAndNil(lQuery);
+    FreeAndNil(lKnown);
   end;
 end;
 
@@ -1468,7 +1576,7 @@ begin
         Sel.ParamByName('s').AsInteger := ASeriesStreamId;
         Sel.ParamByName('u').AsWideString := AUpstreamIds[I];
         Sel.Open;
-        Result[I] := EPISODE_ID_BASE + Sel.Fields[0].AsInteger;
+        Result[I] := cEpisodeIdBase + Sel.Fields[0].AsInteger;
         Sel.Close;
       end;
       FConn.Commit;
@@ -1726,10 +1834,12 @@ begin
       InClause := InClause + IfThen(I > 0, ',', '') + QuotedStr(Cts[I]);
     Q := NewQuery;
     try
+      // only active sources: a swap onto a switched-off provider would silently
+      // drop the channel from the box
       Q.Open('''
-        SELECT id, source_id, name FROM streams
+        SELECT id, source_id, name FROM streams s
         WHERE content_type IN (
-        ''' + InClause + ') AND upstream_url <> ''''');
+        ''' + InClause + ') AND upstream_url <> '''' AND ' + cSqlSourceActiveExists);
       while not Q.Eof do
       begin
         Base := KeyOf(Q.FieldByName('name').AsString, Q.FieldByName('source_id').AsInteger, Qual, Head);
@@ -1871,9 +1981,9 @@ begin
       // candidate pool: same content type (and source unless all sources), still
       // playable. Keys are computed in Delphi (decorative letters, strip rules).
       Sql := '''
-        SELECT id, source_id, name, tvg_id, group_title FROM streams
-        WHERE content_type = :ct AND upstream_url <> ''
-        ''';
+        SELECT id, source_id, name, tvg_id, group_title FROM streams s
+        WHERE content_type = :ct AND upstream_url <> '' AND
+        ''' + cSqlSourceActiveExists;
       if Tvg <> '' then
         Tvgs.AddOrSetValue(Tvg.ToLower, True);
       // pass 1: self + name matches (collecting their tvg-ids); pass 2: rows that
@@ -2039,12 +2149,11 @@ begin
       // type; skip placeholder rows with no URL.
       Q.SQL.Text :=
         '''
-        SELECT id, name FROM streams
+        SELECT id, name FROM streams s
         WHERE source_id = :src AND content_type = :ct AND upstream_url <> '' AND (
           (:tvg <> '' AND tvg_id = :tvg) OR
-          (:tvg = '' AND name = :nm COLLATE NOCASE))
-        ORDER BY id LIMIT 1
-        ''';
+          (:tvg = '' AND name = :nm COLLATE NOCASE)) AND
+        ''' + cSqlSourceActiveExists + ' ORDER BY id LIMIT 1';
       for I := 0 to Rows.Count - 1 do
       begin
         M := Rows[I].M;
@@ -2213,6 +2322,7 @@ var
   C: TOutputChannel;
   HasOwn: Boolean;
   Wanted: TList<string>;
+  lWantedSet: TDictionary<string, Byte>;
   Lo, Hi, J: Integer;
 
   function Placeholders(N: Integer): string;
@@ -2293,12 +2403,16 @@ begin
       // only the ids of THIS list's prefer-own channels (not every guide id of every
       // source: that was a full scan of the epg table per box request)
       Wanted := TList<string>.Create;
+      lWantedSet := TDictionary<string, Byte>.Create;
       try
         for C in AChannels do
           if (C.ContentType = ctLive) and PreferOwn.ContainsKey(C.SourceId) then
             for K in C.EpgReadIds do
-              if (K <> '') and not Wanted.Contains(K) then
+              if (K <> '') and not lWantedSet.ContainsKey(K) then
+              begin
+                lWantedSet.Add(K, 0);
                 Wanted.Add(K);
+              end;
         Lo := 0;
         while Lo < Wanted.Count do
         begin
@@ -2320,7 +2434,8 @@ begin
           Lo := Hi + 1;
         end;
       finally
-        Wanted.Free;
+        FreeAndNil(lWantedSet);
+        FreeAndNil(Wanted);
       end;
     end;
 
@@ -2549,8 +2664,10 @@ begin
         ORDER BY id LIMIT 1
         ''')
     else
+      // typed as wide strings: an untyped open array binds ANSI on Win32, so a
+      // password with e.g. Cyrillic letters never matched
       Q.Open('SELECT * FROM lists WHERE enabled=1 AND output_username=:u AND output_password=:p LIMIT 1',
-        [AUser, APass]);
+        [AUser, APass], [ftWideString, ftWideString]);
     if not Q.IsEmpty then
       Result := ReadList(Q);
   finally
@@ -2745,7 +2862,7 @@ begin
   try
     // Join item -> stream (upstream data) -> group (override). COALESCE applies
     // the rename/regroup/logo overrides; empty overrides fall back to upstream.
-    // A disabled source / content type is never offered to a box (SQL_SOURCE_ACTIVE).
+    // A disabled source / content type is never offered to a box (cSqlSourceActive).
     // Order: favorites first, then the manual group drag-order (sort_order>0), then
     // any un-positioned groups A→Z; WITHIN a group honour the operator's channel
     // numbers (drag/sort-by-Nr) — numbered first in number order, then unnumbered A→Z.
@@ -2763,7 +2880,7 @@ begin
       LEFT JOIN list_groups g ON g.id = i.custom_group_id
       LEFT JOIN sources src ON src.id = s.source_id
       WHERE i.list_id = :l AND
-      ''' + SQL_SOURCE_ACTIVE +
+      ''' + cSqlSourceActive +
       '''
 
       ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
@@ -3130,8 +3247,8 @@ begin
           SELECT s.name AS nm, s.content_type AS ct, src.strip_prefixes AS sp,
             src.strip_suffixes AS ss,
             (SELECT COUNT(*) FROM list_items x WHERE x.list_id = :l AND x.stream_item_id = s.id) AS used
-          FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid
-          ''';
+          FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid AND
+          ''' + cSqlSourceActive; // never onto a switched-off source / type
         Sel.ParamByName('sid').AsInteger := R.StreamId;
         Sel.ParamByName('l').AsInteger := AListId;
         Sel.Open;

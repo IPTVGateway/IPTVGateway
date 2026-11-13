@@ -82,6 +82,8 @@ type
     [Test] procedure DisabledSourceOrTypeIsNotOffered;
     [Test] procedure SeriesEpisodesResolveOnlyOnTheirList;
     [Test] procedure PathCredentials_DashAndEncoding;
+    [Test] procedure ReclassifiedStreamKeepsIdAndListItem;
+    [Test] procedure PathCredentials_DashPerField;
     [Test] procedure OutputChannelsOrderAndOverrides;
     [Test] procedure GroupReorderControlsOutputOrder;
     [Test] procedure EpgReplaceAndLoadByTvgId;
@@ -3284,7 +3286,7 @@ begin
 
   Ids := Store.EnsureEpisodeIds(SerId, ['901', '902'], ['mkv', '']);
   Assert.AreEqual<Integer>(2, Length(Ids));
-  Assert.IsTrue(Ids[0] >= EPISODE_ID_BASE, 'outside the catalog id range');
+  Assert.IsTrue(Ids[0] >= cEpisodeIdBase, 'outside the catalog id range');
   Assert.AreNotEqual(Ids[0], Ids[1]);
   Again := Store.EnsureEpisodeIds(SerId, ['902', '901'], ['', 'mkv']);
   Assert.AreEqual(Ids[0], Again[1], 'stable per upstream episode');
@@ -3340,6 +3342,98 @@ begin
     Assert.AreEqual('Locked', Found.Name);
   finally
     Found.Free;
+  end;
+end;
+
+function SaveM3USource(const AStore: IStore): Integer;
+var
+  lSource: TSourceConfig;
+begin
+  lSource := TSourceConfig.Create;
+  try
+    lSource.Name := 'M';
+    lSource.Kind := skM3U;
+    lSource.Url := 'http://prov/get.php';
+    lSource.Enabled := True;
+    lSource.ContentTypes := [ctLive, ctMovie, ctSeries, ctRadio];
+    Result := AStore.SaveSource(lSource);
+  finally
+    FreeAndNil(lSource);
+  end;
+end;
+
+// The reader now classifies an item differently ("NL| FILM" movie -> live): the
+// stored row is re-keyed in place - same id, the bouquet item follows - instead of
+// a duplicate row next to a frozen old one.
+procedure TStorageTests.ReclassifiedStreamKeepsIdAndListItem;
+var
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lSrcId, lListId, lOldId: Integer;
+  lOut: TOutputChannelList;
+  lAll: TStreamItemList;
+begin
+  lStore := NewStore(FDbPath);
+  lSrcId := SaveM3USource(lStore);
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  try
+    lSnap.Streams.Add(MakeStream(lSrcId, ctMovie, 'u1', 'Film1 Action', 'NL| FILM', '', 'http://prov/live/u/p/1.ts'));
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lOldId := StreamIdByUpstream(lStore, 'u1');
+  lListId := NewTestList(lStore, 'L');
+  AddTestItem(lStore, lListId, lOldId, ctMovie);
+
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  try
+    lSnap.Streams.Add(MakeStream(lSrcId, ctLive, 'u1', 'Film1 Action', 'NL| FILM', '', 'http://prov/live/u/p/1.ts'));
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+
+  lAll := lStore.LoadStreams(Default(TCatalogFilter));
+  try
+    Assert.AreEqual<Integer>(1, lAll.Count, 'no duplicate row');
+    Assert.AreEqual(lOldId, lAll[0].Id, 'same id');
+    Assert.AreEqual(Ord(ctLive), Ord(lAll[0].ContentType));
+  finally
+    FreeAndNil(lAll);
+  end;
+  lOut := lStore.LoadOutputChannels(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lOut.Count);
+    Assert.AreEqual(Ord(ctLive), Ord(lOut[0].ContentType), 'the bouquet item follows the new type');
+  finally
+    FreeAndNil(lOut);
+  end;
+end;
+
+// '-' stands for an empty field on its own: a bouquet with a username but no password
+procedure TStorageTests.PathCredentials_DashPerField;
+var
+  lStore: IStore;
+  lList: TCustomList;
+  lFound: TCustomList;
+begin
+  lStore := NewStore(FDbPath);
+  lList := TCustomList.Create;
+  try
+    lList.Name := 'UserOnly';
+    lList.Enabled := True;
+    lList.OutputUsername := 'bob';
+    lStore.SaveList(lList);
+  finally
+    FreeAndNil(lList);
+  end;
+  lFound := FindListForPath(lStore, 'bob', PathCred(''));
+  try
+    Assert.IsNotNull(lFound, '/live/bob/-/12 reaches the bouquet');
+    Assert.AreEqual('UserOnly', lFound.Name);
+  finally
+    FreeAndNil(lFound);
   end;
 end;
 

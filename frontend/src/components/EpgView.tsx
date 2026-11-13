@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react'
 import { api } from '../api/client'
-import type { CustomItem, CustomList, EpgProgramme, StreamItem } from '../types'
+import type { CustomGroup, CustomItem, CustomList, EpgProgramme, StreamItem } from '../types'
+import { bouquetOrder, byNameCI } from '../lib/ordering'
 import { useDebounced } from '../hooks/useDebounced'
 import { useT } from '../i18n'
 
@@ -211,6 +212,7 @@ function OwnEpg({
   const [listId, setListId] = useState<number | ''>(activeListId ?? '')
   const [programmes, setProgrammes] = useState<EpgProgramme[]>([])
   const [items, setItems] = useState<CustomItem[]>([])
+  const [groups, setGroups] = useState<CustomGroup[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
@@ -256,6 +258,7 @@ function OwnEpg({
   useEffect(() => {
     if (listId === '') {
       setItems([])
+      setGroups([])
       return
     }
     let cancelled = false
@@ -266,6 +269,15 @@ function OwnEpg({
       })
       .catch(() => {
         /* labels just fall back to the tvg-id */
+      })
+    // groups give the lanes the bouquet's order (favorites first, then A→Z / drag order)
+    api
+      .listGroups(listId)
+      .then((rows) => {
+        if (!cancelled) setGroups(rows ?? [])
+      })
+      .catch(() => {
+        /* lanes then fall back to the upstream-group order */
       })
     return () => {
       cancelled = true
@@ -308,7 +320,25 @@ function OwnEpg({
     }, 3000)
   }
 
-  // Group programmes into one lane per channelTvgId, each sorted by start.
+  // the position of each (effective) tvg-id in the bouquet as the list panel
+  // shows it (its first channel wins when several share one guide id)
+  const laneRank = useMemo(() => {
+    let mode: 'name' | 'number' = 'name'
+    try {
+      if (localStorage.getItem('iptv.list.sortMode') === 'number') mode = 'number'
+    } catch {
+      /* default A→Z */
+    }
+    const m = new Map<string, number>()
+    for (const it of bouquetOrder(groups, items, mode)) {
+      const tvg = (it.tvgIdOverride || it.streamTvgId || '').trim()
+      if (tvg && !m.has(tvg)) m.set(tvg, m.size)
+    }
+    return m
+  }, [groups, items])
+
+  // Group programmes into one lane per channelTvgId, each sorted by start. Lanes
+  // follow the bouquet order; lanes matching no channel come after, A→Z by name.
   const lanes = useMemo(() => {
     const byChannel = new Map<string, EpgProgramme[]>()
     for (const p of programmes) {
@@ -316,10 +346,16 @@ function OwnEpg({
       if (arr) arr.push(p)
       else byChannel.set(p.channelTvgId, [p])
     }
+    const nameOf = (id: string) => chInfo.get(id)?.name || id
     return [...byChannel.entries()]
       .map(([channelTvgId, ps]) => ({ channelTvgId, programmes: [...ps].sort(byStart) }))
-      .sort((a, b) => a.channelTvgId.localeCompare(b.channelTvgId, undefined, { sensitivity: 'base' }))
-  }, [programmes])
+      .sort((a, b) => {
+        const ra = laneRank.get(a.channelTvgId) ?? Number.POSITIVE_INFINITY
+        const rb = laneRank.get(b.channelTvgId) ?? Number.POSITIVE_INFINITY
+        if (ra !== rb) return ra - rb
+        return byNameCI(nameOf(a.channelTvgId), nameOf(b.channelTvgId))
+      })
+  }, [programmes, laneRank, chInfo])
 
   return (
     <div className="epg-body own">
@@ -381,16 +417,20 @@ function EpgGrid({
 }) {
   const t = useT()
   const { windowStart, totalWidth, ticks, xOf } = useMemo(() => {
-    const starts: number[] = []
-    const stops: number[] = []
+    // a plain loop, not Math.min(...arr): spreading ~100k programmes as call
+    // arguments overflows the stack (RangeError)
+    let minStart = Number.POSITIVE_INFINITY
+    let maxStop = Number.NEGATIVE_INFINITY
     for (const l of lanes)
       for (const p of l.programmes) {
-        starts.push(new Date(p.startUtc).getTime())
-        stops.push(new Date(p.stopUtc).getTime())
+        const s = new Date(p.startUtc).getTime()
+        const e = new Date(p.stopUtc).getTime()
+        if (s < minStart) minStart = s
+        if (e > maxStop) maxStop = e
       }
     const startHour = Math.floor(now / HOUR_MS) * HOUR_MS
-    const minData = starts.length ? Math.min(...starts) : startHour
-    const maxData = stops.length ? Math.max(...stops) : startHour + 12 * HOUR_MS
+    const minData = Number.isFinite(minStart) ? minStart : startHour
+    const maxData = Number.isFinite(maxStop) ? maxStop : startHour + 12 * HOUR_MS
     // anchored on NOW: show the past the guide has (catch-up), at most a day back,
     // and up to two days ahead. Whole hours, so the ticks read 07:00, 08:00 …
     const wStart = Math.max(

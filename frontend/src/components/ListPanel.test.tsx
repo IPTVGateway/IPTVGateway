@@ -97,10 +97,45 @@ describe('ListPanel', () => {
     expect(api.sortGroup).toHaveBeenCalledWith(1, 10)
   })
 
-  it('deletes a group', async () => {
+  it('deletes a group only after confirm', async () => {
     renderPanel()
     await userEvent.click(screen.getByTitle(/Delete group/))
+    expect(api.deleteGroup).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }))
     expect(api.deleteGroup).toHaveBeenCalledWith(10)
+  })
+
+  it('cancelling the group delete keeps the group', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/Delete group/))
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(api.deleteGroup).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Confirm delete' })).toBeNull()
+  })
+
+  it('a pointercancel aborts a channel drag without reordering (no stale drag on the next pointerup)', async () => {
+    const twoItems: CustomItem[] = [
+      { id: 100, listId: 1, streamItemId: 5, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 1, streamName: 'Zebra' },
+      { id: 101, listId: 1, streamItemId: 6, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 2, streamName: 'Alpha' },
+    ]
+    renderPanel({ items: twoItems })
+    await userEvent.click(screen.getByRole('button', { name: 'No.' }))
+    const grips = screen.getAllByLabelText('Reorder')
+    const targetRow = grips[0].closest('li') as HTMLElement
+    const orig = (document as unknown as { elementFromPoint?: unknown }).elementFromPoint
+    ;(document as unknown as { elementFromPoint: unknown }).elementFromPoint = () => targetRow
+    try {
+      fireEvent.pointerDown(grips[1], { pointerId: 1 })
+      fireEvent.pointerMove(grips[1], { pointerId: 1, clientX: 5, clientY: 5 })
+      expect(targetRow.className).toContain('drop-target')
+      fireEvent.pointerCancel(grips[1], { pointerId: 1 })
+      expect(targetRow.className).not.toContain('drop-target')
+      // a later stray pointerup must not apply the cancelled drag
+      fireEvent.pointerUp(grips[1], { pointerId: 1 })
+    } finally {
+      ;(document as unknown as { elementFromPoint: unknown }).elementFromPoint = orig
+    }
+    expect(api.reorderGroup).not.toHaveBeenCalled()
   })
 
   it('de-duplicates the list and reports how many were removed', async () => {

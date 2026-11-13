@@ -4,7 +4,8 @@ import { useT } from '../i18n'
 
 /**
  * Simple password gate for the admin UI. The password is validated by trying an
- * authenticated /api/health; on success the parent is told we're in. The actual
+ * authenticated endpoint (/api/config — /api/health is open and would accept any
+ * password); on success the parent is told we're in. The actual
  * secret lives in the backend config.json (set by whoever runs the service).
  */
 export function LoginGate({ onAuthed }: { onAuthed: () => void }) {
@@ -19,7 +20,7 @@ export function LoginGate({ onAuthed }: { onAuthed: () => void }) {
     setError(null)
     adminAuth.set(pw)
     try {
-      await api.health() // 200 = correct, 401 = wrong password
+      await api.getConfig() // 200 = correct, 401 = wrong password
       onAuthed() // success: the password stays in adminAuth for subsequent /api calls
     } catch (err) {
       // Never leave an UNVALIDATED password in storage (it would be sent on every

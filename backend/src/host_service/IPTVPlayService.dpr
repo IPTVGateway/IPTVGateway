@@ -62,6 +62,7 @@ uses
 
 var
   GRunner: TAppRunner;
+  GLogLock: TObject; // Writeln from many threads (Indy workers, ingest, relay) garbles lines
 
 {$IFDEF MSWINDOWS}
 function ConsoleCtrlHandler(CtrlType: DWORD): BOOL; stdcall;
@@ -81,9 +82,17 @@ end;
 {$ENDIF}
 
 procedure StdLog(const AMsg: string);
+var
+  lLine: string;
 begin
-  Writeln(Format('%s  %s', [FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now), AMsg]));
-  Flush(Output); // unbuffered so journald/console shows lines immediately
+  lLine := Format('%s  %s', [FormatDateTime('yyyy-mm-dd hh:nn:ss.zzz', Now), AMsg]);
+  TMonitor.Enter(GLogLock);
+  try
+    Writeln(lLine);
+    Flush(Output); // unbuffered so journald/console shows lines immediately
+  finally
+    TMonitor.Exit(GLogLock);
+  end;
 end;
 
 procedure InstallSignalHandlers;
@@ -103,6 +112,7 @@ var
 begin
   // config.json next to the exe, or in the data folder when IPTV_CONFIG is set
   // (Docker) - created there on first start, see ResolveDaemonConfigPath
+  GLogLock := TObject.Create;
   CfgPath := ResolveDaemonConfigPath(ExtractFilePath(ParamStr(0)), CfgNote);
   Cfg := TAppConfig.Load(CfgPath);
 
@@ -115,8 +125,15 @@ begin
     StdLog(Format('IPTVPlay service starting on port %d (HTTPS=%s). Ctrl+C / SIGTERM to stop.',
       [Cfg.HttpPort, BoolToStr(Cfg.UseHttps, True)]));
     GRunner.WaitFor;        // block until a stop signal winds the worker down
-    StdLog('Stopped.');
+    if GRunner.StartError <> '' then
+    begin
+      // non-zero so systemd (Restart=on-failure) / Docker restart policies retry
+      StdLog('Exiting: the service did not start.');
+      ExitCode := 1;
+    end
+    else
+      StdLog('Stopped.');
   finally
-    GRunner.Free;
+    FreeAndNil(GRunner);
   end;
 end.

@@ -57,9 +57,15 @@ type
     procedure StatusSetCounts(ASourceId, AStreams, ACategories: Integer);
     procedure StatusSetProgrammes(ASourceId, ACount: Integer);
     procedure StatusDone(ASourceId: Integer; const AError: string);
+  private
+    FCancelled: Integer; // <> 0 once Cancel was called (shutdown)
+    function IsCancelled: Boolean;
   public
     constructor Create(const AStore: IStore; const ALog: TLogProc = nil);
     destructor Destroy; override;
+    /// Shutdown: refresh loops stop before their next source / guide (the one in
+    /// progress finishes), so a stop during the daily refresh doesn't wait minutes.
+    procedure Cancel;
     /// Refresh a single source (catalog + EPG).
     procedure RefreshSource(ASourceId: Integer);
     /// Refresh every enabled source. Errors per source are logged, not fatal.
@@ -201,6 +207,7 @@ var
   Epg: TEpgProgrammeList;
   I: Integer;
   KeepTvgIds: TArray<string>;
+  lAdoptedEpgUrl: string; // url-tvg found in the M3U header, saved with the bookkeeping
 begin
   if not StatusBegin(ASourceId) then
   begin
@@ -235,6 +242,10 @@ begin
         for I := Snapshot.Streams.Count - 1 downto 0 do
           if not (Snapshot.Streams[I].ContentType in Found.ContentTypes) then
             Snapshot.Streams.Delete(I);
+        // categories too (Xtream reads the live categories for radio as well)
+        for I := Snapshot.Categories.Count - 1 downto 0 do
+          if not (Snapshot.Categories[I].ContentType in Found.ContentTypes) then
+            Snapshot.Categories.Delete(I);
 
         WriteLocked(procedure begin FStore.MergeSnapshot(Snapshot); end);
         // provider account info (expiry etc.) is persisted with LastRefreshUtc below
@@ -251,10 +262,12 @@ begin
           [Snapshot.Streams.Count, Snapshot.Categories.Count]));
         // adopt an XMLTV url discovered in an M3U header so the EPG fetch below
         // (and future refreshes) can use it
+        // (saved with the bookkeeping below, onto the CURRENT row - saving Found
+        // here would undo edits made to the source during the download)
         if (Found.EpgUrl = '') and (Snapshot.EpgUrl <> '') then
         begin
           Found.EpgUrl := Snapshot.EpgUrl;
-          WriteLocked(procedure begin FStore.SaveSource(Found); end);
+          lAdoptedEpgUrl := Snapshot.EpgUrl;
         end;
       finally
         Snapshot.Free;
@@ -318,6 +331,8 @@ begin
                 X.ExpiresUtc := Found.ExpiresUtc;
                 X.MaxConnections := Found.MaxConnections;
                 X.TzOffsetMin := Found.TzOffsetMin;
+                if (X.EpgUrl = '') and (lAdoptedEpgUrl <> '') then
+                  X.EpgUrl := lAdoptedEpgUrl;
                 FStore.SaveSource(X);
                 Break;
               end;
@@ -336,6 +351,16 @@ begin
       raise; // RefreshAll catches + logs per source; a single-refresh thread just ends
     end;
   end;
+end;
+
+procedure TIngestService.Cancel;
+begin
+  TInterlocked.Exchange(FCancelled, 1);
+end;
+
+function TIngestService.IsCancelled: Boolean;
+begin
+  Result := TInterlocked.CompareExchange(FCancelled, 0, 0) <> 0;
 end;
 
 procedure TIngestService.RefreshAll;
@@ -369,6 +394,11 @@ begin
 
   for I := 0 to High(Ids) do
   try
+    if IsCancelled then
+    begin
+      Log('Refresh cancelled (shutdown)');
+      Exit;
+    end;
     RefreshSource(Ids[I]);
     TrimProcessMemory; // hand each source's freed parse memory back before the next
   except
@@ -453,11 +483,13 @@ begin
 
     for I := 0 to High(Urls) do
     begin
+      if IsCancelled then
+        Break;
       Slot := -(I + 1);
       FEpgLock.Acquire; // one guide parse at a time (memory)
       try
         try
-          Log(Format('Extra EPG %d: %s', [I + 1, Urls[I]]));
+          Log(Format('Extra EPG %d: %s', [I + 1, MaskUrlSecrets(Urls[I])]));
           // keep only channels some list channel matches, already while parsing
           Progs := ReadExtraXmltv(Urls[I], Slot, Guide,
             function(AInfo: TEpgChannelInfo): Boolean
@@ -521,7 +553,7 @@ begin
   Sources := FStore.LoadSources;
   try
     for Src in Sources do
-      if Src.Enabled then
+      if Src.Enabled and not IsCancelled then
       try
         Log(Format('Updating EPG for "%s"...', [Src.Name]));
         EpgReader := CreateEpgReader;

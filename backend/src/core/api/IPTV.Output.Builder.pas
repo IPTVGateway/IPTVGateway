@@ -27,7 +27,7 @@ unit IPTV.Output.Builder;
 interface
 
 uses
-  IPTV.Storage.Intf, IPTV.Model.CustomList, IPTV.Model.Catalog;
+  IPTV.Storage.Intf, IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.CustomList, IPTV.Model.Catalog;
 
 type
   /// Dummy-EPG generation settings (mirrors the config fields). Enabled=False =>
@@ -135,6 +135,23 @@ function BuildXmltvChannels(const AStore: IStore; const AChannels: TOutputChanne
   const ADisplayNames: TArray<string> = nil;
   const AGuideIds: TArray<string> = nil): string;
 
+/// Extension of a URL's file name ('mkv' for .../123.mkv?x=1), '' if none.
+function UrlExt(const AUrl: string): string;
+
+/// AUrl with the file extension in its PATH replaced by AExt (never inside the query).
+function SwapUrlExt(const AUrl, AExt: string): string;
+
+/// LIVE only: the upstream URL in the container the box asked for (.ts / .m3u8).
+/// Only an Xtream source's .ts/.m3u8 URL is rewritten; any other URL (an M3U HLS
+/// playlist, a radio .mp3, a play.php?id=) and every non-live item come back as-is.
+function LiveUpstreamUrl(const AStore: IStore; const AStream: TStreamItem; const AExt: string): string;
+
+/// The source with id ASourceId (caller frees), nil when it is gone.
+function FindSourceById(const AStore: IStore; ASourceId: Integer): TSourceConfig;
+
+/// Drop (and free) every channel whose content type is not in ATypes.
+procedure KeepContentTypes(AChannels: TOutputChannelList; const ATypes: TContentTypes);
+
 /// A list login as a URL PATH segment: percent-encoded (a '/', '?' or '#' in a
 /// password would break the path) and '-' for an empty one (an empty segment,
 /// /live///12, is dropped or rejected by players and routers).
@@ -158,7 +175,91 @@ implementation
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, System.DateUtils, System.StrUtils,
   System.NetEncoding,
-  IPTV.Model.Types, IPTV.Model.Epg, IPTV.Model.Source, IPTV.Core.Utils;
+  IPTV.Model.Epg, IPTV.Core.Utils;
+
+const
+  cExtTs = 'ts';
+  cExtHls = 'm3u8';
+
+function UrlExt(const AUrl: string): string;
+var
+  lQuery, lDot, lSlash, lPathEnd: Integer;
+begin
+  Result := '';
+  lQuery := AUrl.IndexOf('?');
+  if lQuery >= 0 then
+    lPathEnd := lQuery
+  else
+    lPathEnd := AUrl.Length;
+  lDot := AUrl.LastIndexOf('.', lPathEnd - 1);
+  lSlash := AUrl.LastIndexOf('/', lPathEnd - 1);
+  if (lDot > lSlash) and (lDot >= 0) then
+    Result := AUrl.Substring(lDot + 1, lPathEnd - lDot - 1);
+end;
+
+function SwapUrlExt(const AUrl, AExt: string): string;
+var
+  lQuery, lDot, lSlash, lPathEnd: Integer;
+begin
+  Result := AUrl;
+  if AExt = '' then
+    Exit;
+  // only the extension in the PATH; a query value may contain dots too
+  lQuery := AUrl.IndexOf('?');
+  if lQuery >= 0 then
+    lPathEnd := lQuery
+  else
+    lPathEnd := AUrl.Length;
+  lDot := AUrl.LastIndexOf('.', lPathEnd - 1);
+  lSlash := AUrl.LastIndexOf('/', lPathEnd - 1);
+  if (lDot > lSlash) and (lDot >= 0) then
+    Result := AUrl.Substring(0, lDot) + '.' + AExt + AUrl.Substring(lPathEnd);
+end;
+
+function FindSourceById(const AStore: IStore; ASourceId: Integer): TSourceConfig;
+var
+  lSources: TObjectList<TSourceConfig>;
+  i: Integer;
+begin
+  Result := nil;
+  lSources := AStore.LoadSources;
+  try
+    for i := 0 to lSources.Count - 1 do
+      if lSources[i].Id = ASourceId then
+        Exit(lSources.Extract(lSources[i]));
+  finally
+    FreeAndNil(lSources);
+  end;
+end;
+
+function LiveUpstreamUrl(const AStore: IStore; const AStream: TStreamItem; const AExt: string): string;
+var
+  lSource: TSourceConfig;
+  lCurrent: string;
+begin
+  Result := AStream.UpstreamUrl;
+  if (AExt = '') or (AStream.ContentType <> ctLive) then
+    Exit;
+  lCurrent := UrlExt(Result);
+  if not (SameText(lCurrent, cExtTs) or SameText(lCurrent, cExtHls)) then
+    Exit;
+  lSource := FindSourceById(AStore, AStream.SourceId);
+  try
+    if (lSource <> nil) and (lSource.Kind = skXtream) then
+      Result := SwapUrlExt(Result, AExt);
+  finally
+    FreeAndNil(lSource);
+  end;
+end;
+
+procedure KeepContentTypes(AChannels: TOutputChannelList; const ATypes: TContentTypes);
+var
+  i: Integer;
+begin
+  for i := AChannels.Count - 1 downto 0 do
+    if not (AChannels[i].ContentType in ATypes) then
+      AChannels.Delete(i); // owned list: frees it
+end;
 
 function TimeshiftUpstreamUrl(const AStore: IStore; const AStream: TStreamItem;
   ADurationMin: Integer; AStartUtc: TDateTime; const AExt: string): string;
@@ -248,6 +349,10 @@ begin
   end;
 end;
 
+const
+  /// how PathCred writes an empty login field into a URL path
+  cPathCredEmpty = '-';
+
 function PathCred(const S: string): string;
 const
   Unreserved = ['A'..'Z', 'a'..'z', '0'..'9', '-', '.', '_', '~'];
@@ -256,7 +361,7 @@ var
   I: Integer;
 begin
   if S = '' then
-    Exit('-');
+    Exit(cPathCredEmpty);
   Result := '';
   B := TEncoding.UTF8.GetBytes(S);
   for I := 0 to High(B) do
@@ -268,21 +373,35 @@ end;
 
 function FindListForPath(const AStore: IStore; const AUser, APass: string): TCustomList;
 var
-  U, P: string;
+  lUser, lPass: string;
+
+  function Dash(const S: string): string;
+  begin
+    if S = cPathCredEmpty then
+      Result := ''
+    else
+      Result := S;
+  end;
+
 begin
   Result := AStore.FindListByCredentials(AUser, APass);
-  if (Result = nil) and (AUser.Contains('%') or APass.Contains('%')) then
-  begin
-    try
-      U := TNetEncoding.URL.URLDecode(AUser);
-      P := TNetEncoding.URL.URLDecode(APass);
-    except
-      Exit(nil);
-    end;
-    Result := AStore.FindListByCredentials(U, P);
+  if Result <> nil then
+    Exit;
+  lUser := AUser;
+  lPass := APass;
+  if AUser.Contains('%') or APass.Contains('%') then
+  try
+    lUser := TNetEncoding.URL.URLDecode(AUser);
+    lPass := TNetEncoding.URL.URLDecode(APass);
+    Result := AStore.FindListByCredentials(lUser, lPass);
+    if Result <> nil then
+      Exit;
+  except
+    Exit(nil); // malformed escape
   end;
-  if (Result = nil) and (AUser = '-') and (APass = '-') then
-    Result := AStore.FindListByCredentials('', '');
+  // PathCred writes '-' for EACH empty field (a login with only a username too)
+  if (lUser = cPathCredEmpty) or (lPass = cPathCredEmpty) then
+    Result := AStore.FindListByCredentials(Dash(lUser), Dash(lPass));
 end;
 
 function XmltvTime(const ADtUtc: TDateTime): string;
@@ -596,6 +715,12 @@ var
 begin
   Channels := SelectOutputChannels(AStore, AListId, AGroups);
   try
+    // a series item is a container (get_series_info), not a playable file; the
+    // Plex/Jellyfin tuner (sequential numbers) only takes linear channels
+    if ASequentialChno then
+      KeepContentTypes(Channels, [ctLive, ctRadio])
+    else
+      KeepContentTypes(Channels, [ctLive, ctRadio, ctMovie]);
     Names := nil;
     if ANames.AnyName then
       Names := ComputeDisplayNames(AStore, Channels, ANames);
@@ -781,6 +906,7 @@ var
 begin
   Channels := SelectOutputChannels(AStore, AListId, AGroups);
   try
+    KeepContentTypes(Channels, [ctLive, ctRadio]); // a guide is for linear channels only
     Names := nil;
     if ANames.AnyName then
       Names := ComputeDisplayNames(AStore, Channels, ANames);

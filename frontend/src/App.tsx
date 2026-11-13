@@ -10,7 +10,7 @@ import { EpgView } from './components/EpgView'
 import { SettingsView } from './components/SettingsView'
 import { MediaServersView } from './components/MediaServersView'
 import { Splitter } from './components/Splitter'
-import { useT } from './i18n'
+import { useI18n, useT } from './i18n'
 
 const clampW = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 function loadW(key: string, def: number): number {
@@ -38,6 +38,7 @@ const PANES: { value: Pane; label: string }[] = [
 //   Sources (left) · merged Catalog (middle) · curated List (right).
 export function App() {
   const t = useT()
+  const { reload: reloadLanguages } = useI18n()
   const [health, setHealth] = useState('checking…')
   const [version, setVersion] = useState('')
   // null = still checking; false = locked (show login); true = in
@@ -80,24 +81,42 @@ export function App() {
     return () => setUnauthorizedHandler(null)
   }, [])
 
-  // initial reachability + auth probe: 200 => in; 401 => locked; other => reachable-but-down
+  // initial reachability + auth probe. /api/health is NOT password-protected, so
+  // it only gives reachability + version; the stored password is validated
+  // against an authenticated endpoint (/api/config): 200 => in; 401 => locked
+  // (login screen, no workbench flash); other => reachable-but-down
   useEffect(() => {
+    let cancelled = false
     api
       .health()
       .then((h) => {
+        if (cancelled) return
         setHealth(h.status)
         if (h.version) setVersion(h.version)
-        setAuthed(true)
       })
       .catch((e) => {
-        if (e instanceof UnauthorizedError) {
-          setAuthed(false)
-        } else {
+        if (!cancelled && !(e instanceof UnauthorizedError))
           setHealth(`unreachable: ${(e as Error).message}`)
-          setAuthed(true) // backend down, not locked — let the app load
-        }
       })
+    api
+      .getConfig()
+      .then(() => {
+        if (!cancelled) setAuthed(true)
+      })
+      .catch((e) => {
+        if (cancelled) return
+        // backend down / service not started is not "locked" — let the app load
+        setAuthed(!(e instanceof UnauthorizedError))
+      })
+    return () => {
+      cancelled = true
+    }
   }, [])
+
+  // add-on UI languages need the admin password: fetch them again once in
+  useEffect(() => {
+    if (authed === true) reloadLanguages()
+  }, [authed, reloadLanguages])
 
   // once authenticated, load proxy state and refresh the health indicator
   // (the initial probe leaves health on "checking…" when it got a 401)
@@ -193,19 +212,25 @@ export function App() {
   // sequence guard: switching lists fast can let an older fetch resolve last and
   // overwrite the newer list's data — only the latest request may apply results.
   const loadSeqRef = useRef(0)
+  // the list whose groups/items are currently in state: a refresh of that same
+  // list (after any save) must NOT show the "Loading…" placeholder — that would
+  // unmount every row, losing unsaved edits elsewhere and the scroll position
+  const loadedListIdRef = useRef<number | null>(null)
   const loadActiveList = useCallback(() => {
     if (activeListId == null) {
+      loadedListIdRef.current = null
       setGroups([])
       setItems([])
       return
     }
     const seq = ++loadSeqRef.current
     const isStale = () => seq !== loadSeqRef.current
-    setListLoading(true)
+    if (loadedListIdRef.current !== activeListId) setListLoading(true)
     setListError(null)
     Promise.all([api.listGroups(activeListId), api.listItems(activeListId)])
       .then(([g, i]) => {
         if (isStale()) return
+        loadedListIdRef.current = activeListId
         setGroups(g)
         setItems(i)
       })

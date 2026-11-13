@@ -61,7 +61,7 @@ const
 implementation
 
 uses
-  System.Classes, System.NetConsts, System.Net.URLClient, System.ZLib,
+  System.Classes, System.NetConsts, System.Net.URLClient, System.ZLib, System.Math,
   IdHTTP, IdGlobal, IdCookieManager,
   IPTV.Core.Utils;
 
@@ -119,27 +119,94 @@ begin
   Result := True;
 end;
 
+const
+  cCodePageWestern = 1252;  // superset of ISO-8859-1 (Latin-1)
+  cCodePageCyrillic = 1251;
+  cCodePageLatin9 = 28605;  // ISO-8859-15
+  cDeclScanBytes = 256;     // the XML prolog sits at the very start
+  // share of high (>= $C0) bytes among letters above which a non-UTF-8 text is
+  // taken as Cyrillic: Russian text is nearly all high bytes, Western text only
+  // has a few accented letters between ASCII
+  cCyrillicHighShare = 0.3;
+
+// code page named by an XML prolog (<?xml ... encoding="ISO-8859-1"?>), 0 if none / unknown
+function DeclaredCodePage(const ABytes: TBytes): Integer;
+var
+  lHead, lEnc: string;
+  lPos, lEnd, i: Integer;
+begin
+  Result := 0;
+  SetLength(lHead, Min(Length(ABytes), cDeclScanBytes));
+  for i := 1 to Length(lHead) do
+    lHead[i] := Char(ABytes[i - 1]); // ASCII view is enough for the prolog
+  lPos := Pos('encoding=', LowerCase(lHead));
+  if lPos = 0 then
+    Exit;
+  lPos := lPos + Length('encoding=') + 1; // skip the quote
+  lEnd := lPos;
+  while (lEnd <= Length(lHead)) and not CharInSet(lHead[lEnd], ['"', '''', '?', ' ']) do
+    Inc(lEnd);
+  lEnc := LowerCase(Copy(lHead, lPos, lEnd - lPos));
+  if (lEnc = 'iso-8859-1') or (lEnc = 'latin1') or (lEnc = 'latin-1') or (lEnc = 'windows-1252') then
+    Result := cCodePageWestern
+  else if lEnc = 'iso-8859-15' then
+    Result := cCodePageLatin9
+  else if lEnc = 'windows-1251' then
+    Result := cCodePageCyrillic;
+end;
+
+// non-UTF-8 text without a declaration: Cyrillic (1251) or Western (1252)?
+function GuessLegacyCodePage(const ABytes: TBytes): Integer;
+var
+  lLetters, lHigh: Int64;
+  i: Integer;
+  lByte: Byte;
+begin
+  lLetters := 0;
+  lHigh := 0;
+  for i := 0 to High(ABytes) do
+  begin
+    lByte := ABytes[i];
+    if (lByte >= Ord('A')) and (lByte <= Ord('z')) then
+      Inc(lLetters)
+    else if lByte >= $C0 then
+    begin
+      Inc(lLetters);
+      Inc(lHigh);
+    end;
+  end;
+  if (lLetters > 0) and (lHigh / lLetters > cCyrillicHighShare) then
+    Result := cCodePageCyrillic
+  else
+    Result := cCodePageWestern;
+end;
+
 function DecodeBytes(const ABytes: TBytes): string;
 var
-  Enc: TEncoding;
-  BomLen: Integer;
+  lEnc: TEncoding;
+  lBomLen, lCodePage: Integer;
 begin
   if Length(ABytes) = 0 then
     Exit('');
-  Enc := TEncoding.UTF8;
-  BomLen := TEncoding.GetBufferEncoding(ABytes, Enc, TEncoding.UTF8);
-  if BomLen > 0 then
-    Exit(Enc.GetString(ABytes, BomLen, Length(ABytes) - BomLen));
+  // nil: detect any BOM (UTF-8, and UTF-16 LE/BE too)
+  lEnc := nil;
+  lBomLen := TEncoding.GetBufferEncoding(ABytes, lEnc, TEncoding.UTF8);
+  if lBomLen > 0 then
+    Exit(lEnc.GetString(ABytes, lBomLen, Length(ABytes) - lBomLen));
   if IsValidUtf8(ABytes) then
     Exit(TEncoding.UTF8.GetString(ABytes));
-  // not UTF-8 → assume Windows-1251 (guard: that encoding may be unavailable on
-  // a bare Linux without ICU code-page support)
+  // not UTF-8: the XML prolog's encoding, else a Cyrillic/Western guess (older
+  // European grabbers send ISO-8859-1; it used to come out as Cyrillic)
+  lCodePage := DeclaredCodePage(ABytes);
+  if lCodePage = 0 then
+    lCodePage := GuessLegacyCodePage(ABytes);
+  // guarded: a code page may be unavailable on a bare Linux without ICU
   try
-    Enc := TEncoding.GetEncoding(1251);
+    lEnc := TEncoding.GetEncoding(lCodePage);
     try
-      Result := Enc.GetString(ABytes);
+      Result := lEnc.GetString(ABytes);
     finally
-      Enc.Free;
+      FreeAndNil(lEnc);
     end;
   except
     Result := TEncoding.ANSI.GetString(ABytes);
@@ -207,6 +274,31 @@ end;
 
 // ── fetchers ────────────────────────────────────────────────────────────────
 
+type
+  // Indy here has no TLS handler (https goes through the OS client): a plain-http
+  // portal that redirects to an https node is stopped and re-fetched over https
+  TRedirectCatcher = class
+  private
+    FHttpsTarget: string;
+  public
+    procedure HandleRedirect(Sender: TObject; var ADest: string; var ANumRedirect: Integer;
+      var AHandled: Boolean; var AMethod: TIdHTTPMethod);
+    property HttpsTarget: string read FHttpsTarget;
+  end;
+
+procedure TRedirectCatcher.HandleRedirect(Sender: TObject; var ADest: string;
+  var ANumRedirect: Integer; var AHandled: Boolean; var AMethod: TIdHTTPMethod);
+begin
+  if ADest.StartsWith('https:', True) then
+  begin
+    FHttpsTarget := ADest;
+    AHandled := False; // stop Indy here; WinHttpGetBytes takes over
+  end;
+end;
+
+function WinHttpGetBytes(const AUrl, AUserAgent: string; AReadTimeoutMs: Integer;
+  const AReferer: string): TBytes; forward;
+
 // http: Indy parses the response itself and tolerates the slightly non-standard
 // HTTP that WinHTTP rejects with 12152.
 function IndyGetBytes(const AUrl, AUserAgent: string; AReadTimeoutMs: Integer;
@@ -215,10 +307,13 @@ var
   H: TIdHTTP;
   MS: TBytesStream;
   Attempt, Status: Integer;
+  lCatcher: TRedirectCatcher;
 begin
   Result := nil;
+  lCatcher := TRedirectCatcher.Create;
   H := TIdHTTP.Create(nil);
   try
+    H.OnRedirect := lCatcher.HandleRedirect;
     H.HandleRedirects := True;
     H.RedirectMaximum := 5;            // cap redirect chains (#3)
     H.AllowCookies := True;            // keep session cookies across redirects (#4)
@@ -248,6 +343,8 @@ begin
       MS := TBytesStream.Create;
       try
         H.Get(AUrl, MS);
+        if lCatcher.HttpsTarget <> '' then
+          Exit(WinHttpGetBytes(lCatcher.HttpsTarget, AUserAgent, AReadTimeoutMs, AReferer));
         Status := H.ResponseCode;
         if ((Status = 429) or (Status = 503)) and (Attempt < 3) then
         begin
@@ -276,7 +373,8 @@ begin
       raise Exception.CreateFmt('truncated response from %s: expected %d bytes, got %d',
         [MaskUrlSecrets(AUrl), H.Response.ContentLength, Length(Result)]);
   finally
-    H.Free;
+    FreeAndNil(H);
+    FreeAndNil(lCatcher);
   end;
 end;
 

@@ -230,6 +230,64 @@ begin
   Result := (S = '1') or SameText(S, 'true');
 end;
 
+const
+  cMaxHour = 23;
+  cMaxMinute = 59;
+  cMinPort = 1;
+  cMaxPort = 65535;
+  cMaxEpgDays = 31;
+
+// 400 for values the service can't use (also checked on import)
+procedure CheckSettingsRange(AHour, AMinute, AProxyPort, AEpgDays: Integer);
+begin
+  if (AHour < 0) or (AHour > cMaxHour) or (AMinute < 0) or (AMinute > cMaxMinute) then
+    raise EMARSHttpException.Create('refreshHour/refreshMinute out of range (0-23 / 0-59)', 400);
+  if (AProxyPort < cMinPort) or (AProxyPort > cMaxPort) then
+    raise EMARSHttpException.Create(Format('proxyPort must be %d-%d', [cMinPort, cMaxPort]), 400);
+  if AProxyPort = App.Config.HttpPort then
+    raise EMARSHttpException.Create('proxyPort must differ from the web/API port', 400);
+  if (AEpgDays < 0) or (AEpgDays > cMaxEpgDays) then
+    raise EMARSHttpException.Create(Format('epgMaxDays must be 0-%d', [cMaxEpgDays]), 400);
+end;
+
+// The Plex bouquet of an imported bundle: the import recreates the lists (new ids),
+// so map the bundle's plexListId through its list NAME; 0 (= first enabled) if gone.
+function ImportedPlexListId(const ABody, ACfg: TJSONObject): Integer;
+var
+  lOldId: Integer;
+  lName: string;
+  lItem: TJSONValue;
+  lLists: TObjectList<TCustomList>;
+  i: Integer;
+begin
+  Result := 0;
+  lOldId := ACfg.GetValue<Integer>('plexListId', 0);
+  if (lOldId = 0) or not (ABody.GetValue('lists') is TJSONArray) then
+    Exit;
+  lName := '';
+  for lItem in TJSONArray(ABody.GetValue('lists')) do
+    if (lItem is TJSONObject) and (TJSONObject(lItem).GetValue<Integer>('id', 0) = lOldId) then
+      lName := TJSONObject(lItem).GetValue<string>('name', '');
+  if lName = '' then
+    Exit;
+  lLists := App.Store.LoadLists;
+  try
+    for i := 0 to lLists.Count - 1 do
+      if SameText(lLists[i].Name, lName) then
+        Exit(lLists[i].Id);
+  finally
+    FreeAndNil(lLists);
+  end;
+end;
+
+// an imported publicBaseUrl, normalised like a saved one; an unusable value keeps
+// the current setting
+function ImportedBaseUrl(const AValue: string): string;
+begin
+  if not NormalizePublicBaseUrl(AValue, Result) then
+    Result := App.Config.PublicBaseUrl;
+end;
+
 function MakeFilter(ASourceId: Integer; const AType, AOnlyNew, ASearch, APrefix, ACategory: string;
   ALimit: Integer = 0; AOffset: Integer = 0; AIncludeHidden: Boolean = False;
   AInCategory: Boolean = False): TCatalogFilter;
@@ -662,15 +720,19 @@ var
   Groups: TArray<string>;
   GArr: TJSONValue;
   Base: string;
+  lHour, lMinute, lProxyPort, lEpgDays: Integer;
 begin
   RequireApp;
   // default each field to its current value, so a partial body is fine
-  App.UpdateSettings(
-    ABody.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
-    ABody.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
+  lHour := ABody.GetValue<Integer>('refreshHour', App.Config.RefreshHour);
+  lMinute := ABody.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute);
+  lProxyPort := ABody.GetValue<Integer>('proxyPort', App.Config.ProxyPort);
+  lEpgDays := ABody.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays);
+  // checked BEFORE anything is applied (hour 24 never fired; -1 wrapped to 65535)
+  CheckSettingsRange(lHour, lMinute, lProxyPort, lEpgDays);
+  App.UpdateSettings(lHour, lMinute,
     ABody.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
-    ABody.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
-    ABody.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays),
+    lProxyPort, lEpgDays,
     ABody.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
   App.UpdatePlexSettings(
     ABody.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
@@ -687,9 +749,9 @@ begin
     Groups := StrArrayFromJson(TJSONArray(GArr))
   else
     Groups := App.Config.VisibleGroups;
-  Base := ABody.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl).Trim;
-  while Base.EndsWith('/') do
-    Base := Base.Substring(0, Base.Length - 1);
+  // validated: a value without scheme/host used to break every box login (500)
+  if not NormalizePublicBaseUrl(ABody.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl), Base) then
+    raise EMARSHttpException.Create('publicBaseUrl is not a valid URL (e.g. http://192.168.1.10:7777)', 400);
   App.UpdateMediaConfig(Groups, Base,
     ABody.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
     ABody.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
@@ -749,6 +811,11 @@ begin
   if ABody.GetValue('config') is TJSONObject then
   begin
     Cfg := TJSONObject(ABody.GetValue('config'));
+    CheckSettingsRange(
+      Cfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
+      Cfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
+      Cfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
+      Cfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays));
     App.UpdateSettings(
       Cfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
       Cfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
@@ -756,6 +823,10 @@ begin
       Cfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
       Cfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays), // was dropped on import
       Cfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
+    // were exported but never restored
+    if Cfg.GetValue('extraEpgUrls') is TJSONArray then
+      App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(Cfg.GetValue('extraEpgUrls'))));
+    App.SetPlexListId(ImportedPlexListId(ABody, Cfg));
     // the Plex tuner surfaces are part of the clone too — restore them as well
     App.UpdatePlexSettings(
       Cfg.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
@@ -768,7 +839,7 @@ begin
     // media servers: the global group filter + base URL + dummy-EPG settings
     if Cfg.GetValue('visibleGroups') is TJSONArray then
       App.UpdateMediaConfig(StrArrayFromJson(TJSONArray(Cfg.GetValue('visibleGroups'))),
-        Cfg.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl),
+        ImportedBaseUrl(Cfg.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl)),
         Cfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
         Cfg.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
         Cfg.GetValue<Integer>('dummyEpgHoursBack', App.Config.DummyEpgHoursBack),
@@ -907,6 +978,7 @@ begin
   try
     // the channels actually published under the current global group filter
     Channels := SelectOutputChannels(App.Store, L.Id, App.Config.VisibleGroups);
+    KeepContentTypes(Channels, [ctLive, ctRadio]); // what the media servers actually get
     Ids := TStringList.Create;
     GotEpg := TStringList.Create;
     try

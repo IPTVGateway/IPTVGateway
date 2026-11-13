@@ -95,6 +95,15 @@ function EpgIdKey(const AId: string): string;
 /// /live|movie|series|timeshift/USER/PASS/ -> /live/***/***/.
 function MaskUrlSecrets(const AUrl: string): string;
 
+/// The public base URL as the operator typed it, made usable: trimmed, trailing
+/// '/' removed, 'http://' added when no scheme was given. False when it still has
+/// no host (then ANormalized is ''). '' stays '' (= not configured) and is valid.
+function NormalizePublicBaseUrl(const AValue: string; out ANormalized: string): Boolean;
+/// Host of a URL, ADefault when it can't be parsed (never raises).
+function SafeUrlHost(const AUrl, ADefault: string): string;
+/// Port of a URL, 0 when absent or unparseable (never raises).
+function SafeUrlPort(const AUrl: string): Integer;
+
 /// Base64 of the UTF-8 text on ONE line, as Xtream portals send EPG title and
 /// description. The RTL's TNetEncoding.Base64 wraps every 76 chars with CR/LF,
 /// which some players reject (empty per-channel EPG on Formuler/MyTVOnline).
@@ -126,7 +135,8 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Character, System.DateUtils,
-  System.Generics.Collections, System.Hash, System.IOUtils, System.NetEncoding, System.StrUtils, System.RegularExpressions
+  System.Generics.Collections, System.Hash, System.IOUtils, System.NetEncoding, System.StrUtils, System.RegularExpressions,
+  System.Net.URLClient, System.Math
 {$IFDEF MSWINDOWS}
   , Winapi.Windows, Winapi.PsAPI
 {$ENDIF}
@@ -675,6 +685,57 @@ begin
   Result := EpgKeyAlias(Result);
 end;
 
+
+function NormalizePublicBaseUrl(const AValue: string; out ANormalized: string): Boolean;
+var
+  lUrl, lHost: string;
+begin
+  lUrl := AValue.Trim;
+  ANormalized := '';
+  // "http://" alone: stripping its slashes below would leave "http:" as a host
+  if lUrl.Contains('://') and (lUrl.Substring(lUrl.IndexOf('://') + 3).Trim(['/']) = '') then
+    Exit(False);
+  while lUrl.EndsWith('/') do
+    lUrl := lUrl.Substring(0, lUrl.Length - 1);
+  ANormalized := '';
+  if lUrl = '' then
+    Exit(True);
+  if not lUrl.Contains('://') then
+    lUrl := 'http://' + lUrl; // "192.168.1.10:9000" is what people type
+  // a host must follow the scheme (TURI accepts "http://" with an empty host)
+  lHost := lUrl.Substring(lUrl.IndexOf('://') + 3);
+  if lHost.IndexOfAny(['/', ':', '?', '#']) >= 0 then
+    lHost := lHost.Substring(0, lHost.IndexOfAny(['/', ':', '?', '#']));
+  Result := (lHost <> '') and (SafeUrlHost(lUrl, '') <> '');
+  if Result then
+    ANormalized := lUrl;
+end;
+
+function SafeUrlHost(const AUrl, ADefault: string): string;
+begin
+  Result := ADefault;
+  if AUrl.Trim = '' then
+    Exit;
+  try
+    Result := TURI.Create(AUrl.Trim).Host;
+  except
+    Result := ADefault;
+  end;
+  if Result = '' then
+    Result := ADefault;
+end;
+
+function SafeUrlPort(const AUrl: string): Integer;
+begin
+  Result := 0;
+  if AUrl.Trim = '' then
+    Exit;
+  try
+    Result := Max(0, TURI.Create(AUrl.Trim).Port);
+  except
+    Result := 0;
+  end;
+end;
 
 function MaskUrlSecrets(const AUrl: string): string;
 begin

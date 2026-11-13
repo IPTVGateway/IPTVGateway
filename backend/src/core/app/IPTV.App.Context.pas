@@ -244,7 +244,10 @@ begin
   if FConfig.PlexDeviceId = '' then
   begin
     FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1, 8);
-    FConfig.Save(FConfigPath);
+    // not over a config.json that failed to load: we run on defaults then, and
+    // saving would replace the operator's file (port, password, ...) with them
+    if FConfig.LoadWarning = '' then
+      FConfig.Save(FConfigPath);
   end;
 
   FServer := TApiServer.Create(FConfig, FLog);
@@ -297,6 +300,10 @@ procedure TAppContext.UpdateSettings(ARefreshHour, ARefreshMinute: Word;
   AProxyStreams: Boolean; AProxyPort: Integer; AEpgMaxDays: Integer;
   AStreamFailover: Boolean);
 begin
+  // the relay first: when it can't (re)bind this raises and NOTHING is changed -
+  // before, the new values stayed in memory and a later unrelated save wrote them
+  if Assigned(FServer) then
+    FServer.SetProxy(AProxyStreams, AProxyPort); // start/stop/rebind the relay live
   FConfig.RefreshHour := ARefreshHour;
   FConfig.RefreshMinute := ARefreshMinute;
   FConfig.ProxyStreams := AProxyStreams;
@@ -309,8 +316,6 @@ begin
     FScheduler.Hour := ARefreshHour;
     FScheduler.Minute := ARefreshMinute;
   end;
-  if Assigned(FServer) then
-    FServer.SetProxy(AProxyStreams, AProxyPort); // start/stop/rebind the relay live
   FConfig.Save(FConfigPath);
   Log(Format('Settings updated: refresh %0.2d:%0.2d, proxy=%s (port %d)',
     [ARefreshHour, ARefreshMinute, BoolToStr(AProxyStreams, True), AProxyPort]));
@@ -471,6 +476,10 @@ begin
   // HTTP server (stops accepting + drains in-flight requests) BEFORE clearing the
   // global App and releasing the store — otherwise a request that just passed its
   // "if App = nil" check could use App/Store as they're torn down (use-after-check).
+  // a running (daily) refresh stops before its next source, so the scheduler
+  // thread that runs it can be joined within the stop budget (docker/systemd/SCM)
+  if Assigned(FIngest) then
+    FIngest.Cancel;
   if Assigned(FScheduler) then
   begin
     FScheduler.Terminate;

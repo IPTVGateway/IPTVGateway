@@ -26,7 +26,8 @@ type
       [QueryParam('stream_id')] AStreamId: string;
       [QueryParam('limit')] ALimit: string; // string: boxes send 'limit=' empty (MARS 2 would 400)
       [QueryParam('vod_id')] AVodId: string;
-      [QueryParam('series_id')] ASeriesId: string): TJSONValue;
+      [QueryParam('series_id')] ASeriesId: string;
+      [QueryParam('category_id')] ACategoryId: string): TJSONValue;
   end;
 
   [Path('get.php')]
@@ -128,18 +129,18 @@ begin
   Result := FindListForPath(App.Store, AUser, APass);
 end;
 
-// extension of a URL's file name ('mkv' for .../123.mkv?x=1), '' if none
-function UrlExt(const AUrl: string): string;
-var
-  Q, Dot, Slash, PathEnd: Integer;
+// host the box reaches us on (publicBaseUrl; 'localhost' when unset/unparseable)
+function PublicHost: string;
 begin
-  Result := '';
-  Q := AUrl.IndexOf('?');
-  PathEnd := IfThen(Q >= 0, Q, AUrl.Length);
-  Dot := AUrl.LastIndexOf('.', PathEnd - 1);
-  Slash := AUrl.LastIndexOf('/', PathEnd - 1);
-  if (Dot > Slash) and (Dot >= 0) then
-    Result := AUrl.Substring(Dot + 1, PathEnd - Dot - 1);
+  Result := SafeUrlHost(App.Config.PublicBaseUrl, 'localhost');
+end;
+
+function PublicScheme: string;
+begin
+  if App.Config.PublicBaseUrl.StartsWith('https:', True) then
+    Result := 'https'
+  else
+    Result := 'http';
 end;
 
 function StreamIdFromParam(const AId: string): Integer;
@@ -166,24 +167,6 @@ begin
     Result := '';
 end;
 
-// swap the upstream URL's extension to the one the box requested (.ts/.m3u8/...)
-function WithExt(const AUrl, AExt: string): string;
-var
-  Dot, Slash, QPos, PathEnd: Integer;
-begin
-  Result := AUrl;
-  if AExt = '' then
-    Exit;
-  // only touch the extension in the PATH; never inside a ?query (a query value
-  // may itself contain dots, e.g. ".../123.ts?token=ab.cd")
-  QPos := AUrl.IndexOf('?');
-  PathEnd := IfThen(QPos >= 0, QPos, AUrl.Length);
-  Dot := AUrl.LastIndexOf('.', PathEnd - 1);
-  Slash := AUrl.LastIndexOf('/', PathEnd - 1);
-  if (Dot > Slash) and (Dot >= 0) then // dot is in the filename, not the host/path
-    Result := AUrl.Substring(0, Dot) + '.' + AExt + AUrl.Substring(PathEnd);
-end;
-
 function AccountInfo: TJSONObject;
 var
   UserInfo, ServerInfo: TJSONObject;
@@ -201,7 +184,9 @@ begin
   // m3u8 first: boxes (e.g. MyTVOnline) take the first format; HLS survives
   // providers that drop .ts connections every ~20 s (measured 2026-11-07)
   Formats := TJSONArray.Create;
-  Formats.Add('m3u8');
+  // in proxy mode the relay serves TS only (HLS can't be relayed; it is bounced)
+  if not App.Config.ProxyStreams then
+    Formats.Add('m3u8');
   Formats.Add('ts');
   UserInfo.AddPair('allowed_output_formats', Formats);
   Result.AddPair('user_info', UserInfo);
@@ -209,18 +194,18 @@ begin
   // server_info.url must be the HOST ONLY (no scheme, no port) — the box builds
   // {protocol}://{url}:{port}/live/... itself. Putting a full URL here makes the
   // box construct a broken stream URL and silently fail to connect.
-  Uri := TURI.Create(App.Config.PublicBaseUrl);
+  // (never raises: a bad publicBaseUrl must not turn every box login into a 500)
   // in proxy mode the box must stream from the relay port, not the API port
   if App.Config.ProxyStreams then
     PortNo := App.Config.ProxyPort
   else
   begin
-    PortNo := Uri.Port;
+    PortNo := SafeUrlPort(App.Config.PublicBaseUrl);
     if PortNo <= 0 then
       PortNo := App.Config.HttpPort;
   end;
   ServerInfo := TJSONObject.Create;
-  ServerInfo.AddPair('url', Uri.Host);
+  ServerInfo.AddPair('url', PublicHost);
   ServerInfo.AddPair('port', PortNo.ToString);
   // only advertise an https port when we actually serve TLS, else a box that
   // prefers https tries it against a plain-HTTP listener and fails to connect
@@ -233,7 +218,7 @@ begin
   if App.Config.ProxyStreams then
     ServerInfo.AddPair('server_protocol', 'http')
   else
-    ServerInfo.AddPair('server_protocol', Uri.Scheme);
+    ServerInfo.AddPair('server_protocol', PublicScheme);
   ServerInfo.AddPair('timezone', 'UTC');
   Result.AddPair('server_info', ServerInfo);
 end;
@@ -299,7 +284,8 @@ begin
         Stream.AddPair('stream_type', AStreamType);
       Stream.AddPair(AIdField, TJSONNumber.Create(C.StreamItemId));
       Stream.AddPair('stream_icon', C.Logo);
-      Stream.AddPair('epg_channel_id', C.TvgId);
+      // the id xmltv.php publishes it under (iptv-<id> for a channel without tvg-id)
+      Stream.AddPair('epg_channel_id', ChannelGuideId(C));
       Stream.AddPair('category_id', CatId.ToString);
       if ACt = ctMovie then
         // the box builds /movie/u/p/{id}.{container_extension}: give it the real one
@@ -320,23 +306,42 @@ begin
   end;
 end;
 
-function PlayerApiResult(const AList: TCustomList; const AAction: string): TJSONValue;
+function PlayerApiResult(const AList: TCustomList; const AAction, ACategoryId: string): TJSONValue;
 var
   Channels: TOutputChannelList;
   Cats, Streams: TJSONArray;
+
+  // only the streams of one category (get_live_streams&category_id=7): clients
+  // that load a category at a time got the whole bouquet in every category
+  function OnlyCategory(AStreams: TJSONArray): TJSONArray;
+  var
+    lItem: TJSONValue;
+  begin
+    if ACategoryId = '' then
+      Exit(AStreams);
+    Result := TJSONArray.Create;
+    try
+      for lItem in AStreams do
+        if (lItem is TJSONObject) and
+           (TJSONObject(lItem).GetValue<string>('category_id', '') = ACategoryId) then
+          Result.AddElement(TJSONValue(lItem.Clone));
+    finally
+      FreeAndNil(AStreams);
+    end;
+  end;
 
   function Pick(ACt: TContentType; const AIdField, AStreamType: string; AWantCats: Boolean): TJSONValue;
   begin
     BuildContent(Channels, ACt, AIdField, AStreamType, Cats, Streams);
     if AWantCats then
     begin
-      Streams.Free;
+      FreeAndNil(Streams);
       Result := Cats;
     end
     else
     begin
-      Cats.Free;
-      Result := Streams;
+      FreeAndNil(Cats);
+      Result := OnlyCategory(Streams);
     end;
   end;
 
@@ -432,7 +437,7 @@ begin
 end;
 
 // get_series_info: Xtream series come from the provider (episodes get stable ids
-// of our own, EPISODE_ID_BASE+, that /series/u/p/{id} resolves list-scoped); an
+// of our own, cEpisodeIdBase+, that /series/u/p/{id} resolves list-scoped); an
 // M3U "series" item is a single playable file, offered as one episode.
 function SeriesInfo(const AList: TCustomList; const AId: string): TJSONValue;
 var
@@ -459,7 +464,7 @@ var
 
 begin
   Stream := App.Store.LoadListStreamById(AList.Id, StreamIdFromParam(AId));
-  if (Stream = nil) or (Stream.ContentType <> ctSeries) or (Stream.Id >= EPISODE_ID_BASE) then
+  if (Stream = nil) or (Stream.ContentType <> ctSeries) or (Stream.Id >= cEpisodeIdBase) then
   begin
     Stream.Free;
     Exit(TJSONArray.Create);
@@ -485,6 +490,7 @@ begin
         end;
         EpObjs := TList<TJSONObject>.Create;
         try
+        try
           // episodes: {"1":[...],"2":[...]} or (some panels) [[...],[...]]
           Eps := TJSONObject(JV).GetValue('episodes');
           if Eps is TJSONObject then
@@ -506,8 +512,16 @@ begin
             EpObjs[I].RemovePair('id').Free;
             EpObjs[I].AddPair('id', Ids[I].ToString);
           end;
+        except
+          on E: Exception do
+          begin
+            FreeAndNil(JV);
+            App.Log(Format('  get_series_info %d: %s', [Stream.Id, E.Message]));
+            Exit(TJSONArray.Create);
+          end;
+        end;
         finally
-          EpObjs.Free;
+          FreeAndNil(EpObjs);
         end;
         Exit(JV);
       end;
@@ -718,12 +732,12 @@ begin
         Ext := 'm3u8';
       if App.Config.ProxyStreams and not Hls then
       begin
-        Uri := TURI.Create(App.Config.PublicBaseUrl);
-        Target := Format('http://%s:%d/live/%s/%s/%s', [Uri.Host, App.Config.ProxyPort,
+        Target := Format('http://%s:%d/live/%s/%s/%s', [PublicHost, App.Config.ProxyPort,
           PathCred(List.OutputUsername), PathCred(List.OutputPassword), AId]);
       end
       else
-        Target := WithExt(Stream.UpstreamUrl, Ext);
+        // only an Xtream LIVE .ts/.m3u8 URL follows the box's container choice
+        Target := LiveUpstreamUrl(App.Store, Stream, Ext);
       // mask both path-style (/live/u/p/) AND query-style (?username=&password=)
       // credentials before logging — upstream M3U URLs often carry query creds
       Masked := TRegEx.Replace(Target, '(/(live|movie|series)/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
@@ -783,9 +797,8 @@ begin
       Ext := RequestedExt(AId);
       if App.Config.ProxyStreams then
       begin
-        Uri := TURI.Create(App.Config.PublicBaseUrl);
         Target := Format('http://%s:%d/timeshift/%s/%s/%d/%s/%d.%s',
-          [Uri.Host, App.Config.ProxyPort, PathCred(List.OutputUsername), PathCred(List.OutputPassword),
+          [PublicHost, App.Config.ProxyPort, PathCred(List.OutputUsername), PathCred(List.OutputPassword),
            Dur, FormatTimeshiftStart(StartUtc),
            Stream.Id, System.StrUtils.IfThen(Ext = '', 'ts', Ext)]);
       end
@@ -813,7 +826,7 @@ end;
 { TPlayerApiResource }
 
 function TPlayerApiResource.PlayerApi(AUser, APass, AAction, AStreamId: string; ALimit: string;
-  AVodId, ASeriesId: string): TJSONValue;
+  AVodId, ASeriesId, ACategoryId: string): TJSONValue;
 var
   List: TCustomList;
 begin
@@ -834,7 +847,7 @@ begin
     else if AAction = 'get_series_info' then
       Result := SeriesInfo(List, ASeriesId)
     else
-      Result := PlayerApiResult(List, AAction);
+      Result := PlayerApiResult(List, AAction, ACategoryId);
   finally
     List.Free;
   end;
@@ -858,9 +871,8 @@ begin
     Prefix := '';
     if App.Config.ProxyStreams then
     begin
-      Uri := TURI.Create(App.Config.PublicBaseUrl);
       Prefix := Format('http://%s:%d/live/%s/%s/',
-        [Uri.Host, App.Config.ProxyPort, PathCred(List.OutputUsername), PathCred(List.OutputPassword)]);
+        [PublicHost, App.Config.ProxyPort, PathCred(List.OutputUsername), PathCred(List.OutputPassword)]);
     end;
     // the Media Servers group filter is for the Plex bouquet only — a box gets its
     // whole bouquet (group names of one bouquet mean nothing in another)

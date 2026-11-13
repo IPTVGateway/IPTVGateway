@@ -36,13 +36,13 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.StrUtils, System.RegularExpressions,
+  System.SysUtils, System.Classes, System.StrUtils, System.RegularExpressions, System.NetEncoding,
   IdHTTP, IdGlobal, IdIOHandler, IdSchedulerOfThreadPool, IdHeaderList,
   IdSSLOpenSSL, IdSSLOpenSSLHeaders,
   System.Generics.Collections,
   IPTV.Storage.Intf,
   IPTV.Model.Catalog, IPTV.Model.CustomList, IPTV.Model.Source, IPTV.App.Context,
-  IPTV.Core.Utils, IPTV.Output.Builder;
+  IPTV.Core.Utils, IPTV.Output.Builder, IPTV.Model.Types;
 
 const
   UA = 'VLC/3.0.20 LibVLC/3.0.20';
@@ -210,6 +210,25 @@ begin
   FIO.Write(Hdr);
 end;
 
+// path segments of a raw request URI (query dropped), each percent-decoded
+function RawPathSegments(const AUri: string): TArray<string>;
+var
+  lPath: string;
+  lQ, I: Integer;
+begin
+  lPath := AUri;
+  lQ := lPath.IndexOf('?');
+  if lQ >= 0 then
+    lPath := lPath.Substring(0, lQ);
+  Result := lPath.Split(['/']);
+  for I := 0 to High(Result) do
+    try
+      Result[I] := TNetEncoding.URL.URLDecode(Result[I]);
+    except
+      // malformed escape: keep the segment as sent
+    end;
+end;
+
 { TStreamProxyServer }
 
 constructor TStreamProxyServer.Create(APort: Integer; const ALog: TLogProc);
@@ -269,7 +288,10 @@ var
   IsTimeshift: Boolean;
   TsStart: TDateTime;
   TsDur: Integer;
+  lSource: TSourceConfig;
+  lHlsUrl: string;
 begin
+  lHlsUrl := '';
   if App = nil then
   begin
     AResponseInfo.ResponseNo := 503;
@@ -281,7 +303,9 @@ begin
   // FLog (not App.Log) for the same reason.
   LStore := App.Store;
   // /live/{user}/{pass}/{id}   (or movie|series|stream)
-  Parts := ARequestInfo.Document.Split(['/']);
+  // Split the RAW path, then decode each segment: Indy's Document is already
+  // decoded, so a '/' in a password (sent as %2F) would split the login in two.
+  Parts := RawPathSegments(ARequestInfo.URI);
   // catch-up, query flavour: /streaming/timeshift.php?username=&password=&stream=&start=&duration=
   // -> rewritten to the path form below
   if (Length(Parts) = 3) and SameText(Parts[1], 'streaming') and SameText(Parts[2], 'timeshift.php') then
@@ -349,13 +373,37 @@ begin
         end;
       end
       else
+      begin
         Upstream := Stream.UpstreamUrl;
+        // HLS (asked as .m3u8, or the source forces it) can't be relayed as one
+        // byte stream: bounce the box to the provider's playlist instead
+        if Stream.ContentType = ctLive then
+        begin
+          lSource := FindSourceById(LStore, Stream.SourceId);
+          try
+            if SameText(UrlExt(IdPart), 'm3u8') or ((lSource <> nil) and lSource.ForceHls) then
+              lHlsUrl := LiveUpstreamUrl(LStore, Stream, 'm3u8');
+          finally
+            FreeAndNil(lSource);
+          end;
+          if not SameText(UrlExt(lHlsUrl), 'm3u8') then
+            lHlsUrl := '';
+        end;
+      end;
       SrcId := Stream.SourceId;
     finally
       Stream.Free;
     end;
   finally
     List.Free;
+  end;
+
+  if lHlsUrl <> '' then
+  begin
+    if Assigned(FLog) then
+      FLog(Format('proxy relay %s: HLS -> 302 to the provider %s', [IdPart, MaskCreds(lHlsUrl)]));
+    AResponseInfo.Redirect(lHlsUrl);
+    Exit;
   end;
 
   // Candidate upstreams: the primary first, then the SAME channel from other sources

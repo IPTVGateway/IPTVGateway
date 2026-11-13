@@ -167,3 +167,24 @@ describe('SourcesPanel — live ingest status', () => {
     expect(await screen.findByText(/Failed: WinHTTP 12152/)).toBeInTheDocument()
   })
 })
+
+describe('SourcesPanel — delete', () => {
+  it('asks for confirmation before deleting a source; cancel keeps it', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<SourcesPanel />)
+    await screen.findByText('ProviderC')
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('ProviderC'))
+    expect(api.deleteSource).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
+  it('deletes the source after confirming', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<SourcesPanel />)
+    await screen.findByText('ProviderC')
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(api.deleteSource).toHaveBeenCalledWith(2))
+    confirm.mockRestore()
+  })
+})

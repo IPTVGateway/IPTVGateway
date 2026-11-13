@@ -55,6 +55,7 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [catReload, setCatReload] = useState(0) // bump to re-fetch the group list
+  const [streamReload, setStreamReload] = useState(0) // bump to re-fetch the stream page
   const [probe, setProbe] = useState<StreamItem | null>(null) // "measure quality" dialog
   // Note: there is intentionally no client-side "show unfiltered" switch — the
   // backend always applies each source's include/exclude filters, so only the
@@ -182,7 +183,7 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     return () => {
       cancelled = true
     }
-  }, [streamQuery, pageSize, page, sources])
+  }, [streamQuery, pageSize, page, sources, streamReload])
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const showingStreams = drill != null || flatSearch
@@ -276,7 +277,15 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     setError(null)
     try {
       await api.markStreamsSeen([...selected])
-      setStreams((rows) => rows.map((r) => (selected.has(r.id) ? { ...r, isNew: false } : r)))
+      if (onlyNew) {
+        // "only new" view: seen rows no longer belong here — drop them now and
+        // re-fetch the page so paging + the total stay right
+        setStreams((rows) => rows.filter((r) => !selected.has(r.id)))
+        setSelected(new Set())
+        setStreamReload((n) => n + 1)
+      } else {
+        setStreams((rows) => rows.map((r) => (selected.has(r.id) ? { ...r, isNew: false } : r)))
+      }
     } catch (e) {
       setError((e as Error).message)
     } finally {

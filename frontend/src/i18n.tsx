@@ -49,11 +49,15 @@ interface I18nControl {
   locale: string
   setLocale: (code: string) => void
   languages: Language[]
+  /** Re-fetch the backend (add-on) languages + dictionary, e.g. after login:
+   *  /languages needs the admin password, so a pre-login fetch gets a 401. */
+  reload: () => void
 }
 const I18nContext = createContext<I18nControl>({
   locale: 'en',
   setLocale: () => {},
   languages: [{ code: 'en', name: 'English' }],
+  reload: () => {},
 })
 
 /** Strip the `_name` label key (it's only a human label, not a UI string). */
@@ -86,14 +90,26 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<string>(readInitialLocale)
   const [dict, setDict] = useState<Dict>(() => BUILTIN_DICTS[readInitialLocale()] ?? {})
   const [languages, setLanguages] = useState<Language[]>(BUILTIN_LANGUAGES)
+  // bumped by reload() (after login) so both fetches below run again
+  const [epoch, setEpoch] = useState(0)
+  const reload = useCallback(() => setEpoch((n) => n + 1), [])
 
-  // Discover backend folder languages once on mount; ignore errors (401 etc.).
+  // Discover backend folder languages on mount and on every reload(); ignore
+  // errors (401 before login etc.).
   useEffect(() => {
+    let cancelled = false
     api
       .languages()
-      .then((folder) => setLanguages(mergeLanguages(folder ?? [])))
-      .catch(() => setLanguages(BUILTIN_LANGUAGES))
-  }, [])
+      .then((folder) => {
+        if (!cancelled) setLanguages(mergeLanguages(folder ?? []))
+      })
+      .catch(() => {
+        if (!cancelled) setLanguages(BUILTIN_LANGUAGES)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [epoch])
 
   // Load the dictionary for the current locale (built-in synchronously, folder via fetch).
   useEffect(() => {
@@ -113,7 +129,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [locale])
+  }, [locale, epoch])
 
   const setLocale = useCallback((code: string) => {
     setLocaleState(code)
@@ -127,8 +143,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const t = useCallback((s: string) => dict[s] ?? s, [dict])
 
   const control = useMemo<I18nControl>(
-    () => ({ locale, setLocale, languages }),
-    [locale, setLocale, languages],
+    () => ({ locale, setLocale, languages, reload }),
+    [locale, setLocale, languages, reload],
   )
 
   return (

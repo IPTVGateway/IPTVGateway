@@ -72,6 +72,8 @@ type
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
     function EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
       AExts: TArray<string>): TArray<Integer>;
+    function FindEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+      AExts: TArray<string>): TArray<Integer>;
     function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
     function DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
     function LoadKnownTvgIds: TArray<TTvgIdInfo>;
@@ -224,9 +226,13 @@ end;
 procedure TLockingStore.Init;
 begin
   FWriteLock.Acquire;
-  try FWrite.Init; finally FWriteLock.Release; end;
-  InvalidateSources;
-  InvalidateZap;
+  try
+    FWrite.Init;
+  finally
+    FWriteLock.Release;
+    InvalidateSources;
+    InvalidateZap;
+  end;
 end;
 
 function TLockingStore.SaveSource(const ASource: TSourceConfig): Integer;
@@ -237,8 +243,8 @@ begin
   finally
     FWriteLock.Release;
     InvalidateSources; // also after a failed write: the row may be half-changed
+    InvalidateZap;
   end;
-  InvalidateZap;
 end;
 
 procedure TLockingStore.DeleteSource(AId: Integer);
@@ -249,15 +255,14 @@ begin
   finally
     FWriteLock.Release;
     InvalidateSources;
+    InvalidateZap;
   end;
-  InvalidateZap;
 end;
 
 procedure TLockingStore.MergeSnapshot(const ASnapshot: TSourceSnapshot);
 begin
   FWriteLock.Acquire;
-  try FWrite.MergeSnapshot(ASnapshot); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try FWrite.MergeSnapshot(ASnapshot); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 procedure TLockingStore.MarkCategoriesSeen(const AIds: TArray<Integer>);
@@ -300,50 +305,43 @@ end;
 function TLockingStore.SaveList(const AList: TCustomList): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SaveList(AList); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.SaveList(AList); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 procedure TLockingStore.DeleteList(AId: Integer);
 begin
   FWriteLock.Acquire;
-  try FWrite.DeleteList(AId); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try FWrite.DeleteList(AId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.SaveGroup(const AGroup: TCustomGroup): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SaveGroup(AGroup); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.SaveGroup(AGroup); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.ReorderGroups(AListId: Integer; const AGroupIds: TArray<Integer>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ReorderGroups(AListId, AGroupIds); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.ReorderGroups(AListId, AGroupIds); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 procedure TLockingStore.DeleteGroup(AId: Integer);
 begin
   FWriteLock.Acquire;
-  try FWrite.DeleteGroup(AId); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try FWrite.DeleteGroup(AId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.SaveItem(const AItem: TCustomItem): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SaveItem(AItem); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.SaveItem(AItem); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.AddItems(AListId, ACustomGroupId: Integer; const AStreamItemIds: TArray<Integer>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.AddItems(AListId, ACustomGroupId, AStreamItemIds); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.AddItems(AListId, ACustomGroupId, AStreamItemIds); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.RestripSourceItems(ASourceId: Integer;
@@ -354,16 +352,15 @@ begin
     Result := FWrite.RestripSourceItems(ASourceId, AOldPrefixes, AOldSuffixes, ANewPrefixes, ANewSuffixes);
   finally
     FWriteLock.Release;
+    InvalidateZap;
   end;
-  InvalidateZap;
 end;
 
 function TLockingStore.ReplaceItemStreams(AListId: Integer;
   const AReplacements: TArray<TItemStreamReplace>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ReplaceItemStreams(AListId, AReplacements); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.ReplaceItemStreams(AListId, AReplacements); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.RestripGroupItems(AListId, AGroupId: Integer;
@@ -375,57 +372,50 @@ begin
     Result := FWrite.RestripGroupItems(AListId, AGroupId, AExtraPrefixes, AExtraSuffixes, ADryRun);
   finally
     FWriteLock.Release;
+    InvalidateZap;
   end;
-  InvalidateZap;
 end;
 
 function TLockingStore.RestripAllItems: Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.RestripAllItems; finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.RestripAllItems; finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 procedure TLockingStore.DeleteItem(AId: Integer);
 begin
   FWriteLock.Acquire;
-  try FWrite.DeleteItem(AId); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try FWrite.DeleteItem(AId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.ClearGroupItems(AListId, ACustomGroupId: Integer): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ClearGroupItems(AListId, ACustomGroupId); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.ClearGroupItems(AListId, ACustomGroupId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.DedupeListItems(AListId: Integer): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.DedupeListItems(AListId); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.DedupeListItems(AListId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.SortGroupAlphabetically(AListId, ACustomGroupId: Integer): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SortGroupAlphabetically(AListId, ACustomGroupId); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.SortGroupAlphabetically(AListId, ACustomGroupId); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.SetItemNumbers(AListId: Integer; const ANumbers: TArray<TItemNumber>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.SetItemNumbers(AListId, ANumbers); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.SetItemNumbers(AListId, ANumbers); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 function TLockingStore.ReorderGroupItems(AListId, ACustomGroupId: Integer; const AItemIds: TArray<Integer>): Integer;
 begin
   FWriteLock.Acquire;
-  try Result := FWrite.ReorderGroupItems(AListId, ACustomGroupId, AItemIds); finally FWriteLock.Release; end;
-  InvalidateZap;
+  try Result := FWrite.ReorderGroupItems(AListId, ACustomGroupId, AItemIds); finally FWriteLock.Release; InvalidateZap; end; // also after a failed write
 end;
 
 // ── reads: reader connection, read lock (independent of writes) ─────────────
@@ -513,10 +503,43 @@ end;
 
 function TLockingStore.EnsureEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
   AExts: TArray<string>): TArray<Integer>;
+var
+  i: Integer;
+  lAllKnown: Boolean;
 begin
-  // only adds/updates episode rows: nothing cached can change
+  // usually every episode is known already: answer from the read side, so opening a
+  // series doesn't wait for the write lock a nightly refresh holds for minutes
+  FReadLock.Acquire;
+  try
+    Result := FRead.FindEpisodeIds(ASeriesStreamId, AUpstreamIds, AExts);
+  finally
+    FReadLock.Release;
+  end;
+  lAllKnown := True;
+  for i := 0 to High(Result) do
+    if Result[i] = 0 then
+      lAllKnown := False;
+  if lAllKnown then
+    Exit;
   FWriteLock.Acquire;
-  try Result := FWrite.EnsureEpisodeIds(ASeriesStreamId, AUpstreamIds, AExts); finally FWriteLock.Release; end;
+  try
+    Result := FWrite.EnsureEpisodeIds(ASeriesStreamId, AUpstreamIds, AExts);
+  finally
+    FWriteLock.Release;
+    // a changed container extension changes the cached episode URL
+    InvalidateZap;
+  end;
+end;
+
+function TLockingStore.FindEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
+  AExts: TArray<string>): TArray<Integer>;
+begin
+  FReadLock.Acquire;
+  try
+    Result := FRead.FindEpisodeIds(ASeriesStreamId, AUpstreamIds, AExts);
+  finally
+    FReadLock.Release;
+  end;
 end;
 
 function TLockingStore.LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
@@ -591,7 +614,12 @@ var
   Hit: TCustomList;
   Gen: Integer;
 begin
-  Key := AUser + #0 + APass;
+  // an empty username ignores the password (login-free bouquet): one cache entry,
+  // not one per random password a client tries
+  if AUser = '' then
+    Key := #0
+  else
+    Key := AUser + #0 + APass;
   FCacheLock.Acquire;
   try
     if FZapLists.TryGetValue(Key, Hit) then

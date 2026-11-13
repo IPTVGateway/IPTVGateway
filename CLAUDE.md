@@ -268,7 +268,7 @@ on a bare `dcc64`/`msbuild` CLI run — pass `/p:ProductVersion=37.0` for CLI bu
 ## Conventions
 
 - **SQL / long literals:** Delphi multiline strings (`'''` … `'''`), not chains of
-  `'...' +` lines; a dynamic fragment (e.g. `SQL_SOURCE_ACTIVE`) is appended with `+`.
+  `'...' +` lines; a dynamic fragment (e.g. `cSqlSourceActive`) is appended with `+`.
 - **Unit naming:** dotted namespaces `IPTV.<Layer>.<Name>` for core; hosts use
   `Form.*` / `Svc.*`. One responsibility per unit.
 - **Times are UTC** throughout storage and EPG; convert only at the edges.
@@ -304,13 +304,13 @@ toggle in `TAppConfig` (with `proxyPort`, default 7778):
 ## Series, VOD info and disabled sources (after 1.2.35)
 
 - `get_series_info`: Xtream series are fetched from the provider (`XtreamApiGet`);
-  each upstream episode gets a stable box-facing id `EPISODE_ID_BASE` (1e9) +
+  each upstream episode gets a stable box-facing id `cEpisodeIdBase` (1e9) +
   `series_episodes.id` (`IStore.EnsureEpisodeIds`). `LoadListStreamById` resolves
   such an id only when its series is on the list, building the URL from the
   source's CURRENT url/creds. An M3U series item is offered as one episode.
 - `get_vod_info` proxies the provider (stream_id swapped to ours); `get_vod_streams`
   carries `container_extension`. Only LIVE swaps the extension the box asks for.
-- `SQL_SOURCE_ACTIVE`: a disabled source or switched-off content type is never
+- `cSqlSourceActive`: a disabled source or switched-off content type is never
   offered (LoadOutputChannels, LoadListStreamById, failover siblings).
 - Box URLs with a login use `PathCred` (percent-encoded, `-` = empty login);
   `FindListForPath` maps them back.

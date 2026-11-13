@@ -17,12 +17,21 @@ interface Props {
  * are what an IPTV box authenticates as; an empty username = the default list.
  */
 export function SettingsView({ lists, onListsChanged, onImported }: Props) {
+  // bumped after an import: the import replaces config + lists server-side, so
+  // the service form re-fetches its config and the list editors drop any
+  // pre-import local state (a later Save would otherwise overwrite the import)
+  const [importEpoch, setImportEpoch] = useState(0)
   return (
     <div className="settings-view">
       <LanguagePicker />
-      <ServiceSettings />
-      <ListManager lists={lists} onChanged={onListsChanged} />
-      <SettingsIO onChanged={onImported ?? onListsChanged} />
+      <ServiceSettings key={`svc-${importEpoch}`} />
+      <ListManager key={`lists-${importEpoch}`} lists={lists} onChanged={onListsChanged} />
+      <SettingsIO
+        onChanged={() => {
+          setImportEpoch((n) => n + 1)
+          ;(onImported ?? onListsChanged)()
+        }}
+      />
     </div>
   )
 }
@@ -187,6 +196,8 @@ function ServiceSettings() {
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
+  // proxy port as typed: may be empty/partial while editing; clamped on blur/save
+  const [portText, setPortText] = useState<string | null>(null)
 
   useEffect(() => {
     api
@@ -206,6 +217,13 @@ function ServiceSettings() {
   async function save(e: FormEvent) {
     e.preventDefault()
     if (!cfg) return
+    // the port field may still hold an in-progress value: validate it now
+    let proxyPort = cfg.proxyPort
+    if (portText != null) {
+      if (portText.trim() !== '') proxyPort = clamp(portText, 1, 65535)
+      setPortText(null)
+      patch({ proxyPort })
+    }
     setBusy(true)
     setError(null)
     try {
@@ -214,7 +232,7 @@ function ServiceSettings() {
         refreshMinute: cfg.refreshMinute,
         epgMaxDays: cfg.epgMaxDays,
         proxyStreams: cfg.proxyStreams,
-        proxyPort: cfg.proxyPort,
+        proxyPort,
         streamFailover: cfg.streamFailover,
         extraEpgUrls: (cfg.extraEpgUrls ?? []).map((u) => u.trim()).filter(Boolean),
       }
@@ -309,9 +327,15 @@ function ServiceSettings() {
                 type="number"
                 min={1}
                 max={65535}
-                value={cfg.proxyPort}
+                value={portText ?? String(cfg.proxyPort)}
                 disabled={!cfg.proxyStreams}
-                onChange={(e) => patch({ proxyPort: clamp(e.target.value, 1, 65535) })}
+                onChange={(e) => {
+                  // keep the raw text so the field can be cleared and retyped;
+                  // only a non-empty value updates the setting
+                  setPortText(e.target.value)
+                  if (e.target.value.trim() !== '') patch({ proxyPort: clamp(e.target.value, 1, 65535) })
+                }}
+                onBlur={() => setPortText(null)}
               />
             </label>
             <span className="hint">
@@ -393,12 +417,17 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
 
   async function createList(draft: Partial<CustomList>) {
     setError(null)
-    await api.saveList({
-      name: draft.name!.trim(),
-      outputUsername: draft.outputUsername?.trim() ?? '',
-      outputPassword: draft.outputPassword?.trim() ?? '',
-      enabled: draft.enabled ?? true,
-    })
+    try {
+      await api.saveList({
+        name: draft.name!.trim(),
+        outputUsername: draft.outputUsername?.trim() ?? '',
+        outputPassword: draft.outputPassword?.trim() ?? '',
+        enabled: draft.enabled ?? true,
+      })
+    } catch (err) {
+      setError((err as Error).message)
+      throw err // the editor keeps the typed values on failure
+    }
     onChanged()
   }
 
@@ -441,7 +470,9 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
 
         {current ? (
           <ListEditor
-            key={current.id}
+            // keyed on the server values too: when the list changes underneath
+            // (e.g. a settings import), the editor restarts from the new values
+            key={JSON.stringify([current.id, current.name, current.outputUsername, current.outputPassword, current.enabled])}
             list={current}
             onSave={saveExisting}
             onDelete={(l) => {
@@ -511,6 +542,8 @@ function ListEditor({ list, onSave, onDelete, onCreate, onCreated }: ListEditorP
       setPassword('')
       setEnabled(true)
       onCreated?.()
+    } catch {
+      // the parent shows the error; keep the form values for a retry
     } finally {
       setBusy(false)
     }

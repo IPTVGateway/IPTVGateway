@@ -78,6 +78,23 @@ describe('FilterEditor', () => {
     expect(onChange).toHaveBeenCalledWith(['ADULT'])
   })
 
+  it('typing several comma-separated tokens adds them all in one change (deduped)', async () => {
+    const { onChange } = setup(['XXX'])
+    const input = screen.getByPlaceholderText('e.g. XXX, ADULT')
+    await userEvent.type(input, 'ADULT, XXX; PPV, ADULT{Enter}')
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(['XXX', 'ADULT', 'PPV'])
+  })
+
+  it('pasting a multi-line list adds every line, not only the last', async () => {
+    const { onChange } = setup([])
+    const input = screen.getByPlaceholderText('e.g. XXX, ADULT')
+    input.focus()
+    await userEvent.paste('ADULT\nXXX\r\nPPV\n')
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledWith(['ADULT', 'XXX', 'PPV'])
+  })
+
   it('hints to refresh when there are no discovered prefixes', () => {
     const onChange = vi.fn()
     render(

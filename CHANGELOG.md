@@ -92,6 +92,73 @@ Fixes from a five-part bug hunt (output, storage, ingest/EPG, web app, app/secur
   reloaded.
 - Build: the WSL Docker step fails properly when `docker save` fails.
 
+Second bug hunt (five separate runs):
+- Streams whose content type is now recognised differently (Xtream radio, M3U groups
+  such as "NL| FILM") keep their id and their place in the bouquet; before, the
+  first refresh created duplicates and left the bouquet on the old row.
+- A guide with single-quoted attributes no longer makes the EPG parse crawl.
+- `publicBaseUrl` is checked when saved (`http://` is added when missing). A
+  wrong value can no longer break every box login or the service start.
+- Linux: the default database path no longer has a backslash in it. It used to
+  end up outside the data folder. A config file that fails to load is no longer
+  overwritten with defaults at start.
+- Relay: a `/` in a bouquet password works, and `-` stands for any empty login
+  field (also a bouquet with only a username).
+- Stream extensions: only Xtream live `.ts`/`.m3u8` URLs follow the box's choice.
+  M3U HLS playlists, radio `.mp3` and `play.php` URLs stay as they are. In proxy
+  mode boxes are offered `ts` only, and an HLS request is redirected to the
+  provider.
+- `player_api` honours `category_id`; `epg_channel_id` matches `xmltv.php` for
+  channels without a tvg-id.
+- Series and movies no longer appear as channels in the Plex/HDHomeRun lineup
+  and the guide. Series containers are left out of `get.php`.
+- `get_series_info` answers from the read side (it no longer waits for a running
+  refresh) and frees the provider's answer on errors.
+- Login-free bouquet: the login cache keeps one entry, not one per password tried.
+- Windows: bouquet passwords and filter tokens with characters outside Windows-1252
+  (Cyrillic, emoji) work.
+- Replacing channels by another quality/provider never picks a switched-off source.
+- The login cache is also cleared when a save fails halfway.
+- Faster EPG cleanup and stream failover (new indexes).
+- Startup errors in schema upgrades are no longer hidden.
+- EPG: the guide URL is trimmed. A `url-tvg` list uses its first URL. Matching tvg-ids
+  is case-insensitive end to end. Latin-1 guides and playlists are no longer read as
+  Cyrillic, and UTF-16 files are recognised. Times without seconds and `+01` zones
+  are understood. A failed download no longer leaks memory. Large extra guides load
+  faster.
+- An http source that redirects to https now works.
+- Adopting an M3U `url-tvg` no longer undoes edits made to the source during the
+  refresh.
+- Extra EPG URLs are masked in the log.
+- No empty live categories are stored when only radio is switched on; radio gets its
+  own categories.
+- A failed start (for example a port in use) now really fails:
+  - the API port is released;
+  - the Windows Service reports the error in the Event Log;
+  - the daemon exits with code 1, so systemd and Docker restart it.
+- `config.json` is replaced in one step. A save that was cut off is recovered on
+  the next start.
+- Stopping during the daily refresh no longer waits for all sources: the refresh
+  stops after the current one.
+- Settings: out-of-range values (hour 24, port 0, the same port as the web
+  interface) are refused with a message. A failed relay restart no longer leaves
+  half-applied settings behind.
+- Settings import also restores the extra EPG sources and the Plex bouquet.
+- Daemon log lines from several threads no longer get mixed up.
+- Web app:
+  - unsaved edits in other bouquet rows survive a save or refresh (no more
+    "Loading…" flash);
+  - deleting a source or a group asks for confirmation;
+  - a wrong admin password is reported;
+  - pasting several filter tokens keeps all of them;
+  - a failed "new bouquet" shows its error;
+  - the EPG view handles very large guides and shows lanes in bouquet order;
+  - after an import the settings and bouquet editors show the imported values;
+  - a cancelled drag no longer sticks;
+  - add-on languages load after login;
+  - the proxy port field can be cleared while typing;
+  - "only new" hides items once they are marked as seen.
+
 ## [1.2.35] - 2026-11-13
 
 - `config.json` lives in the data folder and is created on first start; older

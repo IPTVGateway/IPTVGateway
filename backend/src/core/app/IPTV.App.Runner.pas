@@ -25,7 +25,9 @@ type
     FLog: TLogProc;
     FContext: TAppContext;
     FStop: TEvent;
+    FStartDone: TEvent; // set once Start has succeeded or failed
     FStarted: Boolean;
+    FStartError: string;
   protected
     procedure Execute; override;
   public
@@ -39,6 +41,11 @@ type
     procedure StopAndWait;  // SignalStop + block until fully stopped
     property Context: TAppContext read FContext; // valid once created; check Started before use
     property Started: Boolean read FStarted;
+    /// The start failure ('' = none / not finished). Hosts report it: the Windows
+    /// Service stops itself, the daemon exits non-zero (so systemd restarts it).
+    property StartError: string read FStartError;
+    /// Block until the start succeeded or failed (True), or the timeout passed.
+    function WaitStartDone(ATimeoutMs: Cardinal): Boolean;
   end;
 
 implementation
@@ -49,6 +56,7 @@ begin
   FConfig := AConfig;
   FLog := ALog;
   FStop := TEvent.Create(nil, True, False, '');
+  FStartDone := TEvent.Create(nil, True, False, '');
   FContext := TAppContext.Create(FConfig, FLog, AConfigPath); // exists immediately; Start runs on the thread
   inherited Create(False); // must be last: fields ready before Execute runs
 end;
@@ -57,7 +65,8 @@ destructor TAppRunner.Destroy;
 begin
   SignalStop;
   inherited;        // TThread.Destroy waits for Execute to finish
-  FStop.Free;
+  FreeAndNil(FStop);
+  FreeAndNil(FStartDone);
 end;
 
 procedure TAppRunner.Execute;
@@ -66,6 +75,7 @@ begin
     try
       FContext.Start;
       FStarted := True;
+      FStartDone.SetEvent;
       if Assigned(FLog) then
         FLog(Format('Listening on port %d (HTTPS=%s) - ready.',
           [FConfig.HttpPort, BoolToStr(FConfig.UseHttps, True)]));
@@ -73,9 +83,11 @@ begin
       on E: Exception do
       begin
         // surface bind failures etc. instead of hanging silently on "Starting..."
+        FStartError := Format('%s: %s', [E.ClassName, E.Message]);
         if Assigned(FLog) then
-          FLog(Format('START FAILED: %s: %s (is port %d already in use?)',
-            [E.ClassName, E.Message, FConfig.HttpPort]));
+          FLog(Format('START FAILED: %s (is port %d already in use?)',
+            [FStartError, FConfig.HttpPort]));
+        FStartDone.SetEvent;
         Exit;
       end;
     end;
@@ -86,6 +98,11 @@ begin
       FContext.Stop;
     FreeAndNil(FContext);
   end;
+end;
+
+function TAppRunner.WaitStartDone(ATimeoutMs: Cardinal): Boolean;
+begin
+  Result := FStartDone.WaitFor(ATimeoutMs) = wrSignaled;
 end;
 
 procedure TAppRunner.SignalStop;

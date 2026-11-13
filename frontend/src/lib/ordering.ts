@@ -1,4 +1,4 @@
-import type { CustomGroup } from '../types'
+import type { CustomGroup, CustomItem } from '../types'
 
 /** Case-insensitive A→Z comparator for plain names. */
 export function byNameCI(a: string, b: string): number {
@@ -86,4 +86,32 @@ export function planBouquetNumbers(groups: { groupId: number; itemIds: number[] 
     next = first + n
   }
   return { numbers, blocks }
+}
+
+/** The name a bouquet row shows: display name, else the upstream name. */
+export function itemDisplayName(it: CustomItem): string {
+  return it.displayName?.trim() || it.streamName?.trim() || `#${it.streamItemId}`
+}
+
+/**
+ * The list's items in the order the bouquet panel shows them: custom groups in
+ * `compareGroups` order, then the upstream group (id 0) last; within a group by
+ * name A→Z (case-insensitive) or by channel number, like the panel's sort mode.
+ * Items of a group that no longer exists come at the very end.
+ */
+export function bouquetOrder(
+  groups: CustomGroup[],
+  items: CustomItem[],
+  mode: 'name' | 'number' = 'name',
+): CustomItem[] {
+  const rank = new Map<number, number>()
+  ;[...groups].sort(compareGroups).forEach((g, i) => rank.set(g.id, i))
+  const upstream = groups.length // the upstream group sits after every custom group
+  const groupRank = (id: number) => rank.get(id) ?? (id === 0 ? upstream : upstream + 1)
+  const cmp =
+    mode === 'number'
+      ? (a: CustomItem, b: CustomItem) =>
+          byChannelNumber(a.channelNumber, itemDisplayName(a), b.channelNumber, itemDisplayName(b))
+      : (a: CustomItem, b: CustomItem) => byNameCI(itemDisplayName(a), itemDisplayName(b))
+  return [...items].sort((a, b) => groupRank(a.customGroupId) - groupRank(b.customGroupId) || cmp(a, b))
 }

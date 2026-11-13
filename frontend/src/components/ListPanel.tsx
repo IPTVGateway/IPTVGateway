@@ -279,6 +279,15 @@ export function ListPanel({
       if (next.join(',') !== sess.ids.join(',')) applyReorder(sess.groupId, next)
     }
   }
+  // pointercancel (touch turned into a scroll/gesture, window lost focus…) or a
+  // lost capture: end the drag WITHOUT applying it, so no stale drag state is
+  // left behind for the next pointerup to act on. After a normal pointerup the
+  // capture is lost too — the session is already cleared then, so this is a no-op.
+  function chanPointerCancel() {
+    dragSess.current = null
+    setDragId(null)
+    setOverId(null)
+  }
 
   // GROUP drag-to-reorder (favorites stay pinned on top server-side, so a group can
   // only move within its own favorite/non-favorite partition).
@@ -300,6 +309,11 @@ export function ListPanel({
     const dg = sortedGroups.find((x) => x.id === groupDragId)
     const tg = sortedGroups.find((x) => x.id === t)
     if (dg && tg && dg.isFavorite === tg.isFavorite) setGroupOverId(t)
+  }
+  function groupPointerCancel() {
+    groupSess.current = null
+    setGroupDragId(null)
+    setGroupOverId(null)
   }
   async function groupPointerUp() {
     const ids = groupSess.current
@@ -832,6 +846,7 @@ export function ListPanel({
                         onDown: (e) => groupPointerDown(g, e),
                         onMove: groupPointerMove,
                         onUp: groupPointerUp,
+                        onCancel: groupPointerCancel,
                       }}
                     />
                     {!collapsed.has(g.id) && (
@@ -856,6 +871,7 @@ export function ListPanel({
                                     onDown: (e) => chanPointerDown(it, itemsByGroup.get(g.id) ?? [], e),
                                     onMove: chanPointerMove,
                                     onUp: chanPointerUp,
+                                    onCancel: chanPointerCancel,
                                   }
                                 : undefined
                             }
@@ -924,6 +940,7 @@ export function ListPanel({
                                     onDown: (e) => chanPointerDown(it, itemsByGroup.get(UPSTREAM_GROUP_ID) ?? [], e),
                                     onMove: chanPointerMove,
                                     onUp: chanPointerUp,
+                                    onCancel: chanPointerCancel,
                                   }
                                 : undefined
                             }
@@ -1296,6 +1313,7 @@ interface GroupHeaderProps {
     onDown: (e: React.PointerEvent) => void
     onMove: (e: React.PointerEvent) => void
     onUp: (e: React.PointerEvent) => void
+    onCancel: () => void
   }
 }
 
@@ -1305,6 +1323,7 @@ function GroupHeader({ group, count, collapsed, onToggleCollapse, onSave, onDele
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(group.name)
   const [confirmEmpty, setConfirmEmpty] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
 
   function commit() {
     const n = name.trim()
@@ -1349,6 +1368,8 @@ function GroupHeader({ group, count, collapsed, onToggleCollapse, onSave, onDele
           onPointerDown={dragHandle.onDown}
           onPointerMove={dragHandle.onMove}
           onPointerUp={dragHandle.onUp}
+          onPointerCancel={dragHandle.onCancel}
+          onLostPointerCapture={dragHandle.onCancel}
         >
           ⠿
         </span>
@@ -1432,14 +1453,34 @@ function GroupHeader({ group, count, collapsed, onToggleCollapse, onSave, onDele
           🧹
         </button>
       )}
-      <button
-        type="button"
-        className="group-edit danger"
-        title={t('Delete group (its channels move to Upstream group)')}
-        onClick={() => onDelete(group.id)}
-      >
-        🗑
-      </button>
+      {confirmDelete ? (
+        <>
+          <button
+            type="button"
+            className="group-edit danger"
+            title={t('Delete group (its channels move to Upstream group)')}
+            onClick={() => {
+              setConfirmDelete(false)
+              onDelete(group.id)
+            }}
+          >
+            {t('Confirm delete')}
+          </button>
+          <button type="button" className="group-edit" onClick={() => setConfirmDelete(false)}>
+            {t('Cancel')}
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          className="group-edit danger"
+          title={t('Delete group (its channels move to Upstream group)')}
+          aria-label={t('Delete group')}
+          onClick={() => setConfirmDelete(true)}
+        >
+          🗑
+        </button>
+      )}
     </h4>
   )
 }
@@ -1453,6 +1494,8 @@ interface DragProps {
   onDown: (e: React.PointerEvent) => void
   onMove: (e: React.PointerEvent) => void
   onUp: (e: React.PointerEvent) => void
+  /** pointercancel / lost capture: abort the drag without reordering */
+  onCancel: () => void
 }
 
 interface ItemRowProps {
@@ -1511,6 +1554,8 @@ function ItemRow({ item, sourceName, groups, onSave, onDelete, onProbe, drag }: 
           onPointerDown={drag.onDown}
           onPointerMove={drag.onMove}
           onPointerUp={drag.onUp}
+          onPointerCancel={drag.onCancel}
+          onLostPointerCapture={drag.onCancel}
           title={t('Drag to reorder')}
           aria-label={t('Reorder')}
         >

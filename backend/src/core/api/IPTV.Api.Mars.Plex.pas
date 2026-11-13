@@ -77,7 +77,9 @@ implementation
 uses
   System.SysUtils, System.Net.URLClient,
   MARS.Core.Registry,
-  IPTV.Model.CustomList, IPTV.Storage.Intf, IPTV.App.Context, IPTV.Output.Builder;
+  IPTV.Model.CustomList, IPTV.Storage.Intf, IPTV.App.Context, IPTV.Output.Builder,
+  IPTV.Core.Utils,
+  IPTV.Model.Types;
 
 { shared helpers }
 
@@ -93,11 +95,7 @@ function PlexHost: string;
 begin
   Result := 'localhost';
   if App <> nil then
-    try
-      Result := TURI.Create(App.Config.PublicBaseUrl).Host;
-    except
-      Result := 'localhost';
-    end;
+    Result := SafeUrlHost(App.Config.PublicBaseUrl, 'localhost');
 end;
 
 // how channel names are decorated on the Plex surfaces (group / number / source letter)
@@ -264,6 +262,7 @@ begin
     // same global group filter as the M3U/XMLTV, so all three agree
     Channels := SelectOutputChannels(App.Store, L.Id, App.Config.VisibleGroups);
     try
+      KeepContentTypes(Channels, [ctLive, ctRadio]); // a tuner lineup: linear channels only
       // one decorated-name computation, shared shape with the M3U/XMLTV. (The id-sort
       // prefix lives in the channel-id, not the HDHomeRun GuideName, so key on AnyName.)
       Names := nil;

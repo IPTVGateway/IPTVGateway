@@ -152,15 +152,53 @@ function ResolveDaemonConfigPath(const AExeDir: string; out ANote: string): stri
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, System.JSON, System.Generics.Collections, System.SyncObjs;
+{$IFDEF MSWINDOWS}
+  Winapi.Windows,
+{$ENDIF}
+  System.SysUtils,
+  System.IOUtils,
+  System.JSON,
+  System.Generics.Collections,
+  System.SyncObjs;
+
+const
+  cTempSuffix = '.tmp';
 
 var
   GConfigSaveLock: TCriticalSection;
 
+// Put ASource in place of ATarget in ONE step (no window where neither exists, as
+// with Delete + Move): MoveFileEx(REPLACE_EXISTING) on Windows, rename() on POSIX.
+procedure ReplaceFileAtomic(const ASource, ATarget: string);
+begin
+{$IFDEF MSWINDOWS}
+  if not MoveFileEx(PChar(ASource), PChar(ATarget), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+    RaiseLastOSError;
+{$ELSE}
+  if not RenameFile(ASource, ATarget) then // POSIX rename() replaces atomically
+    RaiseLastOSError;
+{$ENDIF}
+end;
+
+// A save that was cut off between writing the temp file and swapping it in (older
+// versions deleted config.json first) leaves only config.json.tmp: take that one.
+procedure RecoverInterruptedSave(const APath: string);
+begin
+  if (APath <> '') and not TFile.Exists(APath) and TFile.Exists(APath + cTempSuffix) then
+    try
+      ReplaceFileAtomic(APath + cTempSuffix, APath);
+    except
+      // best effort: Load then runs on defaults and reports it
+    end;
+end;
+
 class function TAppConfig.Default: TAppConfig;
 begin
   Result.HttpPort := 7777;
-  Result.DatabasePath := TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), 'data\iptvplay.sqlite');
+  // two Combines, no 'data\...': on Linux a backslash is part of the FILE NAME
+  // (the DB ended up as "/opt/iptvplay/data\iptvplay.sqlite", outside the volume)
+  Result.DatabasePath := TPath.Combine(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), 'data'),
+    'iptvplay.sqlite');
   Result.SeparateReadConnection := False; // single connection by default (robust on FUSE)
   Result.RefreshHour := 4;
   Result.RefreshMinute := 0;
@@ -207,6 +245,7 @@ begin
   Result := GetEnvironmentVariable('IPTV_CONFIG').Trim;
   if Result = '' then
     Exit(Legacy);
+  RecoverInterruptedSave(Result);
   if TFile.Exists(Result) then
     Exit;
   ForceDirectories(ExtractFileDir(Result));
@@ -278,10 +317,8 @@ begin
     // admin open, Plex token gone); one save at a time
     GConfigSaveLock.Acquire;
     try
-      TFile.WriteAllText(APath + '.tmp', Json.Format(2), TEncoding.UTF8);
-      if TFile.Exists(APath) then
-        TFile.Delete(APath);
-      TFile.Move(APath + '.tmp', APath);
+      TFile.WriteAllText(APath + cTempSuffix, Json.Format(2), TEncoding.UTF8);
+      ReplaceFileAtomic(APath + cTempSuffix, APath);
     finally
       GConfigSaveLock.Release;
     end;
@@ -321,6 +358,7 @@ var
 begin
   Result := Default;
   Json := nil;
+  RecoverInterruptedSave(APath);
   if TFile.Exists(APath) then
   begin
     // parse to a value first: a malformed OR non-object (e.g. a bare array) file

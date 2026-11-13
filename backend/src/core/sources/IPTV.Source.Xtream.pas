@@ -203,7 +203,7 @@ end;
 
 procedure ApplyCategoryNames(ASnapshot: TSourceSnapshot);
 var
-  Cat: TCategory;
+  Cat, lRadioCat: TCategory;
   S: TStreamItem;
   Names: TDictionary<string, string>;
   Key, N: string;
@@ -221,7 +221,21 @@ begin
         S.GroupTitle := N
       else if (S.ContentType = ctRadio) and
         Names.TryGetValue(ContentTypeNames[ctLive] + '|' + S.CategoryUpstreamId, N) then
-        S.GroupTitle := N; // radio sits in the live categories
+      begin
+        S.GroupTitle := N; // radio sits in the live categories ...
+        // ... so give radio its own copy of that category (browsable as radio,
+        // and kept when only radio is switched on)
+        if not Names.ContainsKey(ContentTypeNames[ctRadio] + '|' + S.CategoryUpstreamId) then
+        begin
+          lRadioCat := TCategory.Create;
+          ASnapshot.Categories.Add(lRadioCat);
+          lRadioCat.SourceId := ASnapshot.SourceId;
+          lRadioCat.ContentType := ctRadio;
+          lRadioCat.UpstreamId := S.CategoryUpstreamId;
+          lRadioCat.Name := N;
+          Names.Add(ContentTypeNames[ctRadio] + '|' + S.CategoryUpstreamId, N);
+        end;
+      end;
     end;
   finally
     Names.Free;

@@ -88,7 +88,7 @@ end;
 // redirect the DB under ProgramData so it isn't written next to the (read-only) exe.
 function ExeDefaultDbPath: string;
 begin
-  Result := TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), 'data\iptvplay.sqlite');
+  Result := TPath.Combine(TPath.Combine(TPath.GetDirectoryName(ParamStr(0)), 'data'), 'iptvplay.sqlite');
 end;
 
 function SvcDefaultDbPath: string;
@@ -159,6 +159,10 @@ begin
   end;
 end;
 
+const
+  // below the SCM's default 30 s start timeout
+  cStartWaitMs = 25000;
+
 procedure TIPTVGatewayService.ServiceStart(Sender: TService; var Started: Boolean);
 var
   Cfg: TAppConfig;
@@ -183,6 +187,11 @@ begin
       [Cfg.HttpPort, BoolToStr(Cfg.UseHttps, True), AppDataRoot]));
     LogMessage(Format('IPTV Gateway starting on port %d.', [Cfg.HttpPort]),
       EVENTLOG_INFORMATION_TYPE);
+    // the app starts on the runner's thread: wait (within the SCM's start timeout)
+    // for the outcome, so a bind failure shows as a failed start in services.msc
+    // and the Event Log instead of "Running" while nothing listens
+    if FRunner.WaitStartDone(cStartWaitMs) and (FRunner.StartError <> '') then
+      raise Exception.Create(FRunner.StartError);
     Started := True;
   except
     on E: Exception do
@@ -190,6 +199,7 @@ begin
       SvcLog(Format('START FAILED: %s: %s', [E.ClassName, E.Message]));
       LogMessage(Format('IPTV Gateway start failed: %s: %s',
         [E.ClassName, E.Message]), EVENTLOG_ERROR_TYPE);
+      FreeAndNil(FRunner);
       Started := False;
     end;
   end;

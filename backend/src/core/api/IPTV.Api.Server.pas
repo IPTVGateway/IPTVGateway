@@ -36,6 +36,7 @@ type
     procedure SyncProxyServer; // start/stop/rebind the relay to match what's enabled
     procedure SyncSsdp; // start/stop SSDP to match FConfig.PlexHdhrEnabled
   public
+    destructor Destroy; override;
     constructor Create(const AConfig: TAppConfig; const ALog: TLogProc = nil);
     procedure Start;
     procedure Stop;
@@ -54,6 +55,7 @@ uses
   System.SysUtils, System.Classes, System.IOUtils, System.RegularExpressions,
   System.Net.URLClient, System.Net.HttpClient, System.Diagnostics, System.SyncObjs,
   System.StrUtils,
+  IPTV.Core.Utils,
   MARS.Core.Activation, MARS.Core.Activation.Interfaces,
   MARS.Core.Engine, MARS.Core.Application.Interfaces, MARS.Core.URL,
   MARS.Core.RequestAndResponse.Interfaces,
@@ -328,50 +330,57 @@ begin
     GWarmGate.ResetEvent;
   GWarmToken := TGUID.NewGuid.ToString;
 
-  FServer := TMARShttpServerIndy.Create(FEngine);
-  FServer.Active := True;
+  try
+    FServer := TMARShttpServerIndy.Create(FEngine);
+    FServer.Active := True;
 
-  // warm up the MARS activation path with requests to ourselves, strictly one at a
-  // time (each resource class once), then open the gate. On a background thread so
-  // a stuck warm-up can never block startup; external requests wait at most
-  // WarmupWaitMs anyway.
-  var LBase := Format('%s://127.0.0.1:%d', [IfThen(FConfig.UseHttps, 'https', 'http'), FConfig.HttpPort]);
-  var LLog := FLog;
-  TThread.CreateAnonymousThread(
-    procedure
-    var
-      LHttp: THTTPClient;
-      LPath: string;
-      LSw: TStopwatch;
-    begin
-      LSw := TStopwatch.StartNew;
-      try
-        LHttp := THTTPClient.Create;
+    // warm up the MARS activation path with requests to ourselves, strictly one at a
+    // time (each resource class once), then open the gate. On a background thread so
+    // a stuck warm-up can never block startup; external requests wait at most
+    // WarmupWaitMs anyway.
+    var LBase := Format('%s://127.0.0.1:%d', [IfThen(FConfig.UseHttps, 'https', 'http'), FConfig.HttpPort]);
+    var LLog := FLog;
+    TThread.CreateAnonymousThread(
+      procedure
+      var
+        LHttp: THTTPClient;
+        LPath: string;
+        LSw: TStopwatch;
+      begin
+        LSw := TStopwatch.StartNew;
         try
-          LHttp.ConnectionTimeout := 5000;
-          LHttp.ResponseTimeout := 15000;
-          LHttp.CustomHeaders[WarmupHeader] := GWarmToken;
-          LHttp.ValidateServerCertificateCallback := AcceptOwnCert;
-          for LPath in TArray<string>.Create('/api/health', '/discover.json',
-            '/player_api.php?username=warmup&password=warmup') do
-            try
-              LHttp.Get(LBase + LPath).StatusCode;
-            except
-              // a failed warm-up request still exercised the path; carry on
-            end;
-        finally
-          LHttp.Free;
+          LHttp := THTTPClient.Create;
+          try
+            LHttp.ConnectionTimeout := 5000;
+            LHttp.ResponseTimeout := 15000;
+            LHttp.CustomHeaders[WarmupHeader] := GWarmToken;
+            LHttp.ValidateServerCertificateCallback := AcceptOwnCert;
+            for LPath in TArray<string>.Create('/api/health', '/discover.json',
+              '/player_api.php?username=warmup&password=warmup') do
+              try
+                LHttp.Get(LBase + LPath).StatusCode;
+              except
+                // a failed warm-up request still exercised the path; carry on
+              end;
+          finally
+            LHttp.Free;
+          end;
+        except
         end;
-      except
-      end;
-      GWarmGate.SetEvent;
-      if Assigned(LLog) then
-        LLog(Format('warm-up done in %d ms - API open', [LSw.ElapsedMilliseconds]));
-    end).Start;
+        GWarmGate.SetEvent;
+        if Assigned(LLog) then
+          LLog(Format('warm-up done in %d ms - API open', [LSw.ElapsedMilliseconds]));
+      end).Start;
 
-  SyncProxyServer; // start the stream relay if the global proxy OR a Plex proxy needs it
-  SyncSsdp; // start the HDHomeRun discovery responder if Plex HDHR is enabled
-
+    SyncProxyServer; // start the stream relay if the global proxy OR a Plex proxy needs it
+    SyncSsdp; // start the HDHomeRun discovery responder if Plex HDHR is enabled
+  except
+    // e.g. the proxy port is taken: close the API listener we already opened, so
+    // the process doesn't look alive while serving nothing (and a retry can bind)
+    FRunning := True;
+    Stop;
+    raise;
+  end;
   FRunning := True;
 end;
 
@@ -382,12 +391,12 @@ var
 begin
   if FConfig.PlexHdhrEnabled and not Assigned(FSsdp) then
   begin
-    Uri := TURI.Create(FConfig.PublicBaseUrl);
     // the discover.json lives on httpPort; that port serves TLS when UseHttps is on,
     // so the SSDP LOCATION must use https there or Plex's fetch fails
     if FConfig.UseHttps then Scheme := 'https' else Scheme := 'http';
     FSsdp := TSsdpServer.Create(
-      Format('%s://%s:%d/discover.json', [Scheme, Uri.Host, FConfig.HttpPort]), FLog);
+      Format('%s://%s:%d/discover.json', [Scheme, SafeUrlHost(FConfig.PublicBaseUrl, 'localhost'),
+        FConfig.HttpPort]), FLog);
     FSsdp.Start;
   end
   else if (not FConfig.PlexHdhrEnabled) and Assigned(FSsdp) then
@@ -434,6 +443,12 @@ begin
   FConfig.ProxyStreams := AEnabled;
   FConfig.ProxyPort := APort;
   SyncProxyServer; // reconcile against the global + Plex proxy flags
+end;
+
+destructor TApiServer.Destroy;
+begin
+  Stop;
+  inherited;
 end;
 
 procedure TApiServer.Stop;

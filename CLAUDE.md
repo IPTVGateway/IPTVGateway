@@ -225,7 +225,7 @@ $LIB="D:\Program Files (x86)\Embarcadero\Studio\37.0\lib\Win32\release"
 $DCU="D:\Data\Delphi\DCU\37.0\IPTVPlayTests\Win32\Debug"; $EXE="W:\IPTVPlayLists\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "D:\Program Files (x86)\Embarcadero\Studio\37.0\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (149 tests as of catch-up)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (150 tests as of 1.2.27)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.

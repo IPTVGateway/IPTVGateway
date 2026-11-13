@@ -34,12 +34,13 @@ type
     [Test] procedure Timeshift_ParsesWireAndOtherForms;
     [Test] procedure Timeshift_PortalOffsetFromServerInfo;
     [Test] procedure Timeshift_UrlShiftsStartToPortalClock;
+    [Test] procedure XtreamBase64_IsOneLine;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.DateUtils,
+  System.SysUtils, System.DateUtils, System.NetEncoding,
   IPTV.Model.Types, IPTV.Core.Utils;
 
 procedure TUtilsTests.ContentTypesRoundtrip;
@@ -273,6 +274,17 @@ begin
   Assert.AreEqual('http://prov.tv/timeshift/u/p/30/2026-11-12:23-45/9.m3u8',
     XtreamTimeshiftUrl('http://prov.tv', 'u', 'p', 30,
       EncodeDateTime(2026, 11, 13, 0, 45, 0, 0), -60, '9', 'm3u8'), 'crosses midnight backwards');
+end;
+
+procedure TUtilsTests.XtreamBase64_IsOneLine;
+var
+  Long, B: string;
+begin
+  Long := 'Met het laatste nieuws en de weersverwachting. En op NPO 1 Extra en NPO 2 met gebarentaal.';
+  B := XtreamBase64(Long);
+  Assert.IsFalse(B.Contains(#13) or B.Contains(#10), 'no line breaks');
+  Assert.AreEqual(Long, TEncoding.UTF8.GetString(TNetEncoding.Base64.DecodeStringToBytes(B)), 'round-trips');
+  Assert.AreEqual('w6k=', XtreamBase64(#$00E9), 'UTF-8');
 end;
 
 initialization

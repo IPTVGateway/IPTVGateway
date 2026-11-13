@@ -340,7 +340,7 @@ var
 
   function B64(const S: string): string;
   begin
-    Result := TNetEncoding.Base64.EncodeBytesToString(TEncoding.UTF8.GetBytes(S));
+    Result := XtreamBase64(S); // single line: no CR/LF every 76 chars (MyTVOnline rejects those)
   end;
 
 begin
@@ -385,8 +385,10 @@ begin
       if AOnlyFuture and (P.StopUtc < NowU) then
         Continue;
       O := TJSONObject.Create;
-      O.AddPair('id', '');
-      O.AddPair('epg_id', '');
+      // real portals send non-empty ids; some players (Formuler/MyTVOnline) key the
+      // listing on them — the start time is unique within one channel
+      O.AddPair('id', IntToStr(DateTimeToUnix(P.StartUtc, True)));
+      O.AddPair('epg_id', '1');
       O.AddPair('title', B64(P.Title));
       O.AddPair('lang', '');
       O.AddPair('start', FormatDateTime('yyyy-mm-dd hh:nn:ss', P.StartUtc));

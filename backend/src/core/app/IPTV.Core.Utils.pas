@@ -81,6 +81,11 @@ function NowUtc: TDateTime;
 // START = 'YYYY-MM-DD:HH-MM' in the PORTAL's clock. We tell boxes timezone=UTC,
 // so the start we receive is UTC and is shifted to the provider's clock.
 
+/// Base64 of the UTF-8 text on ONE line, as Xtream portals send EPG title and
+/// description. The RTL's TNetEncoding.Base64 wraps every 76 chars with CR/LF,
+/// which some players reject (empty per-channel EPG on Formuler/MyTVOnline).
+function XtreamBase64(const S: string): string;
+
 /// Portal clock offset (local - UTC, minutes, rounded to 15) from Xtream
 /// server_info.time_now ('yyyy-mm-dd hh:nn:ss') + timestamp_now (unix s).
 function XtreamTzOffsetMin(const ATimeNow: string; AUnixNow: Int64; out AMinutes: Integer): Boolean;
@@ -107,7 +112,7 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Character, System.DateUtils,
-  System.Generics.Collections, System.Hash, System.IOUtils
+  System.Generics.Collections, System.Hash, System.IOUtils, System.NetEncoding
 {$IFDEF MSWINDOWS}
   , Winapi.Windows, Winapi.PsAPI
 {$ENDIF}
@@ -572,6 +577,18 @@ end;
 function NowUtc: TDateTime;
 begin
   Result := TTimeZone.Local.ToUniversalTime(Now);
+end;
+
+function XtreamBase64(const S: string): string;
+var
+  Enc: TBase64Encoding;
+begin
+  Enc := TBase64Encoding.Create(0); // 0 chars per line = never wrap
+  try
+    Result := Enc.EncodeBytesToString(TEncoding.UTF8.GetBytes(S));
+  finally
+    Enc.Free;
+  end;
 end;
 
 function XtreamTzOffsetMin(const ATimeNow: string; AUnixNow: Int64; out AMinutes: Integer): Boolean;

@@ -21,6 +21,8 @@ type
     [Test] procedure MediaFieldsRoundtrip;
     [Test] procedure MediaDefaults;
     [Test] procedure DaemonConfigPathInDataFolder;
+    [Test] procedure EnvAdminPasswordIsNotSaved;
+    [Test] procedure CorruptConfigIsKeptAsBackup;
   end;
 
 implementation
@@ -166,6 +168,56 @@ begin
   finally
     SetEnvironmentVariable('IPTV_CONFIG', nil);
     TDirectory.Delete(Root, True);
+  end;
+end;
+
+// ADMIN_PASSWORD from the environment overrides the file's password at runtime,
+// but a settings save must write the FILE's value, never the env secret.
+procedure TConfigTests.EnvAdminPasswordIsNotSaved;
+var
+  P: string;
+  C: TAppConfig;
+begin
+  P := TPath.Combine(TPath.GetTempPath, 'iptvcfg_' + TGUID.NewGuid.ToString + '.json');
+  try
+    C := TAppConfig.Default;
+    C.AdminPasswordFile := 'filepw';
+    C.Save(P);
+    SetEnvironmentVariable('ADMIN_PASSWORD', 'envpw');
+    try
+      C := TAppConfig.Load(P);
+      Assert.AreEqual('envpw', C.AdminPassword, 'env wins at runtime');
+      Assert.AreEqual('filepw', C.AdminPasswordFile);
+      C.Save(P);
+    finally
+      SetEnvironmentVariable('ADMIN_PASSWORD', nil);
+    end;
+    C := TAppConfig.Load(P);
+    Assert.AreEqual('filepw', C.AdminPassword, 'the env secret was not written to the file');
+    Assert.IsFalse(TFile.Exists(P + '.tmp'), 'no temp file left behind');
+  finally
+    if TFile.Exists(P) then TFile.Delete(P);
+  end;
+end;
+
+// A config.json that doesn't parse is kept as a backup and reported, instead of
+// being silently replaced by defaults on the next save.
+procedure TConfigTests.CorruptConfigIsKeptAsBackup;
+var
+  Dir, P: string;
+  C: TAppConfig;
+begin
+  Dir := TPath.Combine(TPath.GetTempPath, 'iptvcfgc_' + TGUID.NewGuid.ToString);
+  ForceDirectories(Dir);
+  P := TPath.Combine(Dir, 'config.json');
+  try
+    TFile.WriteAllText(P, '{"httpPort": 9000, "adminPassword": "x"');  // truncated
+    C := TAppConfig.Load(P);
+    Assert.AreNotEqual('', C.LoadWarning, 'reported');
+    Assert.AreEqual(TAppConfig.Default.HttpPort, C.HttpPort, 'runs with defaults');
+    Assert.AreEqual<Integer>(1, Length(TDirectory.GetFiles(Dir, 'config.json.corrupt-*')), 'backup made');
+  finally
+    TDirectory.Delete(Dir, True);
   end;
 end;
 

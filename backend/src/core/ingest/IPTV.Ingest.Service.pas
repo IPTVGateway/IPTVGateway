@@ -269,14 +269,28 @@ begin
         // source enters; the catalog merge above already ran concurrently.
         FEpgLock.Acquire;
         try
-          EpgReader := CreateEpgReader;
-          Epg := EpgReader.Read(Found, KeepTvgIds); // SLOW network read — outside FLock
+          // the catalog merge already succeeded: an EPG problem must not skip the
+          // source bookkeeping below (last refresh, account info, clock offset)
           try
-            WriteLocked(procedure begin FStore.ReplaceEpg(Found.Id, Epg); end);
-            StatusSetProgrammes(ASourceId, Epg.Count);
-            Log(Format('  %d EPG programmes (for %d listed channels)', [Epg.Count, Length(KeepTvgIds)]));
-          finally
-            Epg.Free;
+            EpgReader := CreateEpgReader;
+            Epg := EpgReader.Read(Found, KeepTvgIds); // SLOW network read — outside FLock
+            try
+              if Epg.Count = 0 then
+                // an overloaded panel often answers 200 with an empty/garbage body:
+                // keep the stored guide instead of wiping it
+                Log('  EPG empty - kept the previous guide')
+              else
+              begin
+                WriteLocked(procedure begin FStore.ReplaceEpg(Found.Id, Epg); end);
+                StatusSetProgrammes(ASourceId, Epg.Count);
+                Log(Format('  %d EPG programmes (for %d listed channels)', [Epg.Count, Length(KeepTvgIds)]));
+              end;
+            finally
+              Epg.Free;
+            end;
+          except
+            on E: Exception do
+              Log('  EPG failed (catalog kept): ' + E.Message);
           end;
         finally
           FEpgLock.Release;
@@ -457,6 +471,12 @@ begin
             for J := Progs.Count - 1 downto 0 do
               if not KeepIds.ContainsKey(Progs[J].ChannelTvgId) then
                 Progs.Delete(J);
+            if Progs.Count = 0 then
+            begin
+              // empty/garbage download: keep what we have
+              Log(Format('  extra EPG %d: nothing usable - kept the previous guide', [I + 1]));
+              Continue;
+            end;
             WriteLocked(procedure begin FStore.ReplaceExtraEpg(Slot, Kept, Progs); end);
             Log(Format('  %d guide channels, %d match a list channel, %d programmes stored',
               [Length(Guide), Length(Kept), Progs.Count]));
@@ -499,17 +519,28 @@ begin
       try
         Log(Format('Updating EPG for "%s"...', [Src.Name]));
         EpgReader := CreateEpgReader;
-        Epg := EpgReader.Read(Src, KeepTvgIds); // slow network read OUTSIDE the lock
+        // one guide parse at a time (memory), also against a running daily refresh
+        FEpgLock.Acquire;
         try
-          FLock.Acquire; // serialise only the DB write
+          Epg := EpgReader.Read(Src, KeepTvgIds); // slow network read OUTSIDE the lock
           try
-            FStore.ReplaceEpg(Src.Id, Epg);
+            if Epg.Count = 0 then
+              Log('  EPG empty - kept the previous guide')
+            else
+            begin
+              FLock.Acquire; // serialise only the DB write
+              try
+                FStore.ReplaceEpg(Src.Id, Epg);
+              finally
+                FLock.Release;
+              end;
+              Log(Format('  %d EPG programmes (for %d listed channels)', [Epg.Count, Length(KeepTvgIds)]));
+            end;
           finally
-            FLock.Release;
+            Epg.Free;
           end;
-          Log(Format('  %d EPG programmes (for %d listed channels)', [Epg.Count, Length(KeepTvgIds)]));
         finally
-          Epg.Free;
+          FEpgLock.Release;
         end;
       except
         on E: Exception do

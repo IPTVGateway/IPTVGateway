@@ -79,8 +79,14 @@ begin
     if DueNow then
     begin
       FLastRunDate := DateOf(Now);
+      // an escaping exception would end this thread for good (no more daily
+      // refreshes until a restart) - the callback logs its own errors
       if Assigned(FOnFire) then
-        FOnFire();
+        try
+          FOnFire();
+        except
+          // swallowed on purpose: keep scheduling
+        end;
     end;
     // wait up to 30s; Terminate signals FWake so shutdown returns immediately
     FWake.WaitFor(30000);

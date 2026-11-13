@@ -1485,8 +1485,8 @@ function ItemRow({ item, sourceName, groups, onSave, onDelete, onProbe, drag }: 
   function save() {
     onSave({
       id: item.id,
-      displayName: displayName.trim() || undefined,
-      logoOverride: logoOverride.trim() || undefined,
+      displayName: displayName.trim(), // '' = follow the provider name again
+      logoOverride: logoOverride.trim(), // '' = provider logo again
       tvgIdOverride: tvgIdOverride.trim(),
       channelNumber: Number(channelNumber) || 0,
       customGroupId: groupId,

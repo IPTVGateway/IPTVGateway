@@ -72,6 +72,13 @@ type
     // every /api/* call must send it (header X-Admin-Password or ?pw=). The Xtream
     // box endpoints are unaffected — they use their own output credentials.
     AdminPassword: string;
+    /// The adminPassword as stored in config.json. AdminPassword may be overridden
+    /// by the ADMIN_PASSWORD environment variable; Save writes THIS value, so the
+    /// env secret never ends up in the file.
+    AdminPasswordFile: string;
+    /// Set by Load when config.json existed but could not be parsed (a backup copy
+    /// was made); the host logs it. Never saved.
+    LoadWarning: string;
     // Plex Live TV integration. Two independent tuner surfaces, each on/off and
     // each with its own proxy choice (whether stream URLs go via the relay :ProxyPort
     // or are the raw/302 upstream):
@@ -145,7 +152,10 @@ function ResolveDaemonConfigPath(const AExeDir: string; out ANote: string): stri
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, System.JSON, System.Generics.Collections;
+  System.SysUtils, System.IOUtils, System.JSON, System.Generics.Collections, System.SyncObjs;
+
+var
+  GConfigSaveLock: TCriticalSection;
 
 class function TAppConfig.Default: TAppConfig;
 begin
@@ -165,6 +175,8 @@ begin
   Result.ProxyPort := 7778;
   Result.StreamFailover := False;
   Result.AdminPassword := '';      // open by default; set to lock the admin UI/API
+  Result.AdminPasswordFile := '';
+  Result.LoadWarning := '';
   Result.PlexM3uEnabled := False;
   Result.PlexM3uProxy := False;
   Result.PlexHdhrEnabled := False;
@@ -235,7 +247,7 @@ begin
     Json.AddPair('proxyStreams', TJSONBool.Create(ProxyStreams));
     Json.AddPair('proxyPort', TJSONNumber.Create(ProxyPort));
     Json.AddPair('streamFailover', TJSONBool.Create(StreamFailover));
-    Json.AddPair('adminPassword', AdminPassword);
+    Json.AddPair('adminPassword', AdminPasswordFile); // never the env override
     Json.AddPair('plexM3uEnabled', TJSONBool.Create(PlexM3uEnabled));
     Json.AddPair('plexM3uProxy', TJSONBool.Create(PlexM3uProxy));
     Json.AddPair('plexHdhrEnabled', TJSONBool.Create(PlexHdhrEnabled));
@@ -261,7 +273,18 @@ begin
     for G in ExtraEpgUrls do
       GroupArr.Add(G);
     Json.AddPair('extraEpgUrls', GroupArr);
-    TFile.WriteAllText(APath, Json.Format(2));
+    // atomic-ish: write a temp file, then swap it in, so a crash or a concurrent
+    // save never leaves a truncated config.json (which would load as defaults:
+    // admin open, Plex token gone); one save at a time
+    GConfigSaveLock.Acquire;
+    try
+      TFile.WriteAllText(APath + '.tmp', Json.Format(2), TEncoding.UTF8);
+      if TFile.Exists(APath) then
+        TFile.Delete(APath);
+      TFile.Move(APath + '.tmp', APath);
+    finally
+      GConfigSaveLock.Release;
+    end;
   finally
     Json.Free;
   end;
@@ -306,7 +329,18 @@ begin
     if Val is TJSONObject then
       Json := TJSONObject(Val)
     else
+    begin
       Val.Free; // nil-safe; frees a non-object value
+      // keep the broken file instead of letting the first save overwrite it
+      // with defaults (that would silently drop the admin password / Plex token)
+      Result.LoadWarning := Format('config: %s could not be read - kept a copy as %s.corrupt-%s; ' +
+        'running with defaults', [APath, APath, FormatDateTime('yyyymmdd-hhnnss', Now)]);
+      try
+        TFile.Copy(APath, APath + '.corrupt-' + FormatDateTime('yyyymmdd-hhnnss', Now), True);
+      except
+        // best effort
+      end;
+    end;
   end;
   if Json <> nil then
   try
@@ -329,6 +363,7 @@ begin
     Result.ProxyPort := Clamp(JInt(Json, 'proxyPort', Result.ProxyPort), 1, 65535);
     Result.StreamFailover := JBool(Json, 'streamFailover', Result.StreamFailover);
     Result.AdminPassword := JStr(Json, 'adminPassword', Result.AdminPassword);
+    Result.AdminPasswordFile := Result.AdminPassword;
     Result.PlexM3uEnabled := JBool(Json, 'plexM3uEnabled', Result.PlexM3uEnabled);
     Result.PlexM3uProxy := JBool(Json, 'plexM3uProxy', Result.PlexM3uProxy);
     Result.PlexHdhrEnabled := JBool(Json, 'plexHdhrEnabled', Result.PlexHdhrEnabled);
@@ -382,5 +417,11 @@ begin
   if GetEnvironmentVariable('ADMIN_PASSWORD') <> '' then
     Result.AdminPassword := GetEnvironmentVariable('ADMIN_PASSWORD');
 end;
+
+initialization
+  GConfigSaveLock := TCriticalSection.Create;
+
+finalization
+  GConfigSaveLock.Free;
 
 end.

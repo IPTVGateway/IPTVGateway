@@ -208,6 +208,8 @@ end;
 
 procedure TAppContext.Start;
 begin
+  if FConfig.LoadWarning <> '' then
+    Log(FConfig.LoadWarning);
   ForceDirectories(TPath.GetDirectoryName(FConfig.DatabasePath));
   // Storage connection model:
   //   DEFAULT  -> ONE connection (rollback journal), reads + writes serialised on a
@@ -251,7 +253,12 @@ begin
   FScheduler := TDailyScheduler.Create(FConfig.RefreshHour, FConfig.RefreshMinute,
     procedure
     begin
-      FIngest.RefreshAll;
+      try
+        FIngest.RefreshAll;
+      except
+        on E: Exception do
+          Log('Daily refresh failed: ' + E.Message);
+      end;
     end);
 
   App := Self;

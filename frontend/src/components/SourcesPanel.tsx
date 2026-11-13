@@ -107,6 +107,10 @@ export function SourcesPanel({ onChanged }: Props) {
   // live ingest progress per source id, polled while the panel is open
   const [status, setStatus] = useState<Record<number, IngestStatus>>({})
   const prevRunning = useRef<number[]>([])
+  // the 2 s status poll lives for the panel's lifetime: call the LATEST onChanged
+  // (the first render's closure would reload a stale/empty active list)
+  const onChangedRef = useRef(onChanged)
+  onChangedRef.current = onChanged
 
   useEffect(() => {
     let cancelled = false
@@ -123,7 +127,7 @@ export function SourcesPanel({ onChanged }: Props) {
         prevRunning.current = running
         if (justFinished) {
           await load()
-          onChanged?.()
+          onChangedRef.current?.()
         }
       } catch {
         /* ignore transient poll errors */
@@ -281,11 +285,11 @@ export function SourcesPanel({ onChanged }: Props) {
         name: form.name.trim(),
         kind: form.kind,
         url: form.url.trim(),
-        username: form.username.trim() || undefined,
-        password: form.password.trim() || undefined,
-        epgUrl: form.epgUrl.trim() || undefined,
-        userAgent: form.userAgent.trim() || undefined,
-        referer: form.referer.trim() || undefined,
+        username: form.username.trim(), // '' clears it (undefined would keep the old value)
+        password: form.password.trim(), // '' clears it (undefined would keep the old value)
+        epgUrl: form.epgUrl.trim(), // '' clears it (undefined would keep the old value)
+        userAgent: form.userAgent.trim(), // '' clears it (undefined would keep the old value)
+        referer: form.referer.trim(), // '' clears it (undefined would keep the old value)
         forceHls: form.forceHls,
         preferOwnEpg: form.preferOwnEpg,
         enabled: form.enabled,
@@ -322,39 +326,23 @@ export function SourcesPanel({ onChanged }: Props) {
     setForm((f) => ({ ...f, excludeFilters: next }))
   }
 
-  // Persist the current edit immediately (used when closing the filter modal so
-  // chosen include/exclude are remembered without a separate Save). Sends the
-  // WHOLE form so no column gets reset. No-op for a not-yet-saved new source.
+  // Persist the chosen include/exclude filters immediately (used when closing the
+  // filter modal). No-op for a not-yet-saved new source.
   async function persistCurrent(override: Partial<SourceForm> = {}) {
     if (form.id == null) return
     const f = { ...form, ...override }
     setError(null)
     try {
-      await api.saveSource({
-        id: f.id,
-        name: f.name.trim(),
-        kind: f.kind,
-        url: f.url.trim(),
-        username: f.username.trim() || undefined,
-        password: f.password.trim() || undefined,
-        epgUrl: f.epgUrl.trim() || undefined,
-        userAgent: f.userAgent.trim() || undefined,
-        referer: f.referer.trim() || undefined,
-        forceHls: f.forceHls,
-        preferOwnEpg: f.preferOwnEpg,
-        enabled: f.enabled,
-        contentTypes: f.contentTypes,
-        includeFilters: f.includeFilters,
-        excludeFilters: f.excludeFilters,
-        stripPrefixes: parseTokens(f.stripPrefixes),
-        stripSuffixes: parseTokens(f.stripSuffixes),
-      })
+      // only the filters: other edits in the form stay unsaved until Save/Cancel
+      // (the backend keeps every field that isn't sent)
+      await api.saveSource({ id: f.id, includeFilters: f.includeFilters, excludeFilters: f.excludeFilters })
       await load()
       notify()
     } catch (e) {
       setError((e as Error).message)
     }
   }
+
 
   // one click: drop BOTH include and exclude filters (and save right away for an
   // existing source — also the way out when a stored filter item is too long)

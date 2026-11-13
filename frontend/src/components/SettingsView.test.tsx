@@ -40,11 +40,9 @@ describe('SettingsView — service settings', () => {
     expect(proxy).not.toBeChecked()
     await userEvent.click(proxy)
     await userEvent.click(screen.getByRole('button', { name: /Save settings/ }))
-    await waitFor(() =>
-      expect(api.saveConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ proxyStreams: true, refreshHour: 4, refreshMinute: 0, proxyPort: 9001 }),
-      ),
-    )
+    // only what the user changed is sent, so this form can't undo a change made
+    // elsewhere meanwhile (e.g. the proxy toggled from the header)
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith({ proxyStreams: true }))
   })
 
 })

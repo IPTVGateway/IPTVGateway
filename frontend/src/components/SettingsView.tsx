@@ -165,9 +165,23 @@ function SettingsIO({ onChanged }: { onChanged: () => void }) {
   )
 }
 
+/** The keys of `form` whose value differs from `orig` (all of them when there is no orig). */
+export function changedFields<T extends object>(form: Partial<T>, orig: T | null): Partial<T> {
+  if (!orig) return form
+  const out: Partial<T> = {}
+  for (const k of Object.keys(form) as (keyof T)[]) {
+    if (JSON.stringify(form[k]) !== JSON.stringify((orig as T)[k])) out[k] = form[k]
+  }
+  return out
+}
+
 function ServiceSettings() {
   const t = useT()
   const [cfg, setCfg] = useState<AppConfig | null>(null)
+  // what the server had when the form was loaded/saved: only fields the user
+  // actually changed are sent, so this form can't undo a change made elsewhere
+  // meanwhile (e.g. the proxy toggled from the header)
+  const [orig, setOrig] = useState<AppConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -175,7 +189,10 @@ function ServiceSettings() {
   useEffect(() => {
     api
       .getConfig()
-      .then(setCfg)
+      .then((c) => {
+        setCfg(c)
+        setOrig(c)
+      })
       .catch((e) => setError((e as Error).message))
   }, [])
 
@@ -190,7 +207,7 @@ function ServiceSettings() {
     setBusy(true)
     setError(null)
     try {
-      const next = await api.saveConfig({
+      const form: Partial<AppConfig> = {
         refreshHour: cfg.refreshHour,
         refreshMinute: cfg.refreshMinute,
         epgMaxDays: cfg.epgMaxDays,
@@ -198,8 +215,12 @@ function ServiceSettings() {
         proxyPort: cfg.proxyPort,
         streamFailover: cfg.streamFailover,
         extraEpgUrls: (cfg.extraEpgUrls ?? []).map((u) => u.trim()).filter(Boolean),
-      })
+      }
+      // a missing list and an empty list are the same setting
+      const changed = changedFields(form, orig && { ...orig, extraEpgUrls: orig.extraEpgUrls ?? [] })
+      const next = await api.saveConfig(changed)
       setCfg(next)
+      setOrig(next)
       setSaved(true)
     } catch (err) {
       setError((err as Error).message)

@@ -67,11 +67,14 @@ if (-not $PSBoundParameters.ContainsKey('PublishTo')) {
 # registry push by default when deploy\docker\push-registry.local.txt (gitignored)
 # names a repo, e.g. ghcr.io/youruser/iptv-gateway ('docker login' done once).
 # Unraid then sees "update ready" and updates in one click.
+# NB: PowerShell variables are case-INSENSITIVE, so the registry repo lives in
+# $Registry - '$Repo' would be overwritten by '$repo' (the repo root) below.
+$Registry = $Repo
 if (-not $PSBoundParameters.ContainsKey('Repo')) {
   $localRepo = Join-Path $here 'push-registry.local.txt'
   if (Test-Path $localRepo) {
-    $Repo = (Get-Content $localRepo -TotalCount 1).Trim()
-    if ($Repo -and -not $PSBoundParameters.ContainsKey('Push')) { $Push = [switch]$true }
+    $Registry = (Get-Content $localRepo -TotalCount 1).Trim()
+    if ($Registry -and -not $PSBoundParameters.ContainsKey('Push')) { $Push = [switch]$true }
   }
 }
 $repo = (Resolve-Path (Join-Path $here '..\..')).Path
@@ -149,12 +152,12 @@ function Copy-Bundle($destDir) {
     $src = Join-Path $here $f
     if (Test-Path $src) { Copy-Item $src $destDir -Force }
   }
-  if ($Repo) {
+  if ($Registry) {
     $xml = Join-Path $destDir 'iptv-gateway.xml'
     if (Test-Path $xml) {
       $c = Get-Content $xml -Raw
-      $c = $c -replace '<Repository>[^<]*</Repository>', "<Repository>$Repo`:latest</Repository>"
-      $reg = if ($Repo -like 'ghcr.io/*') { 'https://ghcr.io' } else { "https://hub.docker.com/r/$Repo" }
+      $c = $c -replace '<Repository>[^<]*</Repository>', "<Repository>$Registry`:latest</Repository>"
+      $reg = if ($Registry -like 'ghcr.io/*') { 'https://ghcr.io' } else { "https://hub.docker.com/r/$Registry" }
       $c = $c -replace '<Registry\s*/>', "<Registry>$reg</Registry>"
       $c = $c -replace '<Registry>[^<]*</Registry>', "<Registry>$reg</Registry>"
       Set-Content $xml $c -Encoding UTF8
@@ -226,8 +229,8 @@ function Publish-Bundle($srcDir, $destDir) {
 
 # tag + push to the registry (docker runs natively or in WSL). Assumes 'docker login' done.
 function Push-Image {
-  $tags = @("$Repo`:latest")
-  if ($Version) { $tags += "$Repo`:$Version" }
+  $tags = @("$Registry`:latest")
+  if ($Version) { $tags += "$Registry`:$Version" }
   foreach ($t in $tags) {
     Write-Host "==> push $t ..." -ForegroundColor Cyan
     if (Get-Command docker -ErrorAction SilentlyContinue) {
@@ -314,7 +317,7 @@ $saveCmd
 if (-not $NoSave -and $PublishTo) { Publish-Bundle (Split-Path $SaveTo) $PublishTo }
 
 if ($Push) {
-  if (-not $Repo) { throw '-Push requires -Repo <user/name> (e.g. youruser/iptv-gateway)' }
+  if (-not $Registry) { throw '-Push requires -Repo <user/name> (e.g. youruser/iptv-gateway)' }
   Push-Image
 }
 

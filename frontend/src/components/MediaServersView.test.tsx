@@ -36,7 +36,7 @@ beforeEach(() => {
   vi.mocked(api.mediaStatus).mockResolvedValue(STATUS)
   vi.mocked(api.saveConfig).mockResolvedValue(CONFIG)
   vi.mocked(api.listLists).mockResolvedValue([
-    { id: 4, name: 'IPTV_WK', enabled: true },
+    { id: 4, name: 'Living room', enabled: true },
     { id: 6, name: 'PLEX', enabled: true },
   ] as never)
 })

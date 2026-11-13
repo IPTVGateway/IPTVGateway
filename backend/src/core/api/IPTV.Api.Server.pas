@@ -537,7 +537,6 @@ end;
 
 procedure TApiServer.SyncSsdp;
 var
-  lUri: TURI;
   lScheme: string;
 begin
   if FConfig.PlexHdhrEnabled and not Assigned(FSsdp) then

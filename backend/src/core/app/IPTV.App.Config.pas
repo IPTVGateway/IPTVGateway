@@ -178,6 +178,9 @@ uses
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
 {$ENDIF}
+{$IFDEF POSIX}
+  Posix.Stdio, // lets the RTL inline RenameFile (rename())
+{$ENDIF}
   System.SysUtils,
   System.IOUtils,
   System.JSON,

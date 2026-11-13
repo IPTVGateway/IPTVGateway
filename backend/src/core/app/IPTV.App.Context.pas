@@ -435,7 +435,7 @@ begin
   finally
     FreeAndNil(lLists);
   end;
-  Result := nil;
+  // (Result is still nil: no enabled bouquet)
 end;
 
 procedure TAppContext.UpdateMediaConfig(const AVisibleGroups: TArray<string>;

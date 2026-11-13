@@ -5,6 +5,10 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+## [1.2.37] - 2026-11-14
+
+Hardening release.
+
 ### Security
 - **The container no longer runs as root.** It starts as `PUID`:`PGID` (default
   `99:100`, Unraid's `nobody:users`); on start the data folder is handed to that

@@ -224,7 +224,7 @@ $BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
 $DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (175 tests as of 1.2.36)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (178 tests as of 1.2.37)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -236,7 +236,7 @@ small scratch console program that uses `TSQLiteStore` on a COPY of it.
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
-npx vitest run     # 122 tests as of 1.2.36
+npx vitest run     # 123 tests as of 1.2.37
 npm run build      # tsc -b && vite build
 ```
 
@@ -432,7 +432,7 @@ migration), else defaults; a directory Docker made for a missing file mount is
 ignored. Without the variable: next to the exe, as before. The Unraid template and
 compose therefore only need the data volume.
 
-## Hardening (after 1.2.36)
+## Hardening (1.2.37)
 
 - **Non-root container:** `deploy/docker/entrypoint.sh` chowns `data`/`lang` to
   `PUID:PGID` (default 99:100) and `setpriv`s to it; the service stays PID 1.

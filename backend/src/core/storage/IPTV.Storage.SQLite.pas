@@ -188,50 +188,64 @@ const
   SCHEMA: array[0..7] of string = (
     'CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT)',
 
-    'CREATE TABLE IF NOT EXISTS sources (' +
-    '  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL,' +
-    '  url TEXT NOT NULL, username TEXT, password TEXT, epg_url TEXT, user_agent TEXT NOT NULL DEFAULT '''', referer TEXT NOT NULL DEFAULT '''',' +
-    '  force_hls INTEGER NOT NULL DEFAULT 0,' +
-    '  enabled INTEGER NOT NULL DEFAULT 1, content_types TEXT NOT NULL DEFAULT ''live,movie,series,radio'',' +
-    '  include_filters TEXT NOT NULL DEFAULT '''', exclude_filters TEXT NOT NULL DEFAULT '''',' +
-    '  strip_prefixes TEXT NOT NULL DEFAULT '''', strip_suffixes TEXT NOT NULL DEFAULT '''',' +
-    '  last_refresh_utc TEXT)',
+    '''
+    CREATE TABLE IF NOT EXISTS sources (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, kind TEXT NOT NULL,
+      url TEXT NOT NULL, username TEXT, password TEXT, epg_url TEXT, user_agent TEXT NOT NULL DEFAULT '', referer TEXT NOT NULL DEFAULT '',
+      force_hls INTEGER NOT NULL DEFAULT 0,
+      enabled INTEGER NOT NULL DEFAULT 1, content_types TEXT NOT NULL DEFAULT 'live,movie,series,radio',
+      include_filters TEXT NOT NULL DEFAULT '', exclude_filters TEXT NOT NULL DEFAULT '',
+      strip_prefixes TEXT NOT NULL DEFAULT '', strip_suffixes TEXT NOT NULL DEFAULT '',
+      last_refresh_utc TEXT)
+    ''',
 
-    'CREATE TABLE IF NOT EXISTS categories (' +
-    '  id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, upstream_id TEXT,' +
-    '  content_type TEXT NOT NULL, name TEXT NOT NULL, is_new INTEGER NOT NULL DEFAULT 1,' +
-    '  seen_at_utc TEXT,' +
-    '  UNIQUE(source_id, content_type, upstream_id))',
+    '''
+    CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, upstream_id TEXT,
+      content_type TEXT NOT NULL, name TEXT NOT NULL, is_new INTEGER NOT NULL DEFAULT 1,
+      seen_at_utc TEXT,
+      UNIQUE(source_id, content_type, upstream_id))
+    ''',
 
-    'CREATE TABLE IF NOT EXISTS streams (' +
-    '  id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, upstream_id TEXT NOT NULL,' +
-    '  content_type TEXT NOT NULL, name TEXT, logo TEXT, group_title TEXT, category_upstream_id TEXT,' +
-    '  tvg_id TEXT, tvg_name TEXT, upstream_url TEXT, content_hash TEXT,' +
-    '  archive_days INTEGER NOT NULL DEFAULT 0,' +
-    '  is_new INTEGER NOT NULL DEFAULT 1, seen_at_utc TEXT, first_seen_utc TEXT, last_seen_utc TEXT,' +
-    '  UNIQUE(source_id, content_type, upstream_id))',
+    '''
+    CREATE TABLE IF NOT EXISTS streams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, upstream_id TEXT NOT NULL,
+      content_type TEXT NOT NULL, name TEXT, logo TEXT, group_title TEXT, category_upstream_id TEXT,
+      tvg_id TEXT, tvg_name TEXT, upstream_url TEXT, content_hash TEXT,
+      archive_days INTEGER NOT NULL DEFAULT 0,
+      is_new INTEGER NOT NULL DEFAULT 1, seen_at_utc TEXT, first_seen_utc TEXT, last_seen_utc TEXT,
+      UNIQUE(source_id, content_type, upstream_id))
+    ''',
 
-    'CREATE TABLE IF NOT EXISTS epg (' +
-    '  id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, channel_tvg_id TEXT NOT NULL,' +
-    '  start_utc TEXT NOT NULL, stop_utc TEXT NOT NULL, title TEXT, description TEXT, category TEXT)',
+    '''
+    CREATE TABLE IF NOT EXISTS epg (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, channel_tvg_id TEXT NOT NULL,
+      start_utc TEXT NOT NULL, stop_utc TEXT NOT NULL, title TEXT, description TEXT, category TEXT)
+    ''',
 
     // output_username/password are OPTIONAL (empty => portal needs no auth).
-    'CREATE TABLE IF NOT EXISTS lists (' +
-    '  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,' +
-    '  output_username TEXT NOT NULL DEFAULT '''', output_password TEXT NOT NULL DEFAULT '''',' +
-    '  enabled INTEGER NOT NULL DEFAULT 1)',
+    '''
+    CREATE TABLE IF NOT EXISTS lists (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+      output_username TEXT NOT NULL DEFAULT '', output_password TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1)
+    ''',
 
-    'CREATE TABLE IF NOT EXISTS list_groups (' +
-    '  id INTEGER PRIMARY KEY AUTOINCREMENT, list_id INTEGER NOT NULL, name TEXT NOT NULL,' +
-    '  content_type TEXT NOT NULL, is_favorite INTEGER NOT NULL DEFAULT 0,' +
-    '  sort_order INTEGER NOT NULL DEFAULT 0)',
+    '''
+    CREATE TABLE IF NOT EXISTS list_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, list_id INTEGER NOT NULL, name TEXT NOT NULL,
+      content_type TEXT NOT NULL, is_favorite INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0)
+    ''',
 
-    'CREATE TABLE IF NOT EXISTS list_items (' +
-    '  id INTEGER PRIMARY KEY AUTOINCREMENT, list_id INTEGER NOT NULL, stream_item_id INTEGER NOT NULL,' +
-    '  custom_group_id INTEGER NOT NULL DEFAULT 0, content_type TEXT NOT NULL,' +
-    '  display_name TEXT, logo_override TEXT, channel_number INTEGER NOT NULL DEFAULT 0,' +
-    '  tvg_id_override TEXT NOT NULL DEFAULT '''',' +
-    '  UNIQUE(list_id, stream_item_id))'
+    '''
+    CREATE TABLE IF NOT EXISTS list_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, list_id INTEGER NOT NULL, stream_item_id INTEGER NOT NULL,
+      custom_group_id INTEGER NOT NULL DEFAULT 0, content_type TEXT NOT NULL,
+      display_name TEXT, logo_override TEXT, channel_number INTEGER NOT NULL DEFAULT 0,
+      tvg_id_override TEXT NOT NULL DEFAULT '',
+      UNIQUE(list_id, stream_item_id))
+    '''
   );
 
 { TSQLiteStore }
@@ -335,8 +349,10 @@ begin
   // this provider's own guide before the extra (third-party) EPG source
   AddColumn('sources', 'prefer_own_epg INTEGER NOT NULL DEFAULT 0');
   // channel list of the extra guides (negative source ids), to match channels by id/name
-  Exec('CREATE TABLE IF NOT EXISTS epg_channels (source_id INTEGER NOT NULL, ' +
-    'channel_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '''')');
+  Exec('''
+    CREATE TABLE IF NOT EXISTS epg_channels (source_id INTEGER NOT NULL,
+    channel_id TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '')
+    ''');
   Exec('CREATE INDEX IF NOT EXISTS idx_epgch_src ON epg_channels(source_id)');
   // stable box-facing ids for Xtream series episodes (get_series_info)
   Exec('''
@@ -378,8 +394,10 @@ begin
   Exec('CREATE INDEX IF NOT EXISTS idx_epg_chan ON epg(channel_tvg_id, start_utc)');
   Exec('CREATE INDEX IF NOT EXISTS idx_items_list ON list_items(list_id)');
   // enforce unique credentials only when a username is actually set
-  Exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_lists_user ON lists(output_username) ' +
-       'WHERE output_username <> ''''');
+  Exec('''
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_lists_user ON lists(output_username)
+    WHERE output_username <> ''
+    ''');
 
   MigrateM3uStreamIds;
   RepairSourceTokens;
@@ -416,8 +434,10 @@ var
 begin
   Changed := False;
   for var Col in TArray<string>.Create('include_filters', 'exclude_filters', 'strip_prefixes', 'strip_suffixes') do
-    if FConn.ExecSQL(Format('UPDATE sources SET %0:s = replace(%0:s, ''"'', '''') ' +
-      'WHERE instr(%0:s, ''"'') > 0', [Col])) > 0 then
+    if FConn.ExecSQL(Format('''
+      UPDATE sources SET %0:s = replace(%0:s, '"', '')
+      WHERE instr(%0:s, '"') > 0
+      ''', [Col])) > 0 then
       Changed := True;
 
   Ids := [];
@@ -456,8 +476,10 @@ begin
   begin
     Q := NewQuery;
     try
-      Q.Open('SELECT (SELECT freelist_count FROM pragma_freelist_count) * ' +
-             '(SELECT page_size FROM pragma_page_size)');
+      Q.Open('''
+        SELECT (SELECT freelist_count FROM pragma_freelist_count) *
+        (SELECT page_size FROM pragma_page_size)
+        ''');
       if Q.Fields[0].AsLargeInt > VacuumAboveBytes then
       begin
         Q.Close;
@@ -537,8 +559,10 @@ begin
           ToShow.Clear;
           if Table = 'categories' then
           begin
-            Q.Open('SELECT DISTINCT content_type, category_upstream_id FROM streams ' +
-              'WHERE source_id=:s AND hidden=0', [ASourceId]);
+            Q.Open('''
+              SELECT DISTINCT content_type, category_upstream_id FROM streams
+              WHERE source_id=:s AND hidden=0
+              ''', [ASourceId]);
             while not Q.Eof do
             begin
               WithVisible.Add(Q.Fields[0].AsString + '|' + Q.Fields[1].AsString);
@@ -741,18 +765,16 @@ begin
   try
     if ASource.Id = 0 then
       Q.SQL.Text :=
-        'INSERT INTO sources(name,kind,url,username,password,epg_url,user_agent,referer,force_hls,enabled,content_types,' +
-        'include_filters,exclude_filters,strip_prefixes,strip_suffixes,last_refresh_utc,account_status,expires_utc,max_connections,tz_offset_min,prefer_own_epg) ' +
-        'VALUES(:name,:kind,:url,:username,:password,:epg_url,:user_agent,:referer,:force_hls,:enabled,:content_types,' +
-        ':include_filters,:exclude_filters,:strip_prefixes,:strip_suffixes,:last_refresh_utc,:account_status,:expires_utc,:max_connections,:tz_offset_min,:prefer_own_epg)'
+        '''
+        INSERT INTO sources(name,kind,url,username,password,epg_url,user_agent,referer,force_hls,enabled,content_types,include_filters,exclude_filters,strip_prefixes,strip_suffixes,last_refresh_utc,account_status,expires_utc,max_connections,tz_offset_min,prefer_own_epg)
+        VALUES(:name,:kind,:url,:username,:password,:epg_url,:user_agent,:referer,:force_hls,:enabled,:content_types,:include_filters,:exclude_filters,:strip_prefixes,:strip_suffixes,:last_refresh_utc,:account_status,:expires_utc,:max_connections,:tz_offset_min,:prefer_own_epg)
+        '''
     else
     begin
       Q.SQL.Text :=
-        'UPDATE sources SET name=:name,kind=:kind,url=:url,username=:username,password=:password,' +
-        'epg_url=:epg_url,user_agent=:user_agent,referer=:referer,force_hls=:force_hls,enabled=:enabled,content_types=:content_types,' +
-        'include_filters=:include_filters,exclude_filters=:exclude_filters,strip_prefixes=:strip_prefixes,' +
-        'strip_suffixes=:strip_suffixes,last_refresh_utc=:last_refresh_utc,account_status=:account_status,expires_utc=:expires_utc,' +
-        'max_connections=:max_connections,tz_offset_min=:tz_offset_min,prefer_own_epg=:prefer_own_epg WHERE id=:id';
+        '''
+        UPDATE sources SET name=:name,kind=:kind,url=:url,username=:username,password=:password,epg_url=:epg_url,user_agent=:user_agent,referer=:referer,force_hls=:force_hls,enabled=:enabled,content_types=:content_types,include_filters=:include_filters,exclude_filters=:exclude_filters,strip_prefixes=:strip_prefixes,strip_suffixes=:strip_suffixes,last_refresh_utc=:last_refresh_utc,account_status=:account_status,expires_utc=:expires_utc,max_connections=:max_connections,tz_offset_min=:tz_offset_min,prefer_own_epg=:prefer_own_epg WHERE id=:id
+        ''';
       Q.ParamByName('id').AsInteger := ASource.Id;
     end;
     Q.ParamByName('name').AsWideString := ASource.Name;
@@ -799,11 +821,15 @@ begin
   FConn.StartTransaction;
   try
     FConn.ExecSQL(
-      'DELETE FROM list_items WHERE stream_item_id IN ' +
-      '(SELECT id FROM streams WHERE source_id=:id)', [AId]);
+      '''
+      DELETE FROM list_items WHERE stream_item_id IN
+      (SELECT id FROM streams WHERE source_id=:id)
+      ''', [AId]);
     FConn.ExecSQL(
-      'DELETE FROM series_episodes WHERE stream_id IN ' +
-      '(SELECT id FROM streams WHERE source_id=:id)', [AId]);
+      '''
+      DELETE FROM series_episodes WHERE stream_id IN
+      (SELECT id FROM streams WHERE source_id=:id)
+      ''', [AId]);
     FConn.ExecSQL('DELETE FROM streams WHERE source_id=:id', [AId]);
     FConn.ExecSQL('DELETE FROM categories WHERE source_id=:id', [AId]);
     FConn.ExecSQL('DELETE FROM epg WHERE source_id=:id', [AId]);
@@ -854,12 +880,14 @@ begin
     // prepared once, reused per row (no SQL re-parse per item)
     CatIns.SQL.Text := 'INSERT INTO categories(source_id,upstream_id,content_type,name,is_new) VALUES(:s,:u,:c,:n,1)';
     CatUpd.SQL.Text := 'UPDATE categories SET name=:n WHERE source_id=:s AND content_type=:c AND upstream_id=:u';
-    StrIns.SQL.Text := 'INSERT INTO streams(source_id,upstream_id,content_type,name,logo,group_title,' +
-      'category_upstream_id,tvg_id,tvg_name,upstream_url,content_hash,archive_days,is_new,first_seen_utc,last_seen_utc) ' +
-      'VALUES(:s,:u,:c,:n,:logo,:grp,:cat,:tvg,:tvgn,:url,:hash,:arch,1,:now,:now)';
-    StrUpd.SQL.Text := 'UPDATE streams SET name=:n,logo=:logo,group_title=:grp,category_upstream_id=:cat,' +
-      'tvg_id=:tvg,tvg_name=:tvgn,upstream_url=:url,content_hash=:hash,archive_days=:arch,last_seen_utc=:now ' +
-      'WHERE source_id=:s AND content_type=:c AND upstream_id=:u';
+    StrIns.SQL.Text := '''
+      INSERT INTO streams(source_id,upstream_id,content_type,name,logo,group_title,category_upstream_id,tvg_id,tvg_name,upstream_url,content_hash,archive_days,is_new,first_seen_utc,last_seen_utc)
+      VALUES(:s,:u,:c,:n,:logo,:grp,:cat,:tvg,:tvgn,:url,:hash,:arch,1,:now,:now)
+      ''';
+    StrUpd.SQL.Text := '''
+      UPDATE streams SET name=:n,logo=:logo,group_title=:grp,category_upstream_id=:cat,tvg_id=:tvg,tvg_name=:tvgn,upstream_url=:url,content_hash=:hash,archive_days=:arch,last_seen_utc=:now
+      WHERE source_id=:s AND content_type=:c AND upstream_id=:u
+      ''';
 
     FConn.StartTransaction;
     try
@@ -1521,8 +1549,10 @@ begin
   Q := NewQuery;
   try
     // distinct tvg-ids in the catalog with one representative channel name
-    Q.Open('SELECT tvg_id, MIN(name) AS nm FROM streams WHERE tvg_id <> '''' ' +
-           'GROUP BY tvg_id ORDER BY nm COLLATE NOCASE');
+    Q.Open('''
+      SELECT tvg_id, MIN(name) AS nm FROM streams WHERE tvg_id <> ''
+      GROUP BY tvg_id ORDER BY nm COLLATE NOCASE
+      ''');
     while not Q.Eof do
     begin
       Info.TvgId := Q.FieldByName('tvg_id').AsString;
@@ -1644,11 +1674,13 @@ begin
     Q := NewQuery;
     try
       Q.Open(
-        'SELECT i.id AS iid, i.stream_item_id AS sid, s.name AS sname, ' +
-        '  s.content_type AS ct, s.source_id AS srcid ' +
-        'FROM list_items i JOIN streams s ON s.id = i.stream_item_id ' +
-        'WHERE i.list_id = :l AND i.custom_group_id = :g ' +
-        'ORDER BY i.channel_number, sname COLLATE NOCASE', [AListId, ASourceGroupId]);
+        '''
+        SELECT i.id AS iid, i.stream_item_id AS sid, s.name AS sname,
+          s.content_type AS ct, s.source_id AS srcid
+        FROM list_items i JOIN streams s ON s.id = i.stream_item_id
+        WHERE i.list_id = :l AND i.custom_group_id = :g
+        ORDER BY i.channel_number, sname COLLATE NOCASE
+        ''', [AListId, ASourceGroupId]);
       while not Q.Eof do
       begin
         M := Default(TVariantMatch);
@@ -1694,8 +1726,10 @@ begin
       InClause := InClause + IfThen(I > 0, ',', '') + QuotedStr(Cts[I]);
     Q := NewQuery;
     try
-      Q.Open('SELECT id, source_id, name FROM streams ' +
-             'WHERE content_type IN (' + InClause + ') AND upstream_url <> ''''');
+      Q.Open('''
+        SELECT id, source_id, name FROM streams
+        WHERE content_type IN (
+        ''' + InClause + ') AND upstream_url <> ''''');
       while not Q.Eof do
       begin
         Base := KeyOf(Q.FieldByName('name').AsString, Q.FieldByName('source_id').AsInteger, Qual, Head);
@@ -1836,8 +1870,10 @@ begin
 
       // candidate pool: same content type (and source unless all sources), still
       // playable. Keys are computed in Delphi (decorative letters, strip rules).
-      Sql := 'SELECT id, source_id, name, tvg_id, group_title FROM streams ' +
-             'WHERE content_type = :ct AND upstream_url <> ''''';
+      Sql := '''
+        SELECT id, source_id, name, tvg_id, group_title FROM streams
+        WHERE content_type = :ct AND upstream_url <> ''
+        ''';
       if Tvg <> '' then
         Tvgs.AddOrSetValue(Tvg.ToLower, True);
       // pass 1: self + name matches (collecting their tvg-ids); pass 2: rows that
@@ -1978,11 +2014,13 @@ begin
 
       // collect the source group's items, then close the cursor before per-item lookups
       Q.Open(
-        'SELECT i.id AS iid, i.stream_item_id AS sid, s.name AS sname, ' +
-        '  s.content_type AS ct, s.tvg_id AS tvg ' +
-        'FROM list_items i JOIN streams s ON s.id = i.stream_item_id ' +
-        'WHERE i.list_id = :l AND i.custom_group_id = :g ' +
-        'ORDER BY i.channel_number, sname COLLATE NOCASE', [AListId, ASourceGroupId]);
+        '''
+        SELECT i.id AS iid, i.stream_item_id AS sid, s.name AS sname,
+          s.content_type AS ct, s.tvg_id AS tvg
+        FROM list_items i JOIN streams s ON s.id = i.stream_item_id
+        WHERE i.list_id = :l AND i.custom_group_id = :g
+        ORDER BY i.channel_number, sname COLLATE NOCASE
+        ''', [AListId, ASourceGroupId]);
       while not Q.Eof do
       begin
         Row.M := Default(TVariantMatch);
@@ -2000,11 +2038,13 @@ begin
       // channel has one (reliable), else by exact case-insensitive name; same content
       // type; skip placeholder rows with no URL.
       Q.SQL.Text :=
-        'SELECT id, name FROM streams ' +
-        'WHERE source_id = :src AND content_type = :ct AND upstream_url <> '''' AND (' +
-        '  (:tvg <> '''' AND tvg_id = :tvg) OR ' +
-        '  (:tvg = '''' AND name = :nm COLLATE NOCASE)) ' +
-        'ORDER BY id LIMIT 1';
+        '''
+        SELECT id, name FROM streams
+        WHERE source_id = :src AND content_type = :ct AND upstream_url <> '' AND (
+          (:tvg <> '' AND tvg_id = :tvg) OR
+          (:tvg = '' AND name = :nm COLLATE NOCASE))
+        ORDER BY id LIMIT 1
+        ''';
       for I := 0 to Rows.Count - 1 do
       begin
         M := Rows[I].M;
@@ -2054,8 +2094,10 @@ var
 begin
   Q := NewQuery;
   try
-    Q.SQL.Text := 'INSERT INTO app_state(key, value) VALUES(:k, :v) ' +
-                  'ON CONFLICT(key) DO UPDATE SET value = :v';
+    Q.SQL.Text := '''
+      INSERT INTO app_state(key, value) VALUES(:k, :v)
+      ON CONFLICT(key) DO UPDATE SET value = :v
+      ''';
     Q.ParamByName('k').AsWideString := AKey;
     Q.ParamByName('v').AsWideString := AValue;
     Q.ExecSQL;
@@ -2086,8 +2128,10 @@ begin
       FConn.ExecSQL('DELETE FROM epg WHERE source_id=:s', [ASourceId]);
       // prepared once, reused per row (was re-parsing per programme = very slow)
       Q.SQL.Text :=
-        'INSERT INTO epg(source_id,channel_tvg_id,start_utc,stop_utc,title,description,category) ' +
-        'VALUES(:s,:ch,:start,:stop,:title,:desc,:cat)';
+        '''
+        INSERT INTO epg(source_id,channel_tvg_id,start_utc,stop_utc,title,description,category)
+        VALUES(:s,:ch,:start,:stop,:title,:desc,:cat)
+        ''';
       for P in AProgrammes do
       begin
         Q.ParamByName('s').AsInteger := ASourceId;
@@ -2220,10 +2264,12 @@ begin
   Q := NewQuery;
   try
     Q.Open(
-      'SELECT c.source_id AS sid, c.channel_id AS cid, c.display_name AS dn FROM epg_channels c ' +
-      'WHERE c.source_id < 0 AND EXISTS (SELECT 1 FROM epg e WHERE e.channel_tvg_id = :pfx || c.channel_id ' +
-      '  AND e.source_id = c.source_id AND e.stop_utc > :now) ' +
-      'ORDER BY c.source_id DESC, c.channel_id', [EXTRA_EPG_PREFIX, NowS]);
+      '''
+      SELECT c.source_id AS sid, c.channel_id AS cid, c.display_name AS dn FROM epg_channels c
+      WHERE c.source_id < 0 AND EXISTS (SELECT 1 FROM epg e WHERE e.channel_tvg_id = :pfx || c.channel_id
+        AND e.source_id = c.source_id AND e.stop_utc > :now)
+      ORDER BY c.source_id DESC, c.channel_id
+      ''', [EXTRA_EPG_PREFIX, NowS]);
     while not Q.Eof do
     begin
       K := EXTRA_EPG_PREFIX + Q.FieldByName('cid').AsWideString;
@@ -2257,8 +2303,10 @@ begin
         while Lo < Wanted.Count do
         begin
           Hi := Min(Lo + 500, Wanted.Count) - 1;
-          Q.SQL.Text := 'SELECT DISTINCT channel_tvg_id AS t FROM epg WHERE source_id > 0 AND stop_utc > :now ' +
-            'AND channel_tvg_id IN (' + Placeholders(Hi - Lo + 1) + ')';
+          Q.SQL.Text := '''
+            SELECT DISTINCT channel_tvg_id AS t FROM epg WHERE source_id > 0 AND stop_utc > :now
+            AND channel_tvg_id IN (
+            ''' + Placeholders(Hi - Lo + 1) + ')';
           Q.ParamByName('now').AsWideString := NowS;
           for J := Lo to Hi do
             Q.ParamByName('p' + (J - Lo).ToString).AsWideString := Wanted[J];
@@ -2326,14 +2374,15 @@ begin
     // "relabel" override has its programmes under the upstream id, while a "match
     // an existing guide" override points at an id that already has its own EPG.
     // Serving (BuildXmltv / list EPG) re-keys whatever is found to the effective id.
-    Q.Open('SELECT DISTINCT tvg FROM (' +
-           '  SELECT s.tvg_id AS tvg FROM list_items i ' +
-           '    JOIN streams s ON s.id = i.stream_item_id WHERE s.tvg_id <> '''' ' +
-           '  UNION ' +
-           '  SELECT COALESCE(NULLIF(i.tvg_id_override,''''), s.tvg_id) AS tvg FROM list_items i ' +
-           '    JOIN streams s ON s.id = i.stream_item_id ' +
-           '    WHERE COALESCE(NULLIF(i.tvg_id_override,''''), s.tvg_id) <> ''''' +
-           ')');
+    Q.Open('''
+      SELECT DISTINCT tvg FROM (
+        SELECT s.tvg_id AS tvg FROM list_items i
+          JOIN streams s ON s.id = i.stream_item_id WHERE s.tvg_id <> ''
+        UNION
+        SELECT COALESCE(NULLIF(i.tvg_id_override,''), s.tvg_id) AS tvg FROM list_items i
+          JOIN streams s ON s.id = i.stream_item_id
+          WHERE COALESCE(NULLIF(i.tvg_id_override,''), s.tvg_id) <> '')
+      ''');
     while not Q.Eof do
     begin
       L.Add(Q.Fields[0].AsString);
@@ -2447,8 +2496,10 @@ begin
   Q := NewQuery;
   try
     if AList.Id = 0 then
-      Q.SQL.Text := 'INSERT INTO lists(name,output_username,output_password,enabled) ' +
-        'VALUES(:name,:u,:p,:enabled)'
+      Q.SQL.Text := '''
+        INSERT INTO lists(name,output_username,output_password,enabled)
+        VALUES(:name,:u,:p,:enabled)
+        '''
     else
     begin
       Q.SQL.Text := 'UPDATE lists SET name=:name,output_username=:u,output_password=:p,enabled=:enabled WHERE id=:id';
@@ -2493,8 +2544,10 @@ begin
     if AUser = '' then
       // optional credentials: an empty login only reaches a bouquet that itself
       // has NO login - never one that is protected by a username/password
-      Q.Open('SELECT * FROM lists WHERE enabled=1 AND COALESCE(output_username,'''')='''' ' +
-        'ORDER BY id LIMIT 1')
+      Q.Open('''
+        SELECT * FROM lists WHERE enabled=1 AND COALESCE(output_username,'')=''
+        ORDER BY id LIMIT 1
+        ''')
     else
       Q.Open('SELECT * FROM lists WHERE enabled=1 AND output_username=:u AND output_password=:p LIMIT 1',
         [AUser, APass]);
@@ -2527,8 +2580,10 @@ begin
   try
     // favorites first, then the manual drag order (sort_order>0), then A->Z for any
     // groups not manually positioned yet
-    Q.Open('SELECT * FROM list_groups WHERE list_id=:l ' +
-      'ORDER BY is_favorite DESC, CASE WHEN sort_order>0 THEN 0 ELSE 1 END, sort_order, name COLLATE NOCASE',
+    Q.Open('''
+      SELECT * FROM list_groups WHERE list_id=:l
+      ORDER BY is_favorite DESC, CASE WHEN sort_order>0 THEN 0 ELSE 1 END, sort_order, name COLLATE NOCASE
+      ''',
       [AListId]);
     while not Q.Eof do
     begin
@@ -2548,8 +2603,10 @@ begin
   try
     if AGroup.Id = 0 then
     begin
-      Q.SQL.Text := 'INSERT INTO list_groups(list_id,name,content_type,is_favorite) ' +
-        'VALUES(:l,:name,:c,:fav)';
+      Q.SQL.Text := '''
+        INSERT INTO list_groups(list_id,name,content_type,is_favorite)
+        VALUES(:l,:name,:c,:fav)
+        ''';
       Q.ParamByName('l').AsInteger := AGroup.ListId; // only the INSERT has :l
     end
     else
@@ -2662,9 +2719,11 @@ begin
     // join the upstream stream so the UI can show the real channel name/logo
     // even when no override is set (LEFT JOIN: keep the item if the stream is gone)
     Q.Open(
-      'SELECT i.*, s.name AS stream_name, s.logo AS stream_logo, s.tvg_id AS stream_tvg, s.source_id AS stream_source, s.archive_days AS stream_archive ' +
-      'FROM list_items i LEFT JOIN streams s ON s.id = i.stream_item_id ' +
-      'WHERE i.list_id=:l ORDER BY i.channel_number, stream_name COLLATE NOCASE',
+      '''
+      SELECT i.*, s.name AS stream_name, s.logo AS stream_logo, s.tvg_id AS stream_tvg, s.source_id AS stream_source, s.archive_days AS stream_archive
+      FROM list_items i LEFT JOIN streams s ON s.id = i.stream_item_id
+      WHERE i.list_id=:l ORDER BY i.channel_number, stream_name COLLATE NOCASE
+      ''',
       [AListId]);
     while not Q.Eof do
     begin
@@ -2686,25 +2745,30 @@ begin
   try
     // Join item -> stream (upstream data) -> group (override). COALESCE applies
     // the rename/regroup/logo overrides; empty overrides fall back to upstream.
+    // A disabled source / content type is never offered to a box (SQL_SOURCE_ACTIVE).
+    // Order: favorites first, then the manual group drag-order (sort_order>0), then
+    // any un-positioned groups A→Z; WITHIN a group honour the operator's channel
+    // numbers (drag/sort-by-Nr) — numbered first in number order, then unnumbered A→Z.
     Q.SQL.Text :=
-      'SELECT i.stream_item_id AS sid, s.source_id AS srcid, i.channel_number AS num, i.content_type AS ctype,' +
-      '  COALESCE(NULLIF(i.display_name,''''), s.name) AS cname,' +
-      '  COALESCE(NULLIF(i.logo_override,''''), s.logo) AS clogo,' +
-      '  COALESCE(NULLIF(i.tvg_id_override,''''), s.tvg_id) AS tvg, s.tvg_id AS utvg, s.upstream_url AS url,' +
-      '  s.upstream_id AS uid, s.archive_days AS arch,' +
-      '  COALESCE(NULLIF(g.name,''''), s.group_title) AS gname,' +
-      '  COALESCE(g.is_favorite, 0) AS fav, COALESCE(g.sort_order, 0) AS gsort ' +
-      'FROM list_items i ' +
-      'JOIN streams s ON s.id = i.stream_item_id ' +
-      'LEFT JOIN list_groups g ON g.id = i.custom_group_id ' +
-      'LEFT JOIN sources src ON src.id = s.source_id ' +
-      // a disabled source / content type is never offered to a box
-      'WHERE i.list_id = :l AND ' + SQL_SOURCE_ACTIVE + ' ' +
-      // favorites first, then the manual group drag-order (sort_order>0), then any
-      // un-positioned groups A→Z; WITHIN a group honour the operator's channel
-      // numbers (drag/sort-by-Nr) — numbered first in number order, then unnumbered A→Z.
-      'ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE, ' +
-      '  CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE';
+      '''
+      SELECT i.stream_item_id AS sid, s.source_id AS srcid, i.channel_number AS num, i.content_type AS ctype,
+        COALESCE(NULLIF(i.display_name,''), s.name) AS cname,
+        COALESCE(NULLIF(i.logo_override,''), s.logo) AS clogo,
+        COALESCE(NULLIF(i.tvg_id_override,''), s.tvg_id) AS tvg, s.tvg_id AS utvg, s.upstream_url AS url,
+        s.upstream_id AS uid, s.archive_days AS arch,
+        COALESCE(NULLIF(g.name,''), s.group_title) AS gname,
+        COALESCE(g.is_favorite, 0) AS fav, COALESCE(g.sort_order, 0) AS gsort
+      FROM list_items i
+      JOIN streams s ON s.id = i.stream_item_id
+      LEFT JOIN list_groups g ON g.id = i.custom_group_id
+      LEFT JOIN sources src ON src.id = s.source_id
+      WHERE i.list_id = :l AND
+      ''' + SQL_SOURCE_ACTIVE +
+      '''
+
+      ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
+        CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE
+      ''';
     Q.Open(Q.SQL.Text, [AListId]);
     while not Q.Eof do
     begin
@@ -2740,9 +2804,10 @@ begin
     if AItem.Id = 0 then
     begin
       Q.SQL.Text :=
-        'INSERT INTO list_items(list_id,stream_item_id,custom_group_id,content_type,' +
-        'display_name,logo_override,channel_number,tvg_id_override) ' +
-        'VALUES(:l,:sid,:grp,:c,:dn,:logo,:num,:tvg)';
+        '''
+        INSERT INTO list_items(list_id,stream_item_id,custom_group_id,content_type,display_name,logo_override,channel_number,tvg_id_override)
+        VALUES(:l,:sid,:grp,:c,:dn,:logo,:num,:tvg)
+        ''';
       // :l and :sid exist only on the INSERT
       Q.ParamByName('l').AsInteger := AItem.ListId;
       Q.ParamByName('sid').AsInteger := AItem.StreamItemId;
@@ -2750,8 +2815,9 @@ begin
     else
     begin
       Q.SQL.Text :=
-        'UPDATE list_items SET custom_group_id=:grp,content_type=:c,display_name=:dn,' +
-        'logo_override=:logo,channel_number=:num,tvg_id_override=:tvg WHERE id=:id';
+        '''
+        UPDATE list_items SET custom_group_id=:grp,content_type=:c,display_name=:dn,logo_override=:logo,channel_number=:num,tvg_id_override=:tvg WHERE id=:id
+        ''';
       Q.ParamByName('id').AsInteger := AItem.Id;
     end;
     Q.ParamByName('grp').AsInteger := AItem.CustomGroupId;
@@ -2794,11 +2860,15 @@ begin
     // -> no prefixes -> name kept). Stripping kicks in only when the source has
     // strip_prefixes configured.
     Sel.SQL.Text :=
-      'SELECT s.name AS nm, s.content_type AS ct, src.strip_prefixes AS sp, src.strip_suffixes AS ss ' +
-      'FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid';
+      '''
+      SELECT s.name AS nm, s.content_type AS ct, src.strip_prefixes AS sp, src.strip_suffixes AS ss
+      FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid
+      ''';
     Ins.SQL.Text :=
-      'INSERT OR IGNORE INTO list_items(list_id,stream_item_id,custom_group_id,content_type,display_name) ' +
-      'VALUES(:l,:sid,:grp,:ct,:dn)';
+      '''
+      INSERT OR IGNORE INTO list_items(list_id,stream_item_id,custom_group_id,content_type,display_name)
+      VALUES(:l,:sid,:grp,:ct,:dn)
+      ''';
     FConn.StartTransaction;
     try
       for Sid in AStreamItemIds do
@@ -2865,9 +2935,11 @@ begin
     // collect the items that are still auto-managed (display_name == the value the
     // OLD prefix rule produced) and whose value changes under the NEW rule
     Sel.SQL.Text :=
-      'SELECT i.id AS iid, s.name AS nm, i.display_name AS dn ' +
-      'FROM list_items i JOIN streams s ON s.id = i.stream_item_id ' +
-      'WHERE s.source_id = :sid';
+      '''
+      SELECT i.id AS iid, s.name AS nm, i.display_name AS dn
+      FROM list_items i JOIN streams s ON s.id = i.stream_item_id
+      WHERE s.source_id = :sid
+      ''';
     Sel.ParamByName('sid').AsInteger := ASourceId;
     Sel.Open;
     while not Sel.Eof do
@@ -2939,10 +3011,12 @@ begin
   Sel := NewQuery;
   try
     Sel.SQL.Text :=
-      'SELECT i.id AS iid, s.name AS nm, i.display_name AS dn, src.strip_prefixes AS sp, ' +
-      '  src.strip_suffixes AS ss ' +
-      'FROM list_items i JOIN streams s ON s.id = i.stream_item_id ' +
-      'JOIN sources src ON src.id = s.source_id';
+      '''
+      SELECT i.id AS iid, s.name AS nm, i.display_name AS dn, src.strip_prefixes AS sp,
+        src.strip_suffixes AS ss
+      FROM list_items i JOIN streams s ON s.id = i.stream_item_id
+      JOIN sources src ON src.id = s.source_id
+      ''';
     Sel.Open;
     while not Sel.Eof do
     begin
@@ -3020,8 +3094,10 @@ begin
   Upd := NewQuery;
   try
     Upd.SQL.Text :=
-      'UPDATE list_items SET stream_item_id = :sid, display_name = :dn ' +
-      'WHERE id = :id AND list_id = :l';
+      '''
+      UPDATE list_items SET stream_item_id = :sid, display_name = :dn
+      WHERE id = :id AND list_id = :l
+      ''';
     FConn.StartTransaction;
     try
       for R in AReplacements do
@@ -3030,11 +3106,13 @@ begin
           Continue;
         Sel.Close;
         Sel.SQL.Text :=
-          'SELECT i.display_name AS dn, i.content_type AS ct, s.name AS nm, ' +
-          '  src.strip_prefixes AS sp, src.strip_suffixes AS ss ' +
-          'FROM list_items i LEFT JOIN streams s ON s.id = i.stream_item_id ' +
-          'LEFT JOIN sources src ON src.id = s.source_id ' +
-          'WHERE i.id = :id AND i.list_id = :l';
+          '''
+          SELECT i.display_name AS dn, i.content_type AS ct, s.name AS nm,
+            src.strip_prefixes AS sp, src.strip_suffixes AS ss
+          FROM list_items i LEFT JOIN streams s ON s.id = i.stream_item_id
+          LEFT JOIN sources src ON src.id = s.source_id
+          WHERE i.id = :id AND i.list_id = :l
+          ''';
         Sel.ParamByName('id').AsInteger := R.ItemId;
         Sel.ParamByName('l').AsInteger := AListId;
         Sel.Open;
@@ -3048,10 +3126,12 @@ begin
 
         Sel.Close;
         Sel.SQL.Text :=
-          'SELECT s.name AS nm, s.content_type AS ct, src.strip_prefixes AS sp, ' +
-          '  src.strip_suffixes AS ss, ' +
-          '  (SELECT COUNT(*) FROM list_items x WHERE x.list_id = :l AND x.stream_item_id = s.id) AS used ' +
-          'FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid';
+          '''
+          SELECT s.name AS nm, s.content_type AS ct, src.strip_prefixes AS sp,
+            src.strip_suffixes AS ss,
+            (SELECT COUNT(*) FROM list_items x WHERE x.list_id = :l AND x.stream_item_id = s.id) AS used
+          FROM streams s LEFT JOIN sources src ON src.id = s.source_id WHERE s.id = :sid
+          ''';
         Sel.ParamByName('sid').AsInteger := R.StreamId;
         Sel.ParamByName('l').AsInteger := AListId;
         Sel.Open;
@@ -3108,12 +3188,14 @@ begin
   Sel := NewQuery;
   try
     Sel.Open(
-      'SELECT i.id AS iid, i.display_name AS dn, s.name AS nm, ' +
-      '  src.strip_prefixes AS sp, src.strip_suffixes AS ss ' +
-      'FROM list_items i JOIN streams s ON s.id = i.stream_item_id ' +
-      'LEFT JOIN sources src ON src.id = s.source_id ' +
-      'WHERE i.list_id = :l AND i.custom_group_id = :g ' +
-      'ORDER BY i.channel_number, s.name COLLATE NOCASE', [AListId, AGroupId]);
+      '''
+      SELECT i.id AS iid, i.display_name AS dn, s.name AS nm,
+        src.strip_prefixes AS sp, src.strip_suffixes AS ss
+      FROM list_items i JOIN streams s ON s.id = i.stream_item_id
+      LEFT JOIN sources src ON src.id = s.source_id
+      WHERE i.list_id = :l AND i.custom_group_id = :g
+      ORDER BY i.channel_number, s.name COLLATE NOCASE
+      ''', [AListId, AGroupId]);
     while not Sel.Eof do
     begin
       Dn := Sel.FieldByName('dn').AsString;
@@ -3200,13 +3282,15 @@ begin
     // walk items in canonical order (favorite group first); the FIRST occurrence
     // of each upstream URL is kept, later ones are dropped as duplicates.
     Q.Open(
-      'SELECT i.id AS iid, s.upstream_url AS url ' +
-      'FROM list_items i JOIN streams s ON s.id = i.stream_item_id ' +
-      'LEFT JOIN list_groups g ON g.id = i.custom_group_id ' +
-      'WHERE i.list_id = :l ' +
-      'ORDER BY COALESCE(g.is_favorite,0) DESC, ' +
-      '  COALESCE(NULLIF(g.name,''''), s.group_title) COLLATE NOCASE, ' +
-      '  COALESCE(NULLIF(i.display_name,''''), s.name) COLLATE NOCASE',
+      '''
+      SELECT i.id AS iid, s.upstream_url AS url
+      FROM list_items i JOIN streams s ON s.id = i.stream_item_id
+      LEFT JOIN list_groups g ON g.id = i.custom_group_id
+      WHERE i.list_id = :l
+      ORDER BY COALESCE(g.is_favorite,0) DESC,
+        COALESCE(NULLIF(g.name,''), s.group_title) COLLATE NOCASE,
+        COALESCE(NULLIF(i.display_name,''), s.name) COLLATE NOCASE
+      ''',
       [AListId]);
     while not Q.Eof do
     begin
@@ -3239,9 +3323,11 @@ begin
   Upd := NewQuery;
   try
     Q.Open(
-      'SELECT i.id AS iid FROM list_items i JOIN streams s ON s.id = i.stream_item_id ' +
-      'WHERE i.list_id = :l AND i.custom_group_id = :g ' +
-      'ORDER BY COALESCE(NULLIF(i.display_name,''''), s.name) COLLATE NOCASE',
+      '''
+      SELECT i.id AS iid FROM list_items i JOIN streams s ON s.id = i.stream_item_id
+      WHERE i.list_id = :l AND i.custom_group_id = :g
+      ORDER BY COALESCE(NULLIF(i.display_name,''), s.name) COLLATE NOCASE
+      ''',
       [AListId, ACustomGroupId]);
     while not Q.Eof do
     begin
@@ -3287,8 +3373,10 @@ begin
   Upd := NewQuery;
   try
     Upd.SQL.Text :=
-      'UPDATE list_items SET channel_number=:n ' +
-      'WHERE id=:id AND list_id=:l AND custom_group_id=:g';
+      '''
+      UPDATE list_items SET channel_number=:n
+      WHERE id=:id AND list_id=:l AND custom_group_id=:g
+      ''';
     FConn.StartTransaction;
     try
       for I := 0 to High(AItemIds) do
@@ -3318,8 +3406,10 @@ var
 begin
   Q := NewQuery;
   try
-    Q.Open('SELECT MIN(channel_number) FROM list_items ' +
-           'WHERE list_id = :l AND custom_group_id = :g AND channel_number > 0',
+    Q.Open('''
+      SELECT MIN(channel_number) FROM list_items
+      WHERE list_id = :l AND custom_group_id = :g AND channel_number > 0
+      ''',
       [AListId, ACustomGroupId]);
     // MIN() over no rows is NULL and its column has no declared type: read as text
     Result := StrToIntDef(Q.Fields[0].AsString, 0);

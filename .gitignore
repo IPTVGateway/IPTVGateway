@@ -77,8 +77,6 @@ deploy/docker/webui/
 backend/src/**/_run/
 
 # ── Vendored third-party: keep only what the build uses ───────────────
-# FastMM5 is not linked by any project
-backend/3thParty/FastMM5-*/
 # MARS-Curiosity: only Source/ + ThirdParty/{mORMot,delphi-jose-jwt} are vendored
 # (tools/update-mars.ps1 copies just those; see backend/3thParty/DEPENDENCIES.md)
 

@@ -552,4 +552,7 @@ export const nl: Record<string, string> = {
     'Bron “{name}” verwijderen? Al haar zenders worden uit elk bouquet verwijderd.',
   'Delete group': 'Groep verwijderen',
   'Download': 'Downloaden',
+  'Media servers: allowed clients': 'Mediaservers: toegestane clients',
+  'The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = every client.':
+    'De Plex/Jellyfin-tuner en de HDHomeRun-adressen hebben geen login. Eén IP-adres per regel (bijv. je Plex-server), of een voorvoegsel dat op een punt eindigt zoals 192.168.1. voor een heel netwerk. Leeg = elke client.',
 }

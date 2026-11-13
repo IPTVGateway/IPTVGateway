@@ -39,4 +39,5 @@ services:
       # admin UI/API password. Empty/unset => the admin surface is open (LAN only!).
       # This overrides "adminPassword" in config.json. Only protects /api — the
       # Xtream box endpoints keep using their own output credentials.
-      - ADMIN_PASSWORD=change-me
+      # Set your OWN strong password (a well-known example value would be no lock at all):
+      # - ADMIN_PASSWORD=<a strong password>

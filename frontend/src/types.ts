@@ -181,6 +181,7 @@ export interface AppConfig {
   // media servers: global group filter + base URL (now editable) + dummy EPG
   visibleGroups?: string[] // only these group-titles are published (empty = all)
   extraEpgUrls?: string[]  // extra (third-party) XMLTV guides, first = highest priority
+  mediaAllowedClients?: string[] // Plex/HDHomeRun endpoints: allowed IPs or "a.b.c." prefixes; empty = all
   publicBaseUrl: string    // base URL boxes use; empty => request Host header
   dummyEpgEnabled?: boolean
   dummyEpgBlockMinutes?: number

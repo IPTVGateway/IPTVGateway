@@ -74,6 +74,9 @@ type
     /// dummy-EPG settings. Persisted; read live by the output builders (no restart).
     /// Extra (third-party) XMLTV guide URLs; persisted. Fetched on the next refresh.
     procedure UpdateExtraEpgUrls(const AUrls: TArray<string>);
+    procedure UpdateMediaAllowedClients(const AClients: TArray<string>);
+    /// May this client IP use the Plex/HDHomeRun endpoints? (empty list = everyone)
+    function IsMediaClientAllowed(const AClientIp: string): Boolean;
     procedure UpdateMediaConfig(const AVisibleGroups: TArray<string>;
       const ABaseUrl: string; ADummyEnabled: Boolean;
       ADummyBlockMinutes, ADummyHoursBack, ADummyHoursAhead: Integer;
@@ -112,6 +115,10 @@ implementation
 uses
   System.IOUtils, System.Classes, System.SyncObjs, System.Generics.Collections,
   IPTV.Storage.SQLite, IPTV.Storage.Locking, IPTV.Core.Utils;
+
+const
+  // host part of the image's config.json template value (http://your-unraid-host:7777)
+  cPublicUrlPlaceholder = 'your-unraid-host';
 
 { TLogRing }
 
@@ -210,6 +217,10 @@ procedure TAppContext.Start;
 begin
   if FConfig.LoadWarning <> '' then
     Log(FConfig.LoadWarning);
+  // the image template's placeholder is published to boxes as server_info.url
+  if FConfig.PublicBaseUrl.Contains(cPublicUrlPlaceholder) then
+    Log('WARNING: publicBaseUrl is still "' + FConfig.PublicBaseUrl +
+      '" - set it (Settings) to the address boxes use to reach this server');
   ForceDirectories(TPath.GetDirectoryName(FConfig.DatabasePath));
   // Storage connection model:
   //   DEFAULT  -> ONE connection (rollback journal), reads + writes serialised on a
@@ -409,6 +420,25 @@ begin
   Log(Format('Media config updated: %d visible groups, baseUrl=%s, dummyEpg=%s (%d min, -%d/+%dh)',
     [Length(AVisibleGroups), ABaseUrl, BoolToStr(ADummyEnabled, True),
      FConfig.DummyEpgBlockMinutes, FConfig.DummyEpgHoursBack, FConfig.DummyEpgHoursAhead]));
+end;
+
+procedure TAppContext.UpdateMediaAllowedClients(const AClients: TArray<string>);
+var
+  lClients: TArray<string>;
+  lClient: string;
+begin
+  lClients := nil;
+  for lClient in AClients do
+    if lClient.Trim <> '' then
+      lClients := lClients + [lClient.Trim];
+  FConfig.MediaAllowedClients := lClients;
+  FConfig.Save(FConfigPath);
+  Log(Format('Media servers: %d allowed client entr(y/ies) (0 = everyone)', [Length(lClients)]));
+end;
+
+function TAppContext.IsMediaClientAllowed(const AClientIp: string): Boolean;
+begin
+  Result := IsClientInList(AClientIp, FConfig.MediaAllowedClients);
 end;
 
 procedure TAppContext.UpdateExtraEpgUrls(const AUrls: TArray<string>);

@@ -134,6 +134,8 @@ const
       (',' || REPLACE(src.content_types, ' ', '') || ',') LIKE ('%,' || s.content_type || ',%')))
     ''';
 
+  // canonical Full-HD quality word (also written FULLHD / FULL-HD)
+  cQualityFhd = 'FHD';
   // the same test without a join (streams aliased s): no source row, or an active one
   // starts with a space: safe right after a multiline literal ending in AND
   cSqlSourceActiveExists = ' ' + '''
@@ -1836,10 +1838,23 @@ begin
     try
       // only active sources: a swap onto a switched-off provider would silently
       // drop the channel from the box
-      Q.Open('''
+      // SQL prefilter: only names that can carry the target quality word - it in
+      // plain letters (LIKE is ASCII case-insensitive), or any non-ASCII name
+      // (decorative letters like the small-caps "ꜰʜᴅ" fold to it only in Delphi).
+      // Before, every stream of the type ran through KeyOf under the read lock.
+      Q.SQL.Text := '''
         SELECT id, source_id, name FROM streams s
         WHERE content_type IN (
-        ''' + InClause + ') AND upstream_url <> '''' AND ' + cSqlSourceActiveExists);
+        ''' + InClause + ') AND upstream_url <> '''' AND ' + cSqlSourceActiveExists + '''
+
+        AND (name LIKE :q1 ESCAPE '\' OR name LIKE :q2 ESCAPE '\' OR name GLOB '*[^ -~]*')
+        ''';
+      Q.ParamByName('q1').AsWideString := '%' + EscapeLikeLiteral(Target) + '%';
+      if Target = cQualityFhd then
+        Q.ParamByName('q2').AsWideString := '%FULL%' // FULLHD / FULL-HD
+      else
+        Q.ParamByName('q2').AsWideString := '%' + EscapeLikeLiteral(Target) + '%';
+      Q.Open;
       while not Q.Eof do
       begin
         Base := KeyOf(Q.FieldByName('name').AsString, Q.FieldByName('source_id').AsInteger, Qual, Head);
@@ -2004,7 +2019,8 @@ begin
         Extra := IfThen(AAllSources, '', ' AND source_id = :s');
         TvgArr := Tvgs.Keys.ToArray;
         if (Pass = 1) and (Tok <> '') then
-          Extra := Extra + ' AND (id = :self OR name LIKE :tok)'
+          // (a non-ASCII name may carry the token in decorative letters)
+          Extra := Extra + ' AND (id = :self OR name LIKE :tok OR name GLOB ''*[^ -~]*'')'
         else if Pass = 2 then
         begin
           Extra := Extra + ' AND tvg_id <> '''' AND lower(tvg_id) IN (';
@@ -2268,11 +2284,13 @@ var
   Q: TFDQuery;
   C: TEpgChannelInfo;
 begin
-  ReplaceEpg(ASourceId, AProgrammes);
   Q := NewQuery;
   try
+    // one transaction (ReplaceEpg's own nests as a savepoint): a failure can't
+    // leave new programmes with the old channel list (or the other way round)
     FConn.StartTransaction;
     try
+      ReplaceEpg(ASourceId, AProgrammes);
       FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id=:s', [ASourceId]);
       Q.SQL.Text := 'INSERT INTO epg_channels(source_id,channel_id,display_name) VALUES(:s,:id,:n)';
       for C in AChannels do
@@ -2647,6 +2665,7 @@ begin
     FConn.Rollback;
     raise;
   end;
+  TouchLineup; // Plex may serve this bouquet
 end;
 
 function TSQLiteStore.FindListByCredentials(const AUser, APass: string): TCustomList;
@@ -3396,17 +3415,20 @@ begin
   ToDelete := TList<Integer>.Create;
   Q := NewQuery;
   try
-    // walk items in canonical order (favorite group first); the FIRST occurrence
-    // of each upstream URL is kept, later ones are dropped as duplicates.
+    // walk items in the OUTPUT order (as LoadOutputChannels: favorites, group
+    // drag-order, groups A-Z, channel numbers, names A-Z); the FIRST occurrence of
+    // each upstream URL is kept, later ones are dropped as duplicates.
     Q.Open(
       '''
-      SELECT i.id AS iid, s.upstream_url AS url
+      SELECT i.id AS iid, s.upstream_url AS url, i.channel_number AS num,
+        COALESCE(NULLIF(g.name,''), s.group_title) AS gname,
+        COALESCE(NULLIF(i.display_name,''), s.name) AS cname,
+        COALESCE(g.is_favorite, 0) AS fav, COALESCE(g.sort_order, 0) AS gsort
       FROM list_items i JOIN streams s ON s.id = i.stream_item_id
       LEFT JOIN list_groups g ON g.id = i.custom_group_id
       WHERE i.list_id = :l
-      ORDER BY COALESCE(g.is_favorite,0) DESC,
-        COALESCE(NULLIF(g.name,''), s.group_title) COLLATE NOCASE,
-        COALESCE(NULLIF(i.display_name,''), s.name) COLLATE NOCASE
+      ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
+        CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE
       ''',
       [AListId]);
     while not Q.Eof do

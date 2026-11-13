@@ -103,6 +103,9 @@ type
     /// priority. Fetched with every refresh; used before a provider's own guide
     /// unless that source has PreferOwnEpg.
     ExtraEpgUrls: TArray<string>;
+    /// Clients allowed on the Plex/HDHomeRun endpoints (they have no login): exact
+    /// IPs ("192.168.1.20") or prefixes ending in a dot ("192.168.1."). Empty = all.
+    MediaAllowedClients: TArray<string>;
     // Dummy EPG: when a channel has NO real guide data, emit filler programmes so
     // Plex/Jellyfin show a proper line-up instead of "Unknown airing". Channels
     // WITH real EPG are untouched. Applied to the tuner + Plex/root XMLTV output.
@@ -226,6 +229,7 @@ begin
   Result.PlexToken := '';
   Result.VisibleGroups := [];
   Result.ExtraEpgUrls := [];
+  Result.MediaAllowedClients := [];
   Result.DummyEpgEnabled := True;
   Result.DummyEpgBlockMinutes := 120;
   Result.DummyEpgHoursBack := 12;
@@ -312,6 +316,10 @@ begin
     for G in ExtraEpgUrls do
       GroupArr.Add(G);
     Json.AddPair('extraEpgUrls', GroupArr);
+    GroupArr := TJSONArray.Create;
+    for G in MediaAllowedClients do
+      GroupArr.Add(G);
+    Json.AddPair('mediaAllowedClients', GroupArr);
     // atomic-ish: write a temp file, then swap it in, so a crash or a concurrent
     // save never leaves a truncated config.json (which would load as defaults:
     // admin open, Plex token gone); one save at a time
@@ -443,6 +451,19 @@ begin
           if (GV is TJSONString) and (TJSONString(GV).Value.Trim <> '') then
             Groups.Add(TJSONString(GV).Value.Trim);
         Result.ExtraEpgUrls := Groups.ToArray;
+      finally
+        Groups.Free;
+      end;
+    end;
+    GroupsVal := Json.GetValue('mediaAllowedClients');
+    if GroupsVal is TJSONArray then
+    begin
+      Groups := TList<string>.Create;
+      try
+        for GV in TJSONArray(GroupsVal) do
+          if (GV is TJSONString) and (TJSONString(GV).Value.Trim <> '') then
+            Groups.Add(TJSONString(GV).Value.Trim);
+        Result.MediaAllowedClients := Groups.ToArray;
       finally
         Groups.Free;
       end;

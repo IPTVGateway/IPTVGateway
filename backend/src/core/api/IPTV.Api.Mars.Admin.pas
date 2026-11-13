@@ -20,7 +20,9 @@ type
     [Context] Request: IMARSRequest;
     /// Guard run at the start of every handler: 503 if the service isn't up, and
     /// 401 if an admin password is configured but missing/wrong on the request.
-    procedure RequireApp;
+    /// AAllowQueryPassword: also accept ?pw= (only the download links, which can't
+    /// send a header - a password in a URL ends up in browser history / proxy logs)
+    procedure RequireApp(AAllowQueryPassword: Boolean = False);
   public
     [GET, Path('health'), Produces(TMediaType.APPLICATION_JSON)]
     function Health: TJSONObject;
@@ -206,17 +208,16 @@ uses
   IPTV.Api.Serializers, IPTV.Api.SettingsIO, IPTV.Output.Builder, IPTV.Core.Utils,
   IPTV.Plex.Client, IPTV.Source.Probe;
 
-procedure TAdminResource.RequireApp;
+procedure TAdminResource.RequireApp(AAllowQueryPassword: Boolean);
 var
   Pw: string;
 begin
   if App = nil then
-    raise Exception.Create('service not started');
+    raise EMARSHttpException.Create('service not started', 503);
   Pw := App.Config.AdminPassword;
   if Pw <> '' then
-    // accept the password from a header (preferred) or a ?pw= query fallback
-    if (Request.GetHeaderParamValue('X-Admin-Password') <> Pw) and
-       (Request.GetQueryParamValue('pw') <> Pw) then
+    if not IsSamePassword(Request.GetHeaderParamValue('X-Admin-Password'), Pw) and
+       not (AAllowQueryPassword and IsSamePassword(Request.GetQueryParamValue('pw'), Pw)) then
       raise EMARSHttpException.Create('Unauthorized', 401);
 end;
 
@@ -495,6 +496,7 @@ var
 begin
   RequireApp;
   Result := TJSONArray.Create;
+  try
   if not TDirectory.Exists(LangDir) then
     Exit;
   for FileName in TDirectory.GetFiles(LangDir, '*.json') do
@@ -518,6 +520,10 @@ begin
     Name.AddPair('name', DisplayName);
     Result.Add(Name);
   end;
+  except
+    FreeAndNil(Result); // MARS only frees what we return
+    raise;
+  end;
 end;
 
 function TAdminResource.GetLanguage(ACode: string): TJSONObject;
@@ -527,7 +533,8 @@ var
 begin
   RequireApp;
   // path-traversal guard: codes are simple identifiers, never paths
-  if (ACode = '') or ACode.Contains('/') or ACode.Contains('\') or ACode.Contains('..') then
+  if (ACode = '') or ACode.Contains('/') or ACode.Contains('\') or ACode.Contains('..') or
+     ACode.Contains(':') then
     raise EMARSHttpException.Create('Bad language code', 400);
   FileName := TPath.Combine(LangDir, ACode + '.json');
   if not TFile.Exists(FileName) then
@@ -709,6 +716,7 @@ begin
   Result.AddPair('idSortPrefix', TJSONBool.Create(App.Config.IdSortPrefix));
   Result.AddPair('visibleGroups', StrArrayToJson(App.Config.VisibleGroups));
   Result.AddPair('extraEpgUrls', StrArrayToJson(App.Config.ExtraEpgUrls));
+  Result.AddPair('mediaAllowedClients', StrArrayToJson(App.Config.MediaAllowedClients));
   // read-only context (shown but not editable from the UI)
   Result.AddPair('httpPort', TJSONNumber.Create(App.Config.HttpPort));
   Result.AddPair('useHttps', TJSONBool.Create(App.Config.UseHttps));
@@ -762,6 +770,9 @@ begin
     ABody.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
     ABody.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
   // extra (third-party) XMLTV guides: only when the body carries the field
+  GArr := ABody.GetValue('mediaAllowedClients');
+  if GArr is TJSONArray then
+    App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(GArr)));
   GArr := ABody.GetValue('extraEpgUrls');
   if GArr is TJSONArray then
     App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(GArr)));
@@ -826,6 +837,8 @@ begin
     // were exported but never restored
     if Cfg.GetValue('extraEpgUrls') is TJSONArray then
       App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(Cfg.GetValue('extraEpgUrls'))));
+    if Cfg.GetValue('mediaAllowedClients') is TJSONArray then
+      App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(Cfg.GetValue('mediaAllowedClients'))));
     App.SetPlexListId(ImportedPlexListId(ABody, Cfg));
     // the Plex tuner surfaces are part of the clone too — restore them as well
     App.UpdatePlexSettings(
@@ -885,10 +898,13 @@ var
   N, I: Integer;
 begin
   RequireApp;
-  Result := TJSONArray.Create;
   L := ServedListForMedia;
+  Result := TJSONArray.Create;
   if L = nil then
     Exit;
+  Counts := nil;
+  Names := nil;
+  try
   Counts := TDictionary<string, Integer>.Create;
   Names := TStringList.Create;
   try
@@ -918,6 +934,10 @@ begin
     Names.Free;
     L.Free;
   end;
+  except
+    FreeAndNil(Result); // MARS only frees what we return
+    raise;
+  end;
 end;
 
 function TAdminResource.GetLogs(ASince: string): TJSONObject;
@@ -934,8 +954,8 @@ begin
   Pw := AdminPasswordEarly;
   if App <> nil then
     Pw := App.Config.AdminPassword;
-  if (Pw <> '') and (Request.GetHeaderParamValue('X-Admin-Password') <> Pw) and
-     (Request.GetQueryParamValue('pw') <> Pw) then
+  // header only (the web app's Log tab sends it; a ?pw= would end up in URLs)
+  if (Pw <> '') and not IsSamePassword(Request.GetHeaderParamValue('X-Admin-Password'), Pw) then
     raise EMARSHttpException.Create('Unauthorized', 401);
   Result := TJSONObject.Create;
   Arr := TJSONArray.Create;
@@ -1440,14 +1460,14 @@ end;
 
 function TAdminResource.ExportM3U(AId: Integer): string;
 begin
-  RequireApp;
+  RequireApp(True); // a download link
   Response.SetHeader('Content-Disposition', 'attachment; filename="playlist.m3u"');
   Result := BuildM3U(App.Store, AId);
 end;
 
 function TAdminResource.ExportXmltv(AId: Integer): string;
 begin
-  RequireApp;
+  RequireApp(True); // a download link
   Response.SetHeader('Content-Disposition', 'attachment; filename="epg.xml"');
   Result := BuildXmltv(App.Store, AId, App.Config.EpgMaxDays);
 end;

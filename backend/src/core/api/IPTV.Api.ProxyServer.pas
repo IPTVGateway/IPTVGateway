@@ -398,6 +398,15 @@ begin
     List.Free;
   end;
 
+  // HEAD (players probing the URL): answer the headers, never start a relay that
+  // would pull the whole stream from the provider
+  if SameText(ARequestInfo.Command, 'HEAD') then
+  begin
+    AResponseInfo.ResponseNo := 200;
+    AResponseInfo.ContentType := 'video/mp2t';
+    Exit;
+  end;
+
   if lHlsUrl <> '' then
   begin
     if Assigned(FLog) then
@@ -478,6 +487,13 @@ begin
           begin
             if Assigned(FLog) then
               FLog(Format('proxy relay %s closed (%d bytes): %s', [IdPart, Fwd.Bytes, E.Message]));
+            // nothing sent yet: a real status instead of an empty reply
+            if (Fwd.Bytes = 0) and not Session.Wrote then
+              try
+                IO.Write('HTTP/1.1 502 Bad Gateway'#13#10'Connection: close'#13#10#13#10);
+              except
+                // the box is gone already: nothing to tell it
+              end;
             Break;
           end;
       end;

@@ -60,8 +60,14 @@ uses
   IPTV.App.Context in '..\core\app\IPTV.App.Context.pas',
   IPTV.App.Runner in '..\core\app\IPTV.App.Runner.pas';
 
+const
+  cStopPollMs = 200;
+
 var
   GRunner: TAppRunner;
+  // set by the signal handler, acted on by the main loop: a signal handler may only
+  // do async-signal-safe things (a plain store), not take locks like TEvent.SetEvent
+  GStopRequested: Integer = 0;
   GLogLock: TObject; // Writeln from many threads (Indy workers, ingest, relay) garbles lines
 
 {$IFDEF MSWINDOWS}
@@ -76,8 +82,7 @@ end;
 {$IFDEF POSIX}
 procedure PosixSignalHandler(SigNum: Integer); cdecl;
 begin
-  if Assigned(GRunner) then
-    GRunner.SignalStop;   // SIGTERM (systemd stop) / SIGINT (Ctrl+C)
+  GStopRequested := 1;   // SIGTERM (systemd stop) / SIGINT (Ctrl+C); see the main loop
 end;
 {$ENDIF}
 
@@ -124,7 +129,14 @@ begin
     StdLog('config: ' + CfgPath);
     StdLog(Format('IPTVPlay service starting on port %d (HTTPS=%s). Ctrl+C / SIGTERM to stop.',
       [Cfg.HttpPort, BoolToStr(Cfg.UseHttps, True)]));
-    GRunner.WaitFor;        // block until a stop signal winds the worker down
+    // until the worker ends by itself (failed start) or a stop signal arrives
+    while not GRunner.Finished do
+    begin
+      if GStopRequested <> 0 then
+        GRunner.SignalStop;
+      Sleep(cStopPollMs);
+    end;
+    GRunner.WaitFor;
     if GRunner.StartError <> '' then
     begin
       // non-zero so systemd (Restart=on-failure) / Docker restart policies retry

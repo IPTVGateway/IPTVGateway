@@ -235,9 +235,17 @@ function ServiceSettings() {
         proxyPort,
         streamFailover: cfg.streamFailover,
         extraEpgUrls: (cfg.extraEpgUrls ?? []).map((u) => u.trim()).filter(Boolean),
+        mediaAllowedClients: (cfg.mediaAllowedClients ?? []).map((u) => u.trim()).filter(Boolean),
       }
       // a missing list and an empty list are the same setting
-      const changed = changedFields(form, orig && { ...orig, extraEpgUrls: orig.extraEpgUrls ?? [] })
+      const changed = changedFields(
+        form,
+        orig && {
+          ...orig,
+          extraEpgUrls: orig.extraEpgUrls ?? [],
+          mediaAllowedClients: orig.mediaAllowedClients ?? [],
+        },
+      )
       const next = await api.saveConfig(changed)
       setCfg(next)
       setOrig(next)
@@ -308,6 +316,20 @@ function ServiceSettings() {
             />
             <span className="hint">
               {t('One XMLTV address per line (.xml or .xml.gz), e.g. a country guide. Channels are matched by name or tvg-id and get these programmes instead of the provider’s own guide, unless that source has “Own EPG before the extra EPG source”. Channel ids and numbers stay the same. Fetched with every refresh or “Update EPG”. The first line wins when guides overlap.')}
+            </span>
+          </fieldset>
+
+          <fieldset>
+            <legend>{t('Media servers: allowed clients')}</legend>
+            <textarea
+              className="extra-epg"
+              rows={2}
+              placeholder="192.168.1.20"
+              value={(cfg.mediaAllowedClients ?? []).join('\n')}
+              onChange={(e) => patch({ mediaAllowedClients: e.target.value.split('\n') })}
+            />
+            <span className="hint">
+              {t('The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = every client.')}
             </span>
           </fieldset>
 

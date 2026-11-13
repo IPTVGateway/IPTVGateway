@@ -43,6 +43,8 @@ type
     [Test] procedure PublicBaseUrl_Normalised;
     [Test] procedure DecodeBytes_Latin1AndCyrillic;
     [Test] procedure SwapUrlExt_OnlyInPath;
+    [Test] procedure ClientAllowList_IpsAndPrefixes;
+    [Test] procedure SamePassword_ConstantTimeCompare;
     [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
 
@@ -410,6 +412,25 @@ begin
   Assert.AreEqual('http://p/1.m3u8?t=a.b', SwapUrlExt('http://p/1.ts?t=a.b', 'm3u8'));
   Assert.AreEqual('mkv', UrlExt('http://p/movie/u/p/5.mkv?x=1'));
   Assert.AreEqual('php', UrlExt('http://p/play.php?id=5.ts'), 'a dot in the query is no extension');
+end;
+
+procedure TUtilsTests.ClientAllowList_IpsAndPrefixes;
+begin
+  Assert.IsTrue(IsClientInList('10.0.0.5', []), 'empty list = everyone');
+  Assert.IsTrue(IsClientInList('192.168.1.20', ['192.168.1.20']));
+  Assert.IsTrue(IsClientInList('::ffff:192.168.1.20', ['192.168.1.20']), 'IPv4-mapped');
+  Assert.IsTrue(IsClientInList('192.168.1.77', ['192.168.1.']), 'prefix');
+  Assert.IsFalse(IsClientInList('192.168.10.7', ['192.168.1.']), 'a prefix ends at the dot');
+  Assert.IsFalse(IsClientInList('192.168.1.200', ['192.168.1.20']), 'exact means exact');
+end;
+
+procedure TUtilsTests.SamePassword_ConstantTimeCompare;
+begin
+  Assert.IsTrue(IsSamePassword('s3cret', 's3cret'));
+  Assert.IsFalse(IsSamePassword('s3cre', 's3cret'));
+  Assert.IsFalse(IsSamePassword('s3cretX', 's3cret'));
+  Assert.IsFalse(IsSamePassword('', 's3cret'));
+  Assert.IsTrue(IsSamePassword('пароль', 'пароль'), 'unicode');
 end;
 
 initialization

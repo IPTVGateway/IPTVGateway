@@ -25,6 +25,7 @@ type
   TPlexPlaylistResource = class
   protected
     [Context] Response: IMARSResponse;
+    [Context] Request: IMARSRequest;
   public
     [GET, Path('playlist.m3u'), Produces('audio/x-mpegurl')]
     function Playlist: string;
@@ -36,6 +37,7 @@ type
   THdhrDiscoverResource = class
   protected
     [Context] Response: IMARSResponse;
+    [Context] Request: IMARSRequest;
   public
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Discover: TJSONObject;
@@ -45,6 +47,7 @@ type
   THdhrLineupStatusResource = class
   protected
     [Context] Response: IMARSResponse;
+    [Context] Request: IMARSRequest;
   public
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Status: TJSONObject;
@@ -54,6 +57,7 @@ type
   THdhrLineupResource = class
   protected
     [Context] Response: IMARSResponse;
+    [Context] Request: IMARSRequest;
   public
     [GET, Produces(TMediaType.APPLICATION_JSON)]
     function Lineup: TJSONArray;
@@ -63,6 +67,7 @@ type
   THdhrLineupPostResource = class
   protected
     [Context] Response: IMARSResponse;
+    [Context] Request: IMARSRequest;
   public
     // Plex/HDHomeRun hits this to (re)scan; we have nothing to scan, just say OK.
     // Real tuners take POST (lineup.post?scan=start); some clients use GET.
@@ -82,6 +87,12 @@ uses
   IPTV.Model.Types;
 
 { shared helpers }
+
+// the Plex/HDHomeRun endpoints have no login: optionally limited to known clients
+function ClientAllowed(const ARequest: IMARSRequest): Boolean;
+begin
+  Result := (App = nil) or App.IsMediaClientAllowed(ARequest.RemoteIP);
+end;
 
 // the single default output list Plex serves (nil if none/ no app)
 function ServedList: TCustomList;
@@ -151,6 +162,11 @@ function TPlexPlaylistResource.Playlist: string;
 var
   L: TCustomList;
 begin
+  if not ClientAllowed(Request) then
+  begin
+    Response.StatusCode := 403;
+    Exit('');
+  end;
   if (App = nil) or (not App.Config.PlexM3uEnabled) then
   begin
     Response.StatusCode := 404;
@@ -175,6 +191,11 @@ function TPlexPlaylistResource.Epg: string;
 var
   L: TCustomList;
 begin
+  if not ClientAllowed(Request) then
+  begin
+    Response.StatusCode := 403;
+    Exit('');
+  end;
   // The XMLTV guide is shared by BOTH surfaces (Plex HDHomeRun and the Jellyfin/
   // Plex M3U tuner), so serve it whenever EITHER is enabled — an HDHomeRun-only
   // setup must not need the M3U toggle just to get a guide.
@@ -203,6 +224,11 @@ end;
 
 function THdhrDiscoverResource.Discover: TJSONObject;
 begin
+  if not ClientAllowed(Request) then
+  begin
+    Response.StatusCode := 403;
+    Exit(TJSONObject.Create);
+  end;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
     Response.StatusCode := 404;
@@ -225,6 +251,11 @@ end;
 
 function THdhrLineupStatusResource.Status: TJSONObject;
 begin
+  if not ClientAllowed(Request) then
+  begin
+    Response.StatusCode := 403;
+    Exit(TJSONObject.Create);
+  end;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
     Response.StatusCode := 404;
@@ -249,6 +280,11 @@ var
   Nums: TArray<Integer>;
   GuideName: string;
 begin
+  if not ClientAllowed(Request) then
+  begin
+    Response.StatusCode := 403;
+    Exit(TJSONArray.Create);
+  end;
   Result := TJSONArray.Create;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
@@ -295,6 +331,11 @@ end;
 
 function THdhrLineupPostResource.Scan: TJSONObject;
 begin
+  if not ClientAllowed(Request) then
+  begin
+    Response.StatusCode := 403;
+    Exit(TJSONObject.Create);
+  end;
   if (App = nil) or (not App.Config.PlexHdhrEnabled) then
   begin
     Response.StatusCode := 404;

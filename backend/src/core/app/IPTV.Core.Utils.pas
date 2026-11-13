@@ -99,6 +99,14 @@ function MaskUrlSecrets(const AUrl: string): string;
 /// '/' removed, 'http://' added when no scheme was given. False when it still has
 /// no host (then ANormalized is ''). '' stays '' (= not configured) and is valid.
 function NormalizePublicBaseUrl(const AValue: string; out ANormalized: string): Boolean;
+/// Password check in constant time (no early exit on the first differing char,
+/// so the response time doesn't reveal how much of a guess was right).
+function IsSamePassword(const AGiven, AExpected: string): Boolean;
+
+/// Is AClientIp in AAllowed (exact IPs, or prefixes ending in a dot such as
+/// "192.168.1.")? An empty list allows everyone; "::ffff:a.b.c.d" counts as a.b.c.d.
+function IsClientInList(const AClientIp: string; const AAllowed: TArray<string>): Boolean;
+
 /// Host of a URL, ADefault when it can't be parsed (never raises).
 function SafeUrlHost(const AUrl, ADefault: string): string;
 /// Port of a URL, 0 when absent or unparseable (never raises).
@@ -139,6 +147,9 @@ uses
   System.Net.URLClient, System.Math
 {$IFDEF MSWINDOWS}
   , Winapi.Windows, Winapi.PsAPI
+{$ENDIF}
+{$IFDEF POSIX}
+  , Posix.SysTime
 {$ENDIF}
   ;
 
@@ -599,9 +610,25 @@ begin
 end;
 
 function NowUtc: TDateTime;
+{$IFDEF MSWINDOWS}
+var
+  lSystemTime: TSystemTime;
 begin
-  Result := TTimeZone.Local.ToUniversalTime(Now);
+  // straight from the OS clock: converting local time back is ambiguous in the
+  // autumn DST hour (02:00-03:00 occurs twice) and was an hour off then
+  GetSystemTime(lSystemTime);
+  Result := SystemTimeToDateTime(lSystemTime);
 end;
+{$ELSE}
+const
+  cMicrosecondsPerDay = 86400000000.0;
+var
+  lTime: timeval;
+begin
+  gettimeofday(lTime, nil);
+  Result := UnixToDateTime(lTime.tv_sec, True) + lTime.tv_usec / cMicrosecondsPerDay;
+end;
+{$ENDIF}
 
 // -- matching keys for an extra (third-party) XMLTV guide --------------------
 
@@ -709,6 +736,39 @@ begin
   Result := (lHost <> '') and (SafeUrlHost(lUrl, '') <> '');
   if Result then
     ANormalized := lUrl;
+end;
+
+function IsSamePassword(const AGiven, AExpected: string): Boolean;
+var
+  lGiven, lExpected: TBytes;
+  lDiff, i: Integer;
+begin
+  lGiven := TEncoding.UTF8.GetBytes(AGiven);
+  lExpected := TEncoding.UTF8.GetBytes(AExpected);
+  lDiff := Length(lGiven) xor Length(lExpected);
+  for i := 0 to High(lExpected) do
+    if i < Length(lGiven) then
+      lDiff := lDiff or (lGiven[i] xor lExpected[i])
+    else
+      lDiff := lDiff or lExpected[i] or 1;
+  Result := lDiff = 0;
+end;
+
+function IsClientInList(const AClientIp: string; const AAllowed: TArray<string>): Boolean;
+const
+  cIpv4MappedPrefix = '::ffff:'; // an IPv4 client seen through an IPv6 socket
+var
+  lIp, lEntry: string;
+begin
+  if Length(AAllowed) = 0 then
+    Exit(True);
+  lIp := AClientIp.Trim;
+  if lIp.StartsWith(cIpv4MappedPrefix, True) then
+    lIp := lIp.Substring(Length(cIpv4MappedPrefix));
+  for lEntry in AAllowed do
+    if SameText(lIp, lEntry.Trim) or (lEntry.Trim.EndsWith('.') and lIp.StartsWith(lEntry.Trim)) then
+      Exit(True);
+  Result := False;
 end;
 
 function SafeUrlHost(const AUrl, ADefault: string): string;

@@ -111,7 +111,7 @@ implementation
 
 uses
   System.SysUtils, System.Generics.Collections, System.StrUtils, System.Math, System.RegularExpressions,
-  System.Net.URLClient, System.NetEncoding, System.DateUtils,
+  System.Net.URLClient, System.NetEncoding, System.DateUtils, System.Hash,
   MARS.Core.Registry,
   IPTV.Model.Types, IPTV.Model.Catalog, IPTV.Model.Epg, IPTV.Model.CustomList,
   IPTV.Model.Source,
@@ -167,17 +167,33 @@ begin
     Result := '';
 end;
 
-function AccountInfo: TJSONObject;
+// user_info.username/password the box builds its stream URLs from (some clients
+// take them from here, not from what was typed): '-' for an empty login, which
+// FindListForPath maps back
+function BoxCred(const AValue: string): string;
+begin
+  if AValue = '' then
+    Result := PathCred('')
+  else
+    Result := AValue;
+end;
+
+function AccountInfo(const AList: TCustomList): TJSONObject;
 var
   UserInfo, ServerInfo: TJSONObject;
   Formats: TJSONArray;
-  Uri: TURI;
   PortNo: Integer;
 begin
   Result := TJSONObject.Create;
   UserInfo := TJSONObject.Create;
+  // the fields real panels send; some clients refuse an account without them
+  UserInfo.AddPair('username', BoxCred(AList.OutputUsername));
+  UserInfo.AddPair('password', BoxCred(AList.OutputPassword));
+  UserInfo.AddPair('message', '');
   UserInfo.AddPair('auth', TJSONNumber.Create(1));
   UserInfo.AddPair('status', 'Active');
+  UserInfo.AddPair('exp_date', TJSONNull.Create); // no end date
+  UserInfo.AddPair('created_at', '0');
   UserInfo.AddPair('is_trial', '0');
   UserInfo.AddPair('active_cons', '0');
   UserInfo.AddPair('max_connections', '1');
@@ -223,12 +239,22 @@ begin
   Result.AddPair('server_info', ServerInfo);
 end;
 
+const
+  cMaxCategoryId = 999999999; // positive and well inside a 32-bit int for every client
+
+// a category id that only depends on the group name (1..cMaxCategoryId)
+function StableCategoryId(const AGroupName: string): Integer;
+begin
+  Result := Integer(Cardinal(THashBobJenkins.GetHashValue(AGroupName)) mod cMaxCategoryId) + 1;
+end;
+
 // Build categories + streams arrays for one content type, in display order.
 procedure BuildContent(const AChannels: TOutputChannelList; ACt: TContentType;
   const AIdField, AStreamType: string; out ACategories, AStreams: TJSONArray);
 var
   C: TOutputChannel;
   GroupToCat: TDictionary<string, Integer>;
+  UsedCatIds: TDictionary<Integer, Byte>;
   Used: TDictionary<Integer, Byte>; // num values already taken (operator + auto)
   CatId, Num, N: Integer;
   Cat, Stream: TJSONObject;
@@ -243,6 +269,7 @@ begin
   ACategories := TJSONArray.Create;
   AStreams := TJSONArray.Create;
   GroupToCat := TDictionary<string, Integer>.Create;
+  UsedCatIds := TDictionary<Integer, Byte>.Create;
   Used := TDictionary<Integer, Byte>.Create;
   try
     // Pre-collect the operator's channel numbers so the auto-fallback for
@@ -259,7 +286,13 @@ begin
         Continue;
       if not GroupToCat.TryGetValue(C.GroupName, CatId) then
       begin
-        CatId := GroupToCat.Count + 1;
+        // derived from the group NAME, not its position: boxes remember hidden /
+        // favourite / locked categories by id, and a new or moved group used to
+        // renumber every later one
+        CatId := StableCategoryId(C.GroupName);
+        while UsedCatIds.ContainsKey(CatId) do
+          CatId := CatId mod cMaxCategoryId + 1; // (rare) hash collision: next free
+        UsedCatIds.Add(CatId, 0);
         GroupToCat.Add(C.GroupName, CatId);
         Cat := TJSONObject.Create;
         Cat.AddPair('category_id', CatId.ToString);
@@ -301,7 +334,8 @@ begin
       AStreams.Add(Stream);
     end;
   finally
-    GroupToCat.Free;
+    FreeAndNil(GroupToCat);
+    FreeAndNil(UsedCatIds);
     Used.Free;
   end;
 end;
@@ -347,7 +381,7 @@ var
 
 begin
   if (AAction = '') or (AAction = 'get_account_info') then
-    Exit(AccountInfo);
+    Exit(AccountInfo(AList));
 
   Channels := App.Store.LoadOutputChannels(AList.Id);
   try
@@ -832,11 +866,10 @@ var
 begin
   List := ResolveList(AUser, APass);
   if List = nil then
-  begin
-    Response.StatusCode := 401;
+    // 200 + auth:0, like real panels: some boxes show a 401 as "network error"
+    // instead of "wrong username/password"
     Exit(TJSONObject.Create.AddPair('user_info',
       TJSONObject.Create.AddPair('auth', TJSONNumber.Create(0))));
-  end;
   try
     if AAction = 'get_short_epg' then
       Result := BuildEpgListings(List, AStreamId, IfThen(StrToIntDef(ALimit, 0) > 0, StrToIntDef(ALimit, 0), 4), True)

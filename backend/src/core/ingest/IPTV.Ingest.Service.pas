@@ -138,7 +138,7 @@ begin
     S := Default(TIngestStatus);
     S.SourceId := ASourceId;
     S.Running := True;
-    S.StartedUtc := TTimeZone.Local.ToUniversalTime(Now);
+    S.StartedUtc := NowUtc;
     FStatus.AddOrSetValue(ASourceId, S);
     Result := True;
   finally
@@ -184,7 +184,7 @@ begin
     if FStatus.TryGetValue(ASourceId, S) then
     begin
       S.Running := False;
-      S.FinishedUtc := TTimeZone.Local.ToUniversalTime(Now);
+      S.FinishedUtc := NowUtc;
       S.Error := AError;
       FStatus.AddOrSetValue(ASourceId, S);
     end;
@@ -312,7 +312,7 @@ begin
       else
         Log('  no channels on a list yet - EPG skipped');
 
-      Found.LastRefreshUtc := TTimeZone.Local.ToUniversalTime(Now);
+      Found.LastRefreshUtc := NowUtc;
       // Patch only the refresh fields onto the CURRENT row: a refresh takes
       // minutes, and saving the copy loaded at the start would undo any edit the
       // user made to this source meanwhile (filters, credentials, …).

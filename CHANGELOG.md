@@ -159,6 +159,37 @@ Second bug hunt (five separate runs):
   - the proxy port field can be cleared while typing;
   - "only new" hides items once they are marked as seen.
 
+### Added
+- **Media servers: allowed clients** (Settings): the Plex/Jellyfin tuner and
+  HDHomeRun endpoints have no login. They can now be limited to known IP addresses
+  or a network prefix such as `192.168.1.`. Empty = every client, as before.
+
+### Changed
+- Xtream category ids are derived from the group name, not its position, so boxes
+  keep hidden, favourite or locked categories after groups are added or moved.
+  Boxes may forget those settings once after the update.
+- `player_api` account info carries `username`, `password`, `exp_date` and
+  `created_at` like real panels. A wrong login answers `auth: 0` with HTTP 200
+  instead of a 401 (some boxes showed that as a network error).
+- The admin password is compared in constant time. `?pw=` in the URL is only
+  accepted on the M3U/XMLTV download links.
+- A request during startup answers 503 "service not started" (was 500).
+- `docker-compose.yml` no longer ships an example admin password. A warning is
+  logged while `publicBaseUrl` still holds the template's placeholder.
+- Times: "now" comes straight from the system UTC clock, so it is no longer an hour
+  off in the autumn daylight-saving hour. On the spring daylight-saving day, a
+  daily refresh time that falls inside the skipped hour now still runs.
+- Faster "replace by another quality": the candidate search is filtered in SQL first.
+- Relay: a stream that fails on every source answers 502 instead of an empty reply.
+  HEAD requests are answered without pulling the stream.
+- Removing duplicates keeps the copy that comes first in the bouquet as the box
+  sees it.
+- An extra EPG guide is stored in one transaction.
+- Deleting a bouquet marks the lineup as changed for Plex.
+- The quality probe also finds variants whose names use decorative letters.
+- The daemon's stop signal handler only sets a flag. The main loop does the rest,
+  because a signal handler must not take locks.
+
 ## [1.2.35] - 2026-11-13
 
 - `config.json` lives in the data folder and is created on first start; older

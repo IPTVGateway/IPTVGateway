@@ -37,7 +37,7 @@ const
   //          UFC channels' group), unless an exclude token names the group
   //   1.2.18 choose the bouquet Plex/Jellyfin get (plexListId); Media Servers group filter is
   //          Plex-only (boxes get their whole bouquet); XMLTV <channel> carries <icon> (Plex logos)
-  APP_VERSION = '1.2.34';
+  APP_VERSION = '1.2.35';
 
 type
   TAppConfig = record
@@ -131,6 +131,17 @@ type
     procedure Save(const APath: string);
   end;
 
+/// Where the console daemon keeps config.json. With the environment variable
+/// IPTV_CONFIG set (the Docker image sets /opt/iptvplay/data/config.json) the
+/// config lives in the persistent data folder, so a container needs only ONE
+/// volume - no single-file mount that Docker turns into a directory when the file
+/// doesn't exist yet. On first start that file is created: copied from a
+/// config.json next to the exe when that is a real file (the image's template, or
+/// an older install's mounted config = automatic migration), else written with
+/// defaults. Without IPTV_CONFIG: config.json next to the exe, as before.
+/// ANote describes what happened (for the log; '' = nothing special).
+function ResolveDaemonConfigPath(const AExeDir: string; out ANote: string): string;
+
 implementation
 
 uses
@@ -173,6 +184,32 @@ begin
   Result.NameShowNumber := False;
   Result.NameShowSource := False;
   Result.IdSortPrefix := False;
+end;
+
+function ResolveDaemonConfigPath(const AExeDir: string; out ANote: string): string;
+var
+  Legacy: string;
+begin
+  ANote := '';
+  Legacy := TPath.Combine(AExeDir, 'config.json');
+  Result := GetEnvironmentVariable('IPTV_CONFIG').Trim;
+  if Result = '' then
+    Exit(Legacy);
+  if TFile.Exists(Result) then
+    Exit;
+  ForceDirectories(ExtractFileDir(Result));
+  // TFile.Exists is False for a directory: a config.json that Docker created as a
+  // folder (missing single-file mount) is ignored, not copied
+  if TFile.Exists(Legacy) then
+  begin
+    TFile.Copy(Legacy, Result);
+    ANote := Format('config: created %s from %s (settings now live in the data folder)', [Result, Legacy]);
+  end
+  else
+  begin
+    TAppConfig.Default.Save(Result);
+    ANote := Format('config: created %s with defaults', [Result]);
+  end;
 end;
 
 procedure TAppConfig.Save(const APath: string);

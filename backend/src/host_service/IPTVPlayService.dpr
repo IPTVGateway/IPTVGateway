@@ -99,13 +99,19 @@ end;
 
 var
   Cfg: TAppConfig;
+  CfgPath, CfgNote: string;
 begin
-  Cfg := TAppConfig.Load(
-    IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) + 'config.json');
+  // config.json next to the exe, or in the data folder when IPTV_CONFIG is set
+  // (Docker) - created there on first start, see ResolveDaemonConfigPath
+  CfgPath := ResolveDaemonConfigPath(ExtractFilePath(ParamStr(0)), CfgNote);
+  Cfg := TAppConfig.Load(CfgPath);
 
-  GRunner := TAppRunner.Create(Cfg, StdLog);  // worker thread starts the app
+  GRunner := TAppRunner.Create(Cfg, StdLog, CfgPath);  // worker thread starts the app
   try
     InstallSignalHandlers;
+    if CfgNote <> '' then
+      StdLog(CfgNote);
+    StdLog('config: ' + CfgPath);
     StdLog(Format('IPTVPlay service starting on port %d (HTTPS=%s). Ctrl+C / SIGTERM to stop.',
       [Cfg.HttpPort, BoolToStr(Cfg.UseHttps, True)]));
     GRunner.WaitFor;        // block until a stop signal winds the worker down

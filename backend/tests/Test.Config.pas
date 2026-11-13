@@ -20,12 +20,13 @@ type
     [Test] procedure PlexDefaultsAreOff;
     [Test] procedure MediaFieldsRoundtrip;
     [Test] procedure MediaDefaults;
+    [Test] procedure DaemonConfigPathInDataFolder;
   end;
 
 implementation
 
 uses
-  System.SysUtils, System.IOUtils,
+  System.SysUtils, System.IOUtils, Winapi.Windows,
   IPTV.App.Config;
 
 procedure TConfigTests.Setup;
@@ -117,6 +118,55 @@ begin
   Assert.AreEqual<Integer>(60, L.DummyEpgBlockMinutes, 'dummy block round-trips');
   Assert.AreEqual<Integer>(6, L.DummyEpgHoursBack, 'dummy back round-trips');
   Assert.AreEqual<Integer>(24, L.DummyEpgHoursAhead, 'dummy ahead round-trips');
+end;
+
+// IPTV_CONFIG (set by the Docker image) moves config.json into the data folder:
+// created from an older config.json next to the exe (migration), else defaults;
+// an existing file is left alone; without the variable nothing changes.
+procedure TConfigTests.DaemonConfigPathInDataFolder;
+var
+  Root, ExeDir, DataCfg, Note, P: string;
+  C: TAppConfig;
+begin
+  Root := TPath.Combine(TPath.GetTempPath, 'iptvcfg_' + TGUID.NewGuid.ToString);
+  ExeDir := TPath.Combine(Root, 'exe');
+  DataCfg := TPath.Combine(TPath.Combine(Root, 'data'), 'config.json');
+  ForceDirectories(ExeDir);
+  try
+    // no variable -> next to the exe, as before
+    SetEnvironmentVariable('IPTV_CONFIG', nil);
+    Assert.AreEqual(TPath.Combine(ExeDir, 'config.json'), ResolveDaemonConfigPath(ExeDir, Note));
+    Assert.AreEqual('', Note);
+
+    SetEnvironmentVariable('IPTV_CONFIG', PChar(DataCfg));
+    // older install: a real config.json next to the exe is migrated (copied)
+    C := TAppConfig.Default;
+    C.HttpPort := 9000;
+    C.Save(TPath.Combine(ExeDir, 'config.json'));
+    P := ResolveDaemonConfigPath(ExeDir, Note);
+    Assert.AreEqual(DataCfg, P);
+    Assert.IsTrue(TFile.Exists(DataCfg), 'created in the data folder (folder made too)');
+    Assert.Contains(Note, 'created');
+    Assert.AreEqual(9000, TAppConfig.Load(P).HttpPort, 'migrated, not defaults');
+
+    // an existing data-folder config is never overwritten
+    C.HttpPort := 7777;
+    C.Save(TPath.Combine(ExeDir, 'config.json'));
+    ResolveDaemonConfigPath(ExeDir, Note);
+    Assert.AreEqual('', Note);
+    Assert.AreEqual(9000, TAppConfig.Load(DataCfg).HttpPort);
+
+    // fresh install where Docker made 'config.json' a DIRECTORY -> defaults
+    TFile.Delete(DataCfg);
+    TFile.Delete(TPath.Combine(ExeDir, 'config.json'));
+    ForceDirectories(TPath.Combine(ExeDir, 'config.json'));
+    ResolveDaemonConfigPath(ExeDir, Note);
+    Assert.Contains(Note, 'defaults');
+    Assert.AreEqual(TAppConfig.Default.HttpPort, TAppConfig.Load(DataCfg).HttpPort);
+  finally
+    SetEnvironmentVariable('IPTV_CONFIG', nil);
+    TDirectory.Delete(Root, True);
+  end;
 end;
 
 initialization

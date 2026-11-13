@@ -224,7 +224,7 @@ $BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
 $DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (154 tests as of 1.2.34)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (155 tests as of 1.2.35)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -396,6 +396,16 @@ unique, else fall back to the running position 1,2,3 (Plex rejects duplicates).
   first so no stale MARS DCUs are linked), commit the upgrade on its own.
 - MARS 2.x: invalid/empty typed params give 400 -> box-facing params are `string`
   (e.g. player_api `limit`); string results need `[Produces]` (all ours have it).
+
+## Config in the data volume (1.2.35)
+
+The console daemon resolves its config via `ResolveDaemonConfigPath`: with env
+`IPTV_CONFIG` (the Docker image sets `/opt/iptvplay/data/config.json`) it lives in
+the data volume and is created on first start - copied from a real `config.json`
+next to the exe (image template, or an older install's single-file mount =
+migration), else defaults; a directory Docker made for a missing file mount is
+ignored. Without the variable: next to the exe, as before. The Unraid template and
+compose therefore only need the data volume.
 
 ## Log tab (1.2.34)
 

@@ -82,9 +82,8 @@ Two pieces: the **image** (in your registry) and the **template** (`iptv-gateway
   (stream proxy, only used when the proxy is enabled), and UDP `1900` (SSDP, only
   for Plex HDHomeRun auto-discovery — LAN-only, needs host networking).
 - **Data volume**: `/opt/iptvplay/data` → e.g. `/mnt/user/appdata/iptv-gateway/data`.
-- **config.json**: `/opt/iptvplay/config.json` → a host file that **must exist as
-  a file before first start** (Docker turns a missing single-file mount into a
-  directory). Copy the bundled `config.json` there first.
+- **config.json**: no separate mount needed. It lives in the Data folder
+  (`/opt/iptvplay/data/config.json`) and is created on first start.
 - **TZ** and **ADMIN_PASSWORD** env vars.
 
 ### Networking / Plex note
@@ -120,7 +119,7 @@ Two pieces: the **image** (in your registry) and the **template** (`iptv-gateway
 > (M3U + HDHomeRun + SSDP).
 >
 > **Install:** image `youruser/iptv-gateway` (amd64). Template attached — drop it
-> in templates-user and add the container. Set a data volume, a `config.json`
+> in templates-user and add the container. Set a data volume (config.json is created in it)
 > file, TZ and ADMIN_PASSWORD. Open the WebUI on port 7777 (configurable).
 >
 > **Built with:** ~99% with Claude Code (Anthropic's agentic coding tool), human

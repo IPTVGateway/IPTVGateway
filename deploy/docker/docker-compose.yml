@@ -29,10 +29,9 @@ services:
       # - "1900:1900/udp"      # SSDP for Plex HDHomeRun auto-discovery (LAN-only;
       #                        # bridge NAT won't pass it anyway — prefer host networking)
     volumes:
-      - ./data:/opt/iptvplay/data            # SQLite db + state (persisted)
-      # NOT read-only: the Settings screen / proxy toggle rewrite config.json,
-      # and those changes should survive a restart.
-      - ./config.json:/opt/iptvplay/config.json
+      # SQLite db + state + config.json (created on first start; edit it via the
+      # web UI's Settings, or in ./data/config.json while the container is stopped)
+      - ./data:/opt/iptvplay/data
       # for HTTPS, also mount your certs and point config.json at them, e.g.:
       # - ./certs:/opt/iptvplay/certs:ro
     environment:

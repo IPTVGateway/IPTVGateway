@@ -53,6 +53,12 @@ EXPOSE 7777 7778 1900/udp
 ENV MALLOC_ARENA_MAX=2 \
     MALLOC_TRIM_THRESHOLD_=131072
 
+# Settings live in the persistent data volume: one volume is enough, and there is
+# no single-file config.json mount that Docker turns into a directory when the
+# file doesn't exist yet. Created on first start (copied from an older mounted
+# /opt/iptvplay/config.json when present, else from the image's template).
+ENV IPTV_CONFIG=/opt/iptvplay/data/config.json
+
 # Unraid reads these labels to show a WebUI button on the Docker tab even when
 # the container was added via `docker run` (not the template). Unraid applies its
 # own [IP]/[PORT:xxxx] substitution to the value.

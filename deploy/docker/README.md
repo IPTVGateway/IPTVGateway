@@ -60,7 +60,6 @@ docker compose up -d        # uses docker-compose.yml
 # or plain docker:
 docker run -d --name iptvplay -p 7777:7777 \
   -v $PWD/data:/opt/iptvplay/data \
-  -v $PWD/config.json:/opt/iptvplay/config.json:ro \
   -e TZ=Europe/Amsterdam iptvplay:latest
 ```
 
@@ -78,10 +77,8 @@ The easiest path uses the bundled template **`iptv-gateway.xml`**:
 3. Install the template: copy `iptv-gateway.xml` to
    `/boot/config/plugins/dockerMan/templates-user/my-IPTV-Gateway.xml`.
 4. Docker tab → **Add Container** → Template **IPTV-Gateway** → Apply.
-5. **Before first start**, create the config FILE on the host (a missing
-   single-file mount becomes a directory): `mkdir -p
-   /mnt/user/appdata/iptv-gateway/data && cp config.json
-   /mnt/user/appdata/iptv-gateway/config.json`.
+5. Nothing to prepare: `config.json` is created in the Data folder on first start
+   (`/mnt/user/appdata/iptv-gateway/data/config.json`).
 6. Set the **Admin password** variable (`ADMIN_PASSWORD`) in the template to lock
    the admin UI/API. Empty = open (LAN only). It overrides `adminPassword` in
    config.json and does NOT affect the Xtream box endpoints (those use their own
@@ -95,8 +92,9 @@ Manual alternative (without the template):
   networking anyway).
 - Bind two paths:
   - `/opt/iptvplay/data` → an appdata folder (keeps the SQLite db).
-  - `/opt/iptvplay/config.json` → your config file, **read-write** (the Settings
-    screen and the proxy toggle rewrite it; a read-only mount makes those fail).
+  - `config.json` lives in the data volume (`/opt/iptvplay/data/config.json`, env
+    `IPTV_CONFIG`) and is created on first start. An older separately mounted
+    `/opt/iptvplay/config.json` is copied there once (automatic migration).
 - Set `TZ` so the daily refresh fires at the right local time.
 - Point your IPTV box at `http://<unraid-ip>:7777` (Xtream) or
   `http://<unraid-ip>:7777/get.php?...` (M3U). For HTTPS, mount certs, set

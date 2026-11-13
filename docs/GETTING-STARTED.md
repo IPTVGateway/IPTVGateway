@@ -34,7 +34,8 @@ it with your own server's IP and port.
 1. Browse to `http://<your-server>:7777`.
 2. Top right should read **backend: ok**.
 3. **Set an admin password**: set the `ADMIN_PASSWORD` variable in the Docker or
-   Unraid template (or `adminPassword` in `config.json`) and restart the container.
+   Unraid template (or `adminPassword` in `config.json` in the data folder) and restart
+   the container.
    The web app then asks for it once. Do this whenever the gateway can be reached
    from outside your home.
 

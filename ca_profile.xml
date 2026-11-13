@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Maintainer>
+  <Profile>IPTV Gateway: curate your IPTV providers once and use the line-up on every box. It merges Xtream Codes / M3U sources into bouquets with their own logins, cleans channel names, builds a better EPG (with optional extra XMLTV sources) and passes catch-up through. It serves them as an Xtream portal, M3U/XMLTV and an HDHomeRun tuner for Plex. It is a single lightweight native binary, and video goes straight from the provider to the box by default. It contains no content: bring your own legitimate sources.</Profile>
+  <WebPage>https://github.com/IPTVGateway/IPTVGateway</WebPage>
+  <Forum>https://github.com/IPTVGateway/IPTVGateway/issues</Forum>
+  <Icon>https://raw.githubusercontent.com/IPTVGateway/IPTVGateway/main/frontend/public/icon.png</Icon>
+</Maintainer>

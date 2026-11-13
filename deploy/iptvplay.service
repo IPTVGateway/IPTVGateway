@@ -1,0 +1,32 @@
+# systemd unit for IPTVPlay on Ubuntu/Debian.
+# Install:
+#   sudo useradd --system --home /opt/iptvplay --shell /usr/sbin/nologin iptvplay
+#   sudo mkdir -p /opt/iptvplay/data
+#   # copy IPTVPlayService (Linux64 build) + config.json into /opt/iptvplay
+#   sudo chown -R iptvplay:iptvplay /opt/iptvplay
+#   sudo cp deploy/iptvplay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now iptvplay
+#   journalctl -u iptvplay -f        # follow logs (StdLog writes to stdout)
+
+[Unit]
+Description=IPTVPlay - aggregate IPTV providers and serve a curated Xtream portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=iptvplay
+Group=iptvplay
+WorkingDirectory=/opt/iptvplay
+ExecStart=/opt/iptvplay/IPTVPlayService
+# SIGTERM triggers our clean shutdown (stops the scheduler + HTTP server, then
+# waits for any in-flight refresh to drain — bounded at 30s internally).
+KillSignal=SIGTERM
+# >30s so the internal drain can finish before systemd escalates to SIGKILL
+# (otherwise a stop during the daily refresh gets killed mid-write).
+TimeoutStopSec=35
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

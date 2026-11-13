@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    // A composite project must emit, but the emitted vite.config.js would sit next
+    // to vite.config.ts and SHADOW it in Vite's config resolution (.js wins over .ts),
+    // serving a stale config during `npm run dev`. Send the emit to a throwaway dir
+    // so the source folder stays clean and Vite always reads the .ts.
+    "outDir": "node_modules/.tmp/tsconfig-node",
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "strict": true
+  },
+  "include": ["vite.config.ts"]
+}

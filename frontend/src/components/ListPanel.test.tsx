@@ -1,0 +1,338 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { ListPanel } from './ListPanel'
+import type { CustomGroup, CustomItem, CustomList } from '../types'
+
+vi.mock('../api/client', () => ({
+  api: {
+    saveGroup: vi.fn().mockResolvedValue({}),
+    deleteGroup: vi.fn().mockResolvedValue(undefined),
+    clearGroupItems: vi.fn().mockResolvedValue({ removed: 0 }),
+    dedupeList: vi.fn().mockResolvedValue({ removed: 3 }),
+    sortGroup: vi.fn().mockResolvedValue({ sorted: 2 }),
+    reorderGroup: vi.fn().mockResolvedValue({ numbered: 2 }),
+    saveItem: vi.fn().mockResolvedValue({}),
+    deleteItem: vi.fn().mockResolvedValue(undefined),
+    groupVariants: vi.fn().mockResolvedValue([]),
+    groupProviderVariants: vi.fn().mockResolvedValue([]),
+    addItems: vi.fn().mockResolvedValue({ added: 0 }),
+    replaceItems: vi.fn().mockResolvedValue({ replaced: 0 }),
+    restripGroup: vi.fn().mockResolvedValue([]),
+    tvgIds: vi.fn().mockResolvedValue([]),
+    listSources: vi.fn().mockResolvedValue([
+      { id: 1, name: 'ProviderA', kind: 'xtream', url: '', enabled: true, contentTypes: ['live'] },
+      { id: 2, name: 'ProviderB', kind: 'xtream', url: '', enabled: true, contentTypes: ['live'] },
+    ]),
+    exportM3uUrl: () => '/api/lists/1/export.m3u',
+    exportXmltvUrl: () => '/api/lists/1/export.xmltv',
+  },
+}))
+import { api } from '../api/client'
+
+const LISTS: CustomList[] = [
+  { id: 1, name: 'L', outputUsername: '', outputPassword: '', enabled: true },
+]
+const GROUPS: CustomGroup[] = [
+  { id: 10, listId: 1, name: 'Sport', contentType: 'live', isFavorite: false },
+]
+const ITEMS: CustomItem[] = [
+  {
+    id: 100, listId: 1, streamItemId: 5, customGroupId: 10, contentType: 'live',
+    displayName: '', channelNumber: 0, streamName: 'NPO 1',
+  },
+]
+
+function renderPanel(over: Partial<Parameters<typeof ListPanel>[0]> = {}) {
+  return render(
+    <ListPanel
+      lists={LISTS}
+      activeListId={1}
+      onSelectList={() => {}}
+      groups={GROUPS}
+      items={ITEMS}
+      loading={false}
+      error={null}
+      onRefresh={() => {}}
+      {...over}
+    />,
+  )
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  localStorage.clear() // sort-mode is persisted; isolate tests
+})
+
+describe('ListPanel', () => {
+  it('shows the upstream channel name as the item label fallback (no override)', () => {
+    renderPanel()
+    expect(screen.getByPlaceholderText('NPO 1')).toBeInTheDocument()
+  })
+
+  it('renames a group via the pencil → Save', async () => {
+    renderPanel({ items: [] }) // no item rows → the only "Sport" field is the rename input
+    await userEvent.click(screen.getByTitle('Rename'))
+    const input = screen.getByDisplayValue('Sport')
+    await userEvent.clear(input)
+    await userEvent.type(input, 'News')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(api.saveGroup).toHaveBeenCalledWith(1, expect.objectContaining({ id: 10, name: 'News' }))
+  })
+
+  it('empties a group in one click (with confirm)', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/Empty group/))
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm empty' }))
+    expect(api.clearGroupItems).toHaveBeenCalledWith(1, 10)
+  })
+
+  it('sorts a group A→Z (renumber) — enabled only with 2+ channels', async () => {
+    const twoItems: CustomItem[] = [
+      { id: 100, listId: 1, streamItemId: 5, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 0, streamName: 'NPO 1' },
+      { id: 101, listId: 1, streamItemId: 6, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 0, streamName: 'BBC' },
+    ]
+    renderPanel({ items: twoItems })
+    await userEvent.click(screen.getByTitle(/Sort this group/))
+    expect(api.sortGroup).toHaveBeenCalledWith(1, 10)
+  })
+
+  it('deletes a group', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/Delete group/))
+    expect(api.deleteGroup).toHaveBeenCalledWith(10)
+  })
+
+  it('de-duplicates the list and reports how many were removed', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByRole('button', { name: 'Dedupe' }))
+    expect(api.dedupeList).toHaveBeenCalledWith(1)
+    expect(await screen.findByText(/3 duplicates removed/)).toBeInTheDocument()
+  })
+
+  it('sorts channels by channel number when "No." is selected (and back by name)', async () => {
+    // Zebra has the lower number; name-order would put Alpha first, number-order Zebra first.
+    const twoItems: CustomItem[] = [
+      { id: 100, listId: 1, streamItemId: 5, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 1, streamName: 'Zebra' },
+      { id: 101, listId: 1, streamItemId: 6, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 2, streamName: 'Alpha' },
+    ]
+    renderPanel({ items: twoItems })
+    const nums = () => screen.getAllByTitle('Channel number').map((el) => (el as HTMLInputElement).value)
+
+    // default: by name → Alpha(2), Zebra(1)
+    expect(nums()).toEqual(['2', '1'])
+
+    // switch to channel-number order → Zebra(1), Alpha(2)
+    await userEvent.click(screen.getByRole('button', { name: 'No.' }))
+    expect(nums()).toEqual(['1', '2'])
+    expect(localStorage.getItem('iptv.list.sortMode')).toBe('number')
+
+    // back to name order
+    await userEvent.click(screen.getByRole('button', { name: 'Name' }))
+    expect(nums()).toEqual(['2', '1'])
+  })
+
+  it('reorders by drag in "Nr" mode and persists channel numbers in the dropped order', async () => {
+    const twoItems: CustomItem[] = [
+      { id: 100, listId: 1, streamItemId: 5, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 1, streamName: 'Zebra' },
+      { id: 101, listId: 1, streamItemId: 6, customGroupId: 10, contentType: 'live', displayName: '', channelNumber: 2, streamName: 'Alpha' },
+    ]
+    renderPanel({ items: twoItems })
+    // grips only exist in channel-number mode
+    await userEvent.click(screen.getByRole('button', { name: 'No.' }))
+    const grips = screen.getAllByLabelText('Reorder') // DOM order: row 100 (ch1), row 101 (ch2)
+    expect(grips).toHaveLength(2)
+
+    // Reorder uses Pointer Events (works on mouse + touch). The hit-test uses
+    // document.elementFromPoint, which jsdom (no layout) returns null for — stub it
+    // to the target row so the move resolves to row 100.
+    const targetRow = grips[0].closest('li') as HTMLElement
+    // jsdom has no layout / may not implement elementFromPoint — assign it directly
+    const orig = (document as unknown as { elementFromPoint?: unknown }).elementFromPoint
+    ;(document as unknown as { elementFromPoint: unknown }).elementFromPoint = () => targetRow
+    try {
+      // drag the 2nd channel (id 101) onto the 1st (id 100) → order becomes [101, 100]
+      fireEvent.pointerDown(grips[1], { pointerId: 1 })
+      fireEvent.pointerMove(grips[1], { pointerId: 1, clientX: 5, clientY: 5 })
+      expect(targetRow.className).toContain('drop-target')
+      fireEvent.pointerUp(grips[1], { pointerId: 1 })
+    } finally {
+      ;(document as unknown as { elementFromPoint: unknown }).elementFromPoint = orig
+    }
+
+    await waitFor(() =>
+      expect(api.reorderGroup).toHaveBeenCalledWith(1, 10, [101, 100]),
+    )
+  })
+
+  it('shows no drag grips in name mode', () => {
+    renderPanel()
+    expect(screen.queryByLabelText('Reorder')).toBeNull()
+  })
+
+  it('removes a channel from the list via the per-row trash button', async () => {
+    renderPanel()
+    const row = screen.getByPlaceholderText('NPO 1').closest('li') as HTMLElement
+    await userEvent.click(within(row).getByLabelText('Remove channel'))
+    expect(api.deleteItem).toHaveBeenCalledWith(100)
+  })
+
+  it('collapses and expands a group, hiding/showing its channels', async () => {
+    renderPanel()
+    expect(screen.getByPlaceholderText('NPO 1')).toBeInTheDocument()
+    await userEvent.click(screen.getByTitle('Collapse'))
+    expect(screen.queryByPlaceholderText('NPO 1')).toBeNull()
+    await userEvent.click(screen.getByTitle('Expand'))
+    expect(screen.getByPlaceholderText('NPO 1')).toBeInTheDocument()
+  })
+
+  it('creates a new group', async () => {
+    renderPanel()
+    await userEvent.type(screen.getByPlaceholderText('New group name'), 'Movies')
+    await userEvent.click(screen.getByRole('button', { name: 'Add group' }))
+    expect(api.saveGroup).toHaveBeenCalledWith(1, expect.objectContaining({ name: 'Movies' }))
+  })
+
+  it('duplicates a group at another quality: matched channels added to a new group, unmatched flagged', async () => {
+    renderPanel()
+    // open the duplicate-variant dialog from the group header
+    await userEvent.click(screen.getByTitle(/duplicate this group/))
+    // default is "in this group"; switch to a copy
+    await userEvent.click(screen.getByRole('button', { name: 'Copy to a new group' }))
+    // name is pre-filled "<group> UHD"
+    expect(screen.getByDisplayValue('Sport UHD')).toBeInTheDocument()
+
+    // one channel HAS a UHD variant, one does not
+    ;(api.groupVariants as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { itemId: 100, streamId: 5, name: 'NPO 1 HD', quality: 'HD', candidateStreamId: 55, candidateName: 'NPO 1 UHD', matched: true, alreadyInList: false },
+      { itemId: 101, streamId: 6, name: 'BBC HD', quality: 'HD', candidateStreamId: 0, candidateName: '', matched: false, alreadyInList: false },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Find variants' }))
+
+    // review: the matched candidate is shown, the unmatched one is flagged
+    expect(await screen.findByText('NPO 1 UHD')).toBeInTheDocument()
+    expect(screen.getByText(/no UHD variant found/)).toBeInTheDocument()
+
+    // create: new group + bulk-add only the matched candidate's stream
+    ;(api.saveGroup as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      id: 20, listId: 1, name: 'Sport UHD', contentType: 'live', isFavorite: false,
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Create group (1)' }))
+
+    expect(api.saveGroup).toHaveBeenCalledWith(1, expect.objectContaining({ name: 'Sport UHD', contentType: 'live' }))
+    await waitFor(() => expect(api.addItems).toHaveBeenCalledWith(1, [55], 20))
+  })
+
+  it('duplicates a group from another provider: matched channels added from the chosen source', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/duplicate this group/))
+    await userEvent.click(screen.getByRole('button', { name: 'Copy to a new group' }))
+    // switch to provider mode and pick the replacement source
+    await userEvent.click(screen.getByRole('button', { name: 'Provider' }))
+    expect(await screen.findByRole('option', { name: 'ProviderA' })).toBeInTheDocument()
+
+    ;(api.groupProviderVariants as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { itemId: 100, streamId: 5, name: 'NPO 1', quality: '', candidateStreamId: 77, candidateName: 'NPO 1', matched: true, alreadyInList: false },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Find variants' }))
+    expect(api.groupProviderVariants).toHaveBeenCalledWith(1, 10, 1) // first source id
+
+    ;(api.saveGroup as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      id: 30, listId: 1, name: 'Sport ProviderA', contentType: 'live', isFavorite: false,
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Create group (1)' }))
+    await waitFor(() => expect(api.addItems).toHaveBeenCalledWith(1, [77], 30))
+  })
+
+  it('replaces RAW channels by 4K+ IN the group (default), only the ticked matches', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/duplicate this group/))
+    // in-place is the default: no new-group name field
+    expect(screen.queryByDisplayValue('Sport UHD')).not.toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText('Target quality'), '4K+')
+
+    ;(api.groupVariants as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { itemId: 100, streamId: 5, name: 'NL | NPO 1 ʀᴀᴡ', quality: 'RAW', candidateStreamId: 55, candidateName: 'NL | NPO 1 4K+', matched: true, alreadyInList: false },
+      { itemId: 101, streamId: 6, name: 'NL | RTL 4 ʀᴀᴡ', quality: 'RAW', candidateStreamId: 66, candidateName: 'NL | RTL 4 4K+', matched: true, alreadyInList: false },
+      { itemId: 102, streamId: 7, name: 'NL | BBC NL ʀᴀᴡ', quality: 'RAW', candidateStreamId: 0, candidateName: '', matched: false, alreadyInList: false },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Find variants' }))
+    expect(api.groupVariants).toHaveBeenCalledWith(1, 10, '4K+')
+    expect(await screen.findByText('NL | NPO 1 4K+')).toBeInTheDocument()
+    expect(screen.getByText(/no 4K\+ variant found/)).toBeInTheDocument()
+
+    // untick RTL 4 -> only NPO 1 is replaced
+    await userEvent.click(screen.getByRole('checkbox', { name: /RTL 4/ }))
+    ;(api.replaceItems as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ replaced: 1 })
+    await userEvent.click(screen.getByRole('button', { name: 'Replace 1 channels' }))
+    await waitFor(() =>
+      expect(api.replaceItems).toHaveBeenCalledWith(1, [{ itemId: 100, streamId: 55 }]),
+    )
+    expect(api.saveGroup).not.toHaveBeenCalled()
+    expect(api.addItems).not.toHaveBeenCalled()
+    expect(await screen.findByText(/Replaced 1 channels in “Sport”/)).toBeInTheDocument()
+  })
+
+  it('cleans the names of an existing group: preview with extra tokens, then apply', async () => {
+    const restrip = api.restripGroup as ReturnType<typeof vi.fn>
+    restrip.mockResolvedValueOnce([]) // initial preview (source rules only): nothing
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/Strip prefixes\/suffixes from the channel names/))
+    expect(await screen.findByText(/Nothing to strip/)).toBeInTheDocument()
+    expect(restrip).toHaveBeenCalledWith(1, 10, { extraPrefixes: [], extraSuffixes: [], dryRun: true })
+
+    await userEvent.type(screen.getByLabelText('Extra prefixes'), 'NL |')
+    await userEvent.type(screen.getByLabelText('Extra suffixes'), '(S); rec')
+    restrip.mockResolvedValueOnce([
+      { itemId: 100, oldName: 'NL | HISTORY HD (S)', newName: 'HISTORY HD', original: 'NL | HISTORY HD (S)' },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    expect(await screen.findByText('HISTORY HD')).toBeInTheDocument()
+    expect(restrip).toHaveBeenLastCalledWith(1, 10, {
+      extraPrefixes: ['NL |'], extraSuffixes: ['(S)', 'rec'], dryRun: true,
+    })
+
+    restrip.mockResolvedValueOnce([
+      { itemId: 100, oldName: 'NL | HISTORY HD (S)', newName: 'HISTORY HD', original: 'NL | HISTORY HD (S)' },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Apply (1)' }))
+    await waitFor(() =>
+      expect(restrip).toHaveBeenLastCalledWith(1, 10, {
+        extraPrefixes: ['NL |'], extraSuffixes: ['(S)', 'rec'], dryRun: false,
+      }),
+    )
+    expect(await screen.findByText(/Cleaned 1 channel names in “Sport”/)).toBeInTheDocument()
+  })
+
+  it('shows the original upstream name (with prefix/suffix) under a stripped display name', () => {
+    renderPanel({
+      items: [
+        {
+          id: 100, listId: 1, streamItemId: 5, customGroupId: 10, contentType: 'live',
+          displayName: 'HISTORY ʀᴀᴡ', channelNumber: 0, streamName: 'NL | HISTORY ʀᴀᴡ (S)',
+        },
+      ],
+    })
+    expect(screen.getByDisplayValue('HISTORY ʀᴀᴡ')).toBeInTheDocument()
+    expect(screen.getByText('NL | HISTORY ʀᴀᴡ (S)')).toBeInTheDocument()
+  })
+
+  it('saves an item edit (display name) via its Save', async () => {
+    renderPanel()
+    const dn = screen.getByPlaceholderText('NPO 1') // display-name input (placeholder = upstream name)
+    await userEvent.type(dn, 'Renamed')
+    const row = dn.closest('li') as HTMLElement
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    expect(api.saveItem).toHaveBeenCalledWith(1, expect.objectContaining({ id: 100, displayName: 'Renamed' }))
+  })
+
+  it('sets a per-channel tvg-id override and saves it', async () => {
+    renderPanel()
+    // the channel has no upstream tvg-id, so the picker shows the fallback placeholder
+    const tvg = screen.getByPlaceholderText('tvg-id (EPG)')
+    await userEvent.type(tvg, 'npo1.nl')
+    const row = tvg.closest('li') as HTMLElement
+    await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    expect(api.saveItem).toHaveBeenCalledWith(1, expect.objectContaining({ id: 100, tvgIdOverride: 'npo1.nl' }))
+  })
+})

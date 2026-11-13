@@ -1,0 +1,221 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
+import mpegts from 'mpegts.js'
+import type { CustomGroup, CustomItem, CustomList } from '../types'
+import { byNameCI, compareGroups } from '../lib/ordering'
+
+interface Props {
+  lists: CustomList[]
+  activeListId: number | null
+  onSelectList: (id: number) => void
+  groups: CustomGroup[]
+  items: CustomItem[]
+}
+
+const BASE_KEY = 'iptv.player.base'
+const UPSTREAM_GROUP_ID = 0
+
+function defaultBase(): string {
+  const saved = localStorage.getItem(BASE_KEY)
+  if (saved) return saved
+  // the in-browser player needs the stream-proxy (it relays MPEG-TS with CORS);
+  // default to this host on the proxy port (9001).
+  if (typeof location !== 'undefined' && location.hostname)
+    return `${location.protocol}//${location.hostname}:9001`
+  return 'http://localhost:9001'
+}
+
+export function displayNameOf(it: CustomItem): string {
+  return it.displayName?.trim() || it.streamName?.trim() || `#${it.streamItemId}`
+}
+
+/**
+ * Build the playable URL for a channel: the gateway's own Xtream-style live
+ * endpoint, which (in proxy mode) relays the upstream MPEG-TS. Empty output
+ * credentials map to the default-list path (/live///id).
+ */
+export function playerStreamUrl(base: string, list: CustomList | undefined, item: CustomItem): string {
+  const b = base.replace(/\/+$/, '')
+  const u = encodeURIComponent(list?.outputUsername ?? '')
+  const p = encodeURIComponent(list?.outputPassword ?? '')
+  const kind = item.contentType === 'movie' ? 'movie' : item.contentType === 'series' ? 'series' : 'live'
+  return `${b}/${kind}/${u}/${p}/${item.streamItemId}.ts`
+}
+
+export function PlayerView({ lists, activeListId, onSelectList, groups, items }: Props) {
+  const [base, setBase] = useState(defaultBase)
+  const [groupId, setGroupId] = useState<number | null>(null)
+  const [selected, setSelected] = useState<CustomItem | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+
+  const list = useMemo(() => lists.find((l) => l.id === activeListId), [lists, activeListId])
+
+  // switching lists invalidates the current selection / group
+  useEffect(() => {
+    setSelected(null)
+    setGroupId(null)
+  }, [activeListId])
+
+  function changeBase(v: string) {
+    setBase(v)
+    localStorage.setItem(BASE_KEY, v)
+  }
+
+  // groups that actually have channels on this list (favorites first → A→Z),
+  // plus an "Upstream group" entry when ungrouped channels exist.
+  const groupOptions = useMemo(() => {
+    const counts = new Map<number, number>()
+    for (const it of items) counts.set(it.customGroupId, (counts.get(it.customGroupId) ?? 0) + 1)
+    const opts: { id: number; label: string; count: number }[] = []
+    for (const g of [...groups].sort(compareGroups)) {
+      const c = counts.get(g.id) ?? 0
+      if (c > 0) opts.push({ id: g.id, label: (g.isFavorite ? '★ ' : '') + g.name, count: c })
+    }
+    const up = counts.get(UPSTREAM_GROUP_ID) ?? 0
+    if (up > 0) opts.push({ id: UPSTREAM_GROUP_ID, label: 'Upstream group', count: up })
+    return opts
+  }, [groups, items])
+
+  // default to the first group with channels; keep a still-valid choice
+  useEffect(() => {
+    if (groupOptions.length === 0) {
+      setGroupId(null)
+      return
+    }
+    setGroupId((cur) => (cur != null && groupOptions.some((o) => o.id === cur) ? cur : groupOptions[0].id))
+  }, [groupOptions])
+
+  // channels in the chosen group, A→Z
+  const channels = useMemo(() => {
+    if (groupId == null) return []
+    return items
+      .filter((it) => it.customGroupId === groupId)
+      .sort((a, b) => byNameCI(displayNameOf(a), displayNameOf(b)))
+  }, [items, groupId])
+
+  const url = selected ? playerStreamUrl(base, list, selected) : ''
+
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !url) return
+    setError(null)
+    const live = !selected || selected.contentType === 'live' || selected.contentType === 'radio'
+    const tryPlay = () => {
+      const pr = v.play?.()
+      if (pr && typeof pr.catch === 'function') pr.catch(() => {})
+    }
+    let player: ReturnType<typeof mpegts.createPlayer> | null = null
+    const onNativeError = () =>
+      setError('Playback failed — is the proxy enabled?')
+    try {
+      if (mpegts.isSupported()) {
+        player = mpegts.createPlayer({ type: 'mpegts', isLive: live, url })
+        player.on(mpegts.Events.ERROR, (typeName: string, detail: string) =>
+          setError(`Playback failed (${typeName}: ${detail}) — is the proxy enabled?`),
+        )
+        player.attachMediaElement(v)
+        player.load()
+        tryPlay()
+      } else {
+        // fallback: let the browser try natively (HLS on Safari, MP4, …)
+        v.addEventListener('error', onNativeError)
+        v.src = url
+        tryPlay()
+      }
+    } catch (e) {
+      setError((e as Error).message)
+    }
+    return () => {
+      v.removeEventListener('error', onNativeError)
+      if (player) {
+        try {
+          player.destroy()
+        } catch {
+          /* ignore */
+        }
+      } else {
+        v.removeAttribute('src')
+        try {
+          v.load()
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }, [url, selected])
+
+  return (
+    <div className="player-view">
+      <div className="player-stage">
+        <div className="player-bar">
+          <select value={activeListId ?? ''} onChange={(e) => onSelectList(Number(e.target.value))}>
+            <option value="" disabled>
+              Select list…
+            </option>
+            {lists.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+          </select>
+          {/* group first, then a channel from that group */}
+          <select
+            value={groupId ?? ''}
+            onChange={(e) => setGroupId(e.target.value === '' ? null : Number(e.target.value))}
+            disabled={groupOptions.length === 0}
+            aria-label="Group"
+          >
+            <option value="" disabled>
+              Select group…
+            </option>
+            {groupOptions.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label} ({o.count})
+              </option>
+            ))}
+          </select>
+          <label className="player-base">
+            Gateway
+            <input
+              value={base}
+              onChange={(e) => changeBase(e.target.value)}
+              title="Base URL of the stream proxy (port 9001). Enable Proxy to play in the browser."
+              placeholder="http://home-server:9001"
+            />
+          </label>
+        </div>
+        <video ref={videoRef} className="player-video" controls playsInline />
+        <div className="player-now">
+          {selected ? (
+            <>
+              <strong>{displayNameOf(selected)}</strong>
+              {error && <span className="error"> — {error}</span>}
+            </>
+          ) : (
+            <span className="muted">
+              Select a group and then a channel. Playback runs through the stream proxy (enable Proxy).
+            </span>
+          )}
+        </div>
+      </div>
+
+      <ul className="player-channels">
+        {groupOptions.length === 0 && <li className="muted">No channels on this list.</li>}
+        {groupOptions.length > 0 && channels.length === 0 && (
+          <li className="muted">No channels in this group.</li>
+        )}
+        {channels.map((it) => (
+          <li key={it.id}>
+            <button
+              type="button"
+              className={selected?.id === it.id ? 'chan active' : 'chan'}
+              onClick={() => setSelected(it)}
+            >
+              <span className="chan-name">{displayNameOf(it)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}

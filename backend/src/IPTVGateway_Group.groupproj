@@ -1,0 +1,48 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{84996D82-0EB0-491C-8714-D3CD82ECD4C3}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="host_vcl\IPTVPlayDev.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="host_winsvc\IPTVGateway_svc.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="IPTVPlayDev">
+        <MSBuild Projects="host_vcl\IPTVPlayDev.dproj"/>
+    </Target>
+    <Target Name="IPTVPlayDev:Clean">
+        <MSBuild Projects="host_vcl\IPTVPlayDev.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="IPTVPlayDev:Make">
+        <MSBuild Projects="host_vcl\IPTVPlayDev.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="IPTVGateway_svc">
+        <MSBuild Projects="host_winsvc\IPTVGateway_svc.dproj"/>
+    </Target>
+    <Target Name="IPTVGateway_svc:Clean">
+        <MSBuild Projects="host_winsvc\IPTVGateway_svc.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="IPTVGateway_svc:Make">
+        <MSBuild Projects="host_winsvc\IPTVGateway_svc.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="IPTVPlayDev;IPTVGateway_svc"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="IPTVPlayDev:Clean;IPTVGateway_svc:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="IPTVPlayDev:Make;IPTVGateway_svc:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

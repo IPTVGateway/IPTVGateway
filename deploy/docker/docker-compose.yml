@@ -1,0 +1,42 @@
+# NETWORKING / PLEX SSDP NOTE:
+#   Plex HDHomeRun auto-discovery uses SSDP multicast on UDP 1900, which does NOT
+#   cross Docker bridge NAT. On bridge networking the HTTP endpoints work fine, but
+#   Plex won't auto-find the tuner — add it manually in Plex (http://<host>:7777),
+#   OR run with host networking (uncomment network_mode below + drop the ports: block;
+#   host mode exposes 7777/7778/1900 directly).
+#
+# GOING PUBLIC (exposing this to the internet) — remember:
+#   - SSDP / UDP 1900 is LAN-only; never port-forward it. Public Plex setups add the
+#     tuner by URL, not via SSDP.
+#   - Serve over HTTPS (useHttps + cert/key) and set a strong ADMIN_PASSWORD — the
+#     /api admin surface must never be open on a public IP.
+#   - Ideally only the output portal is public; keep admin/proxy behind firewall/VPN.
+services:
+  iptvplay:
+    build: .
+    image: iptvplay:latest
+    container_name: iptvplay
+    restart: unless-stopped
+    # give the clean shutdown room to finish (the service drains an in-flight
+    # refresh, bounded at 30s) before Docker escalates to SIGKILL — the default
+    # 10s would kill a stop issued during the daily refresh mid-write.
+    stop_grace_period: 35s
+    # network_mode: host   # <- enable for Plex SSDP auto-discovery (then remove ports:)
+    ports:
+      - "7777:7777"            # admin API + output Xtream portal + Plex endpoints
+      - "7778:7778"            # stream proxy relay (only used when proxyStreams=true)
+      # - "1900:1900/udp"      # SSDP for Plex HDHomeRun auto-discovery (LAN-only;
+      #                        # bridge NAT won't pass it anyway — prefer host networking)
+    volumes:
+      - ./data:/opt/iptvplay/data            # SQLite db + state (persisted)
+      # NOT read-only: the Settings screen / proxy toggle rewrite config.json,
+      # and those changes should survive a restart.
+      - ./config.json:/opt/iptvplay/config.json
+      # for HTTPS, also mount your certs and point config.json at them, e.g.:
+      # - ./certs:/opt/iptvplay/certs:ro
+    environment:
+      - TZ=Europe/Amsterdam    # scheduler uses local time for the daily refresh
+      # admin UI/API password. Empty/unset => the admin surface is open (LAN only!).
+      # This overrides "adminPassword" in config.json. Only protects /api — the
+      # Xtream box endpoints keep using their own output credentials.
+      - ADMIN_PASSWORD=change-me

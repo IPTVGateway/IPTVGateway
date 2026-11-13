@@ -1,0 +1,6 @@
+# Only the prebuilt binary + config + bundled admin UI are needed in the context.
+*
+!IPTVPlayService
+!config.json
+!webui
+!webui/**

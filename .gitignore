@@ -1,0 +1,101 @@
+# ── Delphi / RAD Studio ───────────────────────────────────────────────
+__history/
+__recovery/
+*.local
+*.identcache
+*.projdata
+*.tvsconfig
+*.dsk
+*.stat
+*.~*
+modules/
+
+# Build output
+.Output/
+_run/
+_smoke/
+__out/
+backend/**/Win32/
+backend/**/Win64/
+backend/**/Linux64/
+backend/**/Android*/
+backend/**/iOS*/
+backend/**/OSX*/
+*.dcu
+*.exe
+*.dll
+*.bpl
+*.dcp
+*.so
+*.map
+*.drc
+*.res
+
+# Boss (Delphi dependency manager) — vendored deps are restored via `boss install`
+backend/modules/
+backend/boss-lock.json
+
+# ── Node / frontend ───────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.log
+.env.local
+.env.*.local
+
+# ── Editors / OS ──────────────────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# ── Runtime data ──────────────────────────────────────────────────────
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+data/
+
+# ── Secrets ───────────────────────────────────────────────────────────
+# real IPTV subscription details for the live integration tests
+backend/tests/test.credentials.json
+# runtime config (next to the exe); the committed templates are
+# backend/config.sample.json and deploy/docker/config.json
+/config.json
+/backend/config.json
+
+
+# ── Local-only files (never publish) ──────────────────────────────────
+github.txt
+secrets.txt
+IPTV Abo's.txt
+*.secret
+*.secrets.json
+
+# ── Generated deploy artefacts (built by deploy/docker/build.ps1) ─────
+deploy/docker/IPTVPlayService
+deploy/docker/webui/
+backend/src/**/_run/
+
+# ── Vendored third-party: keep only what the build uses ───────────────
+# FastMM5 is not linked by any project
+backend/3thParty/FastMM5-*/
+# MARS-Curiosity: the build needs Source/ + ThirdParty/{mORMot,delphi-jose-jwt}
+backend/3thParty/MARS-v.1.6.4/Demos/
+backend/3thParty/MARS-v.1.6.4/Packages/
+backend/3thParty/MARS-v.1.6.4/Setup/
+backend/3thParty/MARS-v.1.6.4/Utils/
+backend/3thParty/MARS-v.1.6.4/docs/
+backend/3thParty/MARS-v.1.6.4/media/
+backend/3thParty/MARS-v.1.6.4/tests/
+backend/3thParty/MARS-v.1.6.4/www/
+backend/3thParty/MARS-v.1.6.4/ThirdParty/DCS/
+backend/3thParty/MARS-v.1.6.4/ThirdParty/Neslib.Yaml/
+
+# ── Exceptions: needed to build from a fresh clone ────────────────────
+!deploy/linux-sysroot/**
+!backend/src/host_*/*.res
+!backend/tests/IPTVPlayTests.res
+frontend/*.tsbuildinfo
+
+# local publish target for deploy/docker/build.ps1
+*.local.txt

@@ -1,0 +1,15 @@
+{
+  "httpPort": 7777,
+  "databasePath": "data/iptvplay.sqlite",
+  "refreshHour": 4,
+  "refreshMinute": 0,
+  "publicBaseUrl": "https://nas.local:7777",
+  "clientUrl": "http://localhost:5173",
+  "useHttps": false,
+  "tlsCertFile": "",
+  "tlsKeyFile": "",
+  "tlsRootCertFile": "",
+  "proxyStreams": false,
+  "proxyPort": 7778,
+  "adminPassword": ""
+}

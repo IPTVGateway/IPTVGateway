@@ -1,0 +1,252 @@
+unit IPTV.Storage.Intf;
+
+{ Persistence contract. One repository interface for the whole core so the
+  storage backend (SQLite today) stays swappable. All times are UTC. }
+
+interface
+
+uses
+  System.Generics.Collections,
+  IPTV.Model.Types, IPTV.Model.Source, IPTV.Model.Catalog, IPTV.Model.Epg,
+  IPTV.Model.CustomList;
+
+type
+  /// A name-prefix discovered in a source's ingested streams, with how many
+  /// streams carry it. Powers the "pick a filter prefix" UI when editing a source.
+  TPrefixCount = record
+    Prefix: string;
+    Count: Integer;
+  end;
+
+  /// A known guide id (tvg-id) found in the catalog, with a sample channel name.
+  /// Powers the searchable "set this channel's tvg-id" picker.
+  TTvgIdInfo = record
+    TvgId: string;
+    Name: string;
+  end;
+
+  /// One channel in a group with its proposed quality-variant replacement, for
+  /// "duplicate this group at another quality". CandidateStreamId = 0 when no
+  /// variant of the target quality was found (the channel is then flagged in the
+  /// preview and simply left out of the new group).
+  TVariantMatch = record
+    ItemId: Integer;            // the source group's list_items row
+    StreamId: Integer;          // the channel's current stream
+    Name: string;               // current channel name (upstream)
+    Quality: string;            // current detected quality ('' if none)
+    CandidateStreamId: Integer; // the target-quality variant (0 = none found)
+    CandidateName: string;
+    AlreadyInList: Boolean;     // candidate is already curated on this list (can't re-add)
+  end;
+
+  /// One variant of a single channel (quality probe: "measure NPO 1 in all
+  /// qualities"). Includes the channel itself (IsSelf).
+  TStreamVariant = record
+    StreamId: Integer;
+    SourceId: Integer;
+    Name: string;               // upstream name
+    Quality: string;            // canonical quality word ('' if none)
+    TvgId: string;
+    GroupTitle: string;
+    IsSelf: Boolean;            // the stream the search started from
+    MatchedBy: string;          // 'self' | 'name' | 'tvg'
+    OnList: Boolean;            // already curated on the given list (AListId > 0)
+  end;
+
+  /// "Give this list item that channel number" (bouquet-wide renumber).
+  TItemNumber = record
+    ItemId: Integer;
+    ChannelNumber: Integer;
+  end;
+
+  /// "Swap the stream behind this list item for that one" (in-place variant replace).
+  TItemStreamReplace = record
+    ItemId: Integer;
+    StreamId: Integer;
+  end;
+
+  /// One channel whose shown name changes when a group's names are cleaned.
+  TNameChange = record
+    ItemId: Integer;
+    OldName: string;  // currently shown (display name, else upstream name)
+    NewName: string;  // after stripping
+    Original: string; // upstream name (incl. prefix/suffix)
+  end;
+
+  /// One source's name filters, used to filter that source's rows even in the
+  /// "all sources" catalog view (each row is judged against its own source).
+  TSourceFilter = record
+    SourceId: Integer;
+    IncludeFilters: TArray<string>;
+    ExcludeFilters: TArray<string>;
+  end;
+
+  /// Filter for browsing the ingested catalog from the admin API.
+  /// Search and Prefix are independent and combine (AND) when both set.
+  TCatalogFilter = record
+    SourceId: Integer;       // 0 => any
+    ContentType: TContentType;
+    HasContentType: Boolean; // False => any content type
+    OnlyNew: Boolean;        // True => only items with IsNew
+    Search: string;          // case-insensitive name contains
+    Prefix: string;          // case-insensitive name starts-with (e.g. "NL:", "UK |")
+    CategoryUpstreamId: string; // filter to one group/category (upstream id); '' => any
+    HasCategory: Boolean;       // True => apply CategoryUpstreamId (so '' can match the empty category)
+    // Name filters applied LIVE to browse results (prefix OR suffix,
+    // case-insensitive), mirroring TSourceConfig. Empty arrays => no filtering.
+    // Global (no source guard) — used when one source is already selected.
+    IncludeFilters: TArray<string>; // keep only names matching one of these
+    ExcludeFilters: TArray<string>; // drop names matching any of these
+    // Per-source filters — used in the "all sources" view so each source's rows
+    // are judged against that source's own filters.
+    SourceFilters: TArray<TSourceFilter>;
+    // Use the precomputed per-row `hidden` flag (each source's own filters,
+    // evaluated once on refresh / filter change) instead of evaluating filters
+    // in the query. This is what the admin catalog uses; explicit filters above
+    // still work for callers that pass their own.
+    UseHiddenFlag: Boolean;
+    Limit: Integer;            // page size; 0 => no limit (LoadStreams only)
+    Offset: Integer;           // page offset
+  end;
+
+  IStore = interface
+    ['{9F2C7A41-5D6B-4E3A-8C1F-2B3D4E5F6A70}']
+    procedure Init; // create schema if absent, run migrations
+
+    // ── Sources ──────────────────────────────────────────────────────
+    function LoadSources: TObjectList<TSourceConfig>;
+    function SaveSource(const ASource: TSourceConfig): Integer; // returns id
+    procedure DeleteSource(AId: Integer);
+
+    // ── Catalog (ingested) ───────────────────────────────────────────
+    /// Upsert a freshly-read snapshot; stamps LastSeen, flags genuinely new
+    /// items (IsNew) by diffing against what is already stored for the source.
+    procedure MergeSnapshot(const ASnapshot: TSourceSnapshot);
+    function LoadCategories(const AFilter: TCatalogFilter): TCategoryList;
+    function LoadStreams(const AFilter: TCatalogFilter): TStreamItemList;
+    function CountStreams(const AFilter: TCatalogFilter): Integer; // total ignoring Limit/Offset
+    /// Mark categories/streams as seen (clears the "new" badge).
+    procedure MarkCategoriesSeen(const AIds: TArray<Integer>);
+    procedure MarkStreamsSeen(const AIds: TArray<Integer>);
+    /// Single ingested stream by id (for the output redirect). nil if absent.
+    function LoadStreamById(AId: Integer): TStreamItem;
+    /// Single stream by id, but ONLY if it is an item on the given list — so the
+    /// credential-scoped output (redirect / proxy relay) can't serve a stream that
+    /// isn't on the authenticated list. nil if absent or not on the list.
+    function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
+    /// Upstream URLs of the SAME channel from OTHER sources (stream failover):
+    /// matched by tvg-id when the stream has one, else by exact (case-insensitive)
+    /// name; same content type; excludes the stream itself and empty URLs.
+    function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
+    /// Distinct leading name-prefixes (e.g. "NL|", "UK:") found across a source's
+    /// ingested streams, each with its stream count, most common first. Drives the
+    /// "select a filter prefix" UI. Empty when the source has nothing ingested yet.
+    function DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
+    /// Distinct tvg-ids present in the catalog (with a sample name), for the
+    /// per-channel tvg-id picker. Sorted by name.
+    function LoadKnownTvgIds: TArray<TTvgIdInfo>;
+    /// For each channel in a list group, find the same channel at another quality
+    /// (ATargetQuality, canonical e.g. 'UHD') so the group can be duplicated as a
+    /// quality variant. Matches on the quality-stripped base name; prefers a
+    /// candidate from the SAME source. One entry per source-group item, in the
+    /// group's item order.
+    function FindQualityVariants(AListId, ASourceGroupId: Integer;
+      const ATargetQuality: string): TArray<TVariantMatch>;
+    /// As FindQualityVariants, but the replacement is the SAME channel from a chosen
+    /// other source (ATargetSourceId) — matched by tvg-id, else exact name. Backs
+    /// "duplicate this group from another provider".
+    function FindProviderVariants(AListId, ASourceGroupId,
+      ATargetSourceId: Integer): TArray<TVariantMatch>;
+    /// Every quality variant of ONE channel: same content type, same quality-
+    /// stripped base key (or head key) of the source-cleaned name, or the same
+    /// non-empty tvg-id with a quality word. Only the stream's own source unless
+    /// AAllSources. Self included. Ordered source, quality rank, name. OnList is
+    /// filled when AListId > 0. Backs the per-channel quality probe.
+    function FindStreamVariants(AStreamId: Integer; AAllSources: Boolean;
+      AListId: Integer): TArray<TStreamVariant>;
+
+    /// Small persistent key/value state (e.g. lineup-changed / plex-rescan stamps).
+    function GetState(const AKey: string): string;
+    procedure SetState(const AKey, AValue: string);
+
+    // ── EPG ──────────────────────────────────────────────────────────
+    procedure ReplaceEpg(ASourceId: Integer; const AProgrammes: TEpgProgrammeList);
+    /// Load stored EPG for the given tvg-ids. AMaxDays > 0 caps the result to
+    /// programmes starting within that many days from now (0 = no cap).
+    function LoadEpgForTvgIds(const ATvgIds: TArray<string>; AMaxDays: Integer = 0): TEpgProgrammeList;
+    /// Distinct non-empty tvg-ids that are actually used on a list (so ingest can
+    /// fetch EPG only for channels you curated, not the whole 100+ MB guide).
+    function LoadListTvgIds: TArray<string>;
+
+    // ── Custom lists (output) ────────────────────────────────────────
+    function LoadLists: TObjectList<TCustomList>;
+    function SaveList(const AList: TCustomList): Integer;
+    /// Delete a list and everything under it (its groups + items).
+    procedure DeleteList(AId: Integer);
+    /// Resolve the list a box authenticates as. Credentials are OPTIONAL:
+    /// when AUser is empty, return the single enabled list (the default);
+    /// otherwise match on output_username/output_password. nil if no match.
+    function FindListByCredentials(const AUser, APass: string): TCustomList;
+
+    function LoadGroups(AListId: Integer): TCustomGroupList;
+    function SaveGroup(const AGroup: TCustomGroup): Integer;
+    /// Set the manual drag order of a list's groups (sort_order = 1..N following the
+    /// given id order). Favorites still sort first. Returns how many were updated.
+    function ReorderGroups(AListId: Integer; const AGroupIds: TArray<Integer>): Integer;
+    procedure DeleteGroup(AId: Integer);
+
+    function LoadItems(AListId: Integer): TCustomItemList;
+    /// Resolved output rows (item⋈stream⋈group, overrides applied) in canonical
+    /// order: favorite groups first, groups A→Z, channels A→Z (case-insensitive).
+    function LoadOutputChannels(AListId: Integer): TOutputChannelList;
+    function SaveItem(const AItem: TCustomItem): Integer;
+    /// Bulk-add chosen stream items to a list (and optional group, 0 => none)
+    /// in one transaction; items already on the list are skipped. Returns the
+    /// number actually added. Backs the checkbox multi-select "add to list".
+    function AddItems(AListId, ACustomGroupId: Integer; const AStreamItemIds: TArray<Integer>): Integer;
+    /// Re-apply a source's strip-prefix/suffix rules to its already-added list items
+    /// after a rule changed: recompute display_name from the upstream name, but only
+    /// for items still showing the auto value produced by the OLD rules — a manual
+    /// rename is left untouched. Returns how many display names were updated.
+    function RestripSourceItems(ASourceId: Integer;
+      const AOldPrefixes, AOldSuffixes, ANewPrefixes, ANewSuffixes: TArray<string>): Integer;
+    /// Apply every source's CURRENT strip-prefixes/suffixes to ALL its channels on
+    /// every list (display_name := cleaned name) — skipping manual renames. One-click
+    /// "strip prefixes from all channels now". Returns how many were updated.
+    function RestripAllItems: Integer;
+    /// Replace the stream behind existing items in place (keeps group, channel
+    /// number, logo/tvg-id overrides; an auto display name follows the new stream).
+    /// Items whose new stream is already on the list are skipped. Returns # replaced.
+    function ReplaceItemStreams(AListId: Integer; const AReplacements: TArray<TItemStreamReplace>): Integer;
+    /// Clean the shown names of one group's channels after the fact: strip each
+    /// channel's source prefixes/suffixes PLUS the given one-off extra tokens from
+    /// the name it currently shows (display name, else upstream name). Returns the
+    /// channels whose name changes; ADryRun = only report (preview), else apply.
+    /// A result equal to the upstream name is stored as '' (follow upstream).
+    function RestripGroupItems(AListId, AGroupId: Integer;
+      const AExtraPrefixes, AExtraSuffixes: TArray<string>; ADryRun: Boolean): TArray<TNameChange>;
+    procedure DeleteItem(AId: Integer);
+    /// Remove every item of a list that sits in one group (custom_group_id;
+    /// 0 = the upstream group). Returns how many were removed. One-click "empty".
+    function ClearGroupItems(AListId, ACustomGroupId: Integer): Integer;
+    /// Remove duplicate channels from a list (same upstream stream URL = the same
+    /// channel), keeping the best copy (favorite group first, then canonical
+    /// order). Returns how many were removed.
+    function DedupeListItems(AListId: Integer): Integer;
+    /// Renumber a group's items in alphabetical name order, so the box shows them
+    /// A→Z. Numbering starts at the group's current lowest number (1 if none), so
+    /// a bouquet-wide numbering (group blocks 101…, 201…) survives. Returns count.
+    function SortGroupAlphabetically(AListId, ACustomGroupId: Integer): Integer;
+    /// Renumber a group's items following an explicit item-id order (the drag-and-
+    /// drop result), from the group's current lowest number (1 if none). Ids not in this list+group are
+    /// skipped. Returns how many were numbered.
+    function ReorderGroupItems(AListId, ACustomGroupId: Integer; const AItemIds: TArray<Integer>): Integer;
+    /// Set explicit channel numbers for many items of one list in ONE transaction
+    /// (bouquet-wide renumber across all groups; the client computes the plan).
+    /// Ids not on this list are skipped. Returns how many were numbered.
+    function SetItemNumbers(AListId: Integer; const ANumbers: TArray<TItemNumber>): Integer;
+  end;
+
+implementation
+
+end.

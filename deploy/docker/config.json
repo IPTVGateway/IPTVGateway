@@ -1,0 +1,14 @@
+{
+  "httpPort": 7777,
+  "databasePath": "/opt/iptvplay/data/iptvplay.sqlite",
+  "refreshHour": 4,
+  "refreshMinute": 0,
+  "publicBaseUrl": "http://your-unraid-host:7777",
+  "useHttps": false,
+  "tlsCertFile": "",
+  "tlsKeyFile": "",
+  "tlsRootCertFile": "",
+  "proxyStreams": false,
+  "proxyPort": 7778,
+  "adminPassword": ""
+}

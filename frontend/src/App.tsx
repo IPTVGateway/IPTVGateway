@@ -167,7 +167,7 @@ export function App() {
 
   async function plexRescanFromHeader() {
     if (!plex?.configured) {
-      setView('settings') // no API token yet — send them to configure / read the hint
+      setView('mediaservers') // no Plex server/token yet: that's where they're set
       return
     }
     try {
@@ -368,8 +368,8 @@ export function App() {
             onClick={plexRescanFromHeader}
             title={
               plex.configured
-                ? t('Bouquet changed — have Plex reload the guide/lineup')
-                : t('Bouquet changed — set the Plex server/token (Settings), or scan manually in Plex')
+                ? t('The Plex bouquet changed — update the channels and guide in Plex')
+                : t('Bouquet changed — set the Plex server/token (Media Servers), or scan manually in Plex')
             }
           >
             {t('↻ Refresh Plex')}

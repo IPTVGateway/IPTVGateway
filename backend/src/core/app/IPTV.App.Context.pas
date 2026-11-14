@@ -18,7 +18,8 @@ uses
   IPTV.Ingest.Service,
   IPTV.Model.CustomList,
   IPTV.Scheduler,
-  IPTV.Api.Server;
+  IPTV.Api.Server,
+  IPTV.Plex.Client;
 
 const
   /// Lines kept by the in-memory log ring (the web app's Log tab).
@@ -108,8 +109,16 @@ type
     /// Plex-sync reminder: stamp when the bouquet changed / when Plex was rescanned,
     /// and whether a rescan is due (bouquet changed since the last rescan).
     procedure MarkLineupChanged;
+    /// <summary>Plex has been brought up to date: remember the signature of the
+    /// lineup it now has, so "Refresh Plex" only lights up after a change Plex sees.</summary>
     procedure MarkPlexRescanned;
+    /// <summary>The Plex bouquet's lineup changed since Plex was last refreshed (by
+    /// number, name or guide id of a channel, or another bouquet chosen for Plex).</summary>
     function PlexSyncPending: Boolean;
+    /// <summary>The channels Plex gets (HDHomeRun lineup numbers + their XMLTV guide
+    /// ids, same selection and order as lineup.json and /plex/epg.xml) and a signature
+    /// of that lineup ('' and an empty map when there is no Plex bouquet).</summary>
+    function PlexChannelMap(out ASignature: string): TArray<TPlexChannelMapping>;
     /// True when at least one Plex tuner surface is enabled (so the reminder is relevant).
     function PlexEnabled: Boolean;
     /// Choose the bouquet Plex/Jellyfin get (0 = first enabled). Persisted.
@@ -146,10 +155,13 @@ uses
   System.SyncObjs,
   System.Generics.Collections,
   System.Diagnostics,
+  System.Hash,
   // Own units
   IPTV.Storage.SQLite,
   IPTV.Storage.Locking,
-  IPTV.Core.Utils;
+  IPTV.Core.Utils,
+  IPTV.Output.Builder,
+  IPTV.Api.Serializers;
 
 const
   // host part of the image's config.json template value (http://your-unraid-host:7777)
@@ -230,6 +242,8 @@ end;
 
 const
   STATE_PLEX_RESCAN = 'plex_rescan_utc';
+  // signature of the lineup Plex was last refreshed with
+  cStatePlexLineupSig = 'plex_lineup_sig';
 
 constructor TAppContext.Create(const AConfig: TAppConfig; const ALog: TLogProc;
   const AConfigPath: string);
@@ -528,24 +542,84 @@ begin
 end;
 
 procedure TAppContext.MarkPlexRescanned;
+var
+  lSignature: string;
 begin
-  if Assigned(FStore) then
-    FStore.SetState(STATE_PLEX_RESCAN, DateTimeToIsoUtc(NowUtc));
+  if not Assigned(FStore) then
+    Exit;
+  FStore.SetState(STATE_PLEX_RESCAN, DateTimeToIsoUtc(NowUtc));
+  PlexChannelMap(lSignature);
+  FStore.SetState(cStatePlexLineupSig, lSignature);
+end;
+
+function TAppContext.PlexChannelMap(out ASignature: string): TArray<TPlexChannelMapping>;
+var
+  lList: TCustomList;
+  lChannels: TOutputChannelList;
+  lNums: TArray<Integer>;
+  lIds, lNames: TArray<string>;
+  lText: TStringBuilder;
+  lName: string;
+  i: Integer;
+begin
+  Result := nil;
+  ASignature := '';
+  lList := PlexList;
+  if lList = nil then
+    Exit;
+  lText := nil;
+  lChannels := nil;
+  try
+    lText := TStringBuilder.Create;
+    lText.Append(lList.Id).Append(#10);
+    lChannels := SelectOutputChannels(FStore, lList.Id, FConfig.VisibleGroups);
+    KeepContentTypes(lChannels, cLinearContentTypes);
+    lNums := OutputNumbers(lChannels);
+    lIds := ComputeGuideIds(lChannels, FConfig.IdSortPrefix);
+    lNames := ComputeDisplayNames(FStore, lChannels, TNameOptions.Make(FConfig.NameShowGroup,
+      FConfig.NameShowNumber, FConfig.NameShowSource, FConfig.IdSortPrefix));
+    SetLength(Result, lChannels.Count);
+    for i := 0 to lChannels.Count - 1 do
+    begin
+      Result[i].Number := lNums[i].ToString;
+      if i <= High(lIds) then
+        Result[i].GuideId := lIds[i]
+      else
+        Result[i].GuideId := ChannelGuideId(lChannels[i]);
+      if i <= High(lNames) then
+        lName := lNames[i]
+      else
+        lName := lChannels[i].Name;
+      // what Plex shows or keys on: number, name, guide id
+      lText.Append(Result[i].Number).Append(#9).Append(lName).Append(#9).Append(Result[i].GuideId).Append(#10);
+    end;
+    ASignature := THashMD5.GetHashString(lText.ToString);
+  finally
+    FreeAndNil(lChannels);
+    FreeAndNil(lText);
+    FreeAndNil(lList);
+  end;
 end;
 
 function TAppContext.PlexSyncPending: Boolean;
 var
-  lChanged, lRescan: string;
+  lStored, lCurrent: string;
 begin
   Result := False;
-  if not Assigned(FStore) then
+  if not Assigned(FStore) or not PlexEnabled then
     Exit;
-  lChanged := FStore.GetState(cStateLineupChanged);
-  if lChanged = '' then
-    Exit; // nothing changed yet
-  lRescan := FStore.GetState(STATE_PLEX_RESCAN);
-  // ISO-8601 UTC strings are fixed-width, so lexicographic compare = chronological
-  Result := (lRescan = '') or (lChanged > lRescan);
+  PlexChannelMap(lCurrent);
+  lStored := FStore.GetState(cStatePlexLineupSig);
+  if lStored = '' then
+  begin
+    // first run after the update: take what Plex has now as the baseline instead
+    // of lighting the button for a change that never happened
+    FStore.SetState(cStatePlexLineupSig, lCurrent);
+    Exit;
+  end;
+  // only a change Plex actually sees (another bouquet, a channel in the filtered
+  // live/radio lineup added / removed / renumbered / renamed / re-guided)
+  Result := lStored <> lCurrent;
 end;
 
 function TAppContext.PlexEnabled: Boolean;

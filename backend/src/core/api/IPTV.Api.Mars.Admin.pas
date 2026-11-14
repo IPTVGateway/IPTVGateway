@@ -948,11 +948,24 @@ begin
   Result := GetConfig;
 end;
 
+// (defined further down, next to the Plex setup constants)
+function RunPlexSetup(out ADvrKey: string; out AChannels: Integer): TJSONArray; forward;
+
 function TAdminResource.PlexRescan: TJSONObject;
 var
-  lCount: Integer;
+  lCount, lChannelCount: Integer;
+  lDvrKey: string;
+  lSteps: TJSONArray;
 begin
   RequireApp;
+  // with the HDHomeRun tuner: also push the channel map, so channels added to the
+  // bouquet are mapped (and enabled) in Plex, not only listed in the lineup
+  if App.Config.PlexHdhrEnabled then
+  begin
+    lSteps := RunPlexSetup(lDvrKey, lChannelCount);
+    FreeAndNil(lSteps);
+    Exit(TJSONObject.Create.AddPair('dvrs', TJSONNumber.Create(1)));
+  end;
   try
     lCount := ReloadPlexGuides(App.Config.PlexServerUrl, App.Config.PlexToken);
     App.MarkPlexRescanned; // clears the "rescan due" reminder
@@ -971,48 +984,19 @@ const
   cPlexGuidePath = '/plex/epg.xml';
   cPlexFallbackDeviceId = '12345678'; // as the HDHomeRun emulation advertises without one
 
-function TAdminResource.PlexSetup: TJSONObject;
+// Tuner + DVR + channel map + guide reload in Plex (re-using what exists); the steps
+// taken as a JSON array, the DVR key in ADvrKey. Raises a 400 with the reason.
+function RunPlexSetup(out ADvrKey: string; out AChannels: Integer): TJSONArray;
 var
-  lList: TCustomList;
-  lChannels: TOutputChannelList;
-  lNums: TArray<Integer>;
-  lIds: TArray<string>;
   lMap: TArray<TPlexChannelMapping>;
+  lSignature, lTuner, lDeviceId, lDvrKey: string;
   lSteps: TJSONArray;
-  lTuner, lDeviceId, lDvrKey: string;
-  i: Integer;
 begin
-  RequireApp;
   if not App.Config.PlexHdhrEnabled then
     raise EMARSHttpException.Create('Enable the HDHomeRun tuner first (Media Servers tab)', cHttpBadRequest);
-  lList := App.PlexList;
-  if lList = nil then
+  lMap := App.PlexChannelMap(lSignature);
+  if lSignature = '' then
     raise EMARSHttpException.Create('No bouquet for Plex (create or enable one first)', cHttpBadRequest);
-  lMap := nil;
-  try
-    // exactly the channels, numbers and guide ids that lineup.json and /plex/epg.xml
-    // publish (same selection and order), so the map lines up one to one
-    lChannels := SelectOutputChannels(App.Store, lList.Id, App.Config.VisibleGroups);
-    try
-      KeepContentTypes(lChannels, cLinearContentTypes);
-      lNums := OutputNumbers(lChannels);
-      lIds := ComputeGuideIds(lChannels, App.Config.IdSortPrefix);
-      SetLength(lMap, lChannels.Count);
-      for i := 0 to lChannels.Count - 1 do
-      begin
-        lMap[i].Number := lNums[i].ToString;
-        if i <= High(lIds) then
-          lMap[i].GuideId := lIds[i]
-        else
-          lMap[i].GuideId := ChannelGuideId(lChannels[i]);
-      end;
-    finally
-      FreeAndNil(lChannels);
-    end;
-  finally
-    FreeAndNil(lList);
-  end;
-
   lTuner := MediaServerBaseUrl(App.Config.PublicBaseUrl, App.Config.UseHttps, App.Config.HttpPort);
   lDeviceId := App.Config.PlexDeviceId;
   if lDeviceId = '' then
@@ -1031,15 +1015,28 @@ begin
       on E: Exception do
         raise EMARSHttpException.Create('Plex setup failed: ' + E.Message, cHttpBadRequest);
     end;
-    App.MarkPlexRescanned; // the guide was just reloaded
-    Result := TJSONObject.Create;
-    Result.AddPair('dvr', lDvrKey);
-    Result.AddPair('channels', TJSONNumber.Create(Length(lMap)));
-    Result.AddPair('steps', lSteps);
-    lSteps := nil; // owned by Result now
+    App.MarkPlexRescanned; // Plex now has this lineup: the reminder goes off
+    ADvrKey := lDvrKey;
+    AChannels := Length(lMap);
+    Result := lSteps;
+    lSteps := nil;
   finally
     FreeAndNil(lSteps);
   end;
+end;
+
+function TAdminResource.PlexSetup: TJSONObject;
+var
+  lDvrKey: string;
+  lChannels: Integer;
+  lSteps: TJSONArray;
+begin
+  RequireApp;
+  lSteps := RunPlexSetup(lDvrKey, lChannels);
+  Result := TJSONObject.Create;
+  Result.AddPair('dvr', lDvrKey);
+  Result.AddPair('channels', TJSONNumber.Create(lChannels));
+  Result.AddPair('steps', lSteps);
 end;
 
 function TAdminResource.ExportSettings: TJSONObject;

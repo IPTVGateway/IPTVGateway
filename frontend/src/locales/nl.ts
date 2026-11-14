@@ -553,6 +553,10 @@ export const nl: Record<string, string> = {
     'Bron “{name}” verwijderen? Al haar zenders worden uit elk bouquet verwijderd.',
   'Delete group': 'Groep verwijderen',
   'Download': 'Downloaden',
+  'Bouquet changed — set the Plex server/token (Media Servers), or scan manually in Plex':
+    'Bouquet gewijzigd — stel de Plex-server/token in (Mediaservers), of scan handmatig in Plex',
+  'The Plex bouquet changed — update the channels and guide in Plex':
+    'Het Plex-bouquet is gewijzigd — werk de kanalen en de gids in Plex bij',
   'Register the HDHomeRun tuner and a DVR with this guide in Plex and map all channels':
     'Meld de HDHomeRun-tuner en een DVR met deze gids aan in Plex en koppel alle kanalen',
   'Setting up…': 'Bezig met instellen…',

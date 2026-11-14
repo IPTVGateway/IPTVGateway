@@ -13,6 +13,14 @@ All notable changes to IPTV Gateway. Released versions are also on the
   changes. Needs the HDHomeRun tuner enabled, plus the Plex server URL and token.
   Plex doesn't document this API, so the calls follow what other tuner projects use.
 
+### Changed
+- **"↻ Refresh Plex"** (toolbar) only lights up when the lineup Plex sees changed: the
+  Plex bouquet, or a channel in it (added, removed, renumbered, renamed or moved to
+  another guide id). Changes to other bouquets, or to channels the media-server group
+  filter leaves out, no longer turn it on. With the HDHomeRun tuner, refreshing now also
+  updates the channel mapping in Plex, so new channels really show up there. Without a
+  Plex server or token it opens the Media Servers tab.
+
 ## [1.2.38] - 2026-11-14
 
 Third bug hunt (five separate runs). The big code-style pass of 1.2.36 was checked

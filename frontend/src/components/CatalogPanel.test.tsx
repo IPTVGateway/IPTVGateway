@@ -11,6 +11,8 @@ vi.mock('../api/client', () => ({
     countStreams: vi.fn().mockResolvedValue({ count: 0 }),
     markCategoriesSeen: vi.fn().mockResolvedValue(undefined),
     markStreamsSeen: vi.fn().mockResolvedValue(undefined),
+    newCounts: vi.fn().mockResolvedValue({ categories: 0, streams: 0 }),
+    markAllSeen: vi.fn().mockResolvedValue({ categories: 0, streams: 0 }),
     addItems: vi.fn().mockResolvedValue({ added: 0 }),
   },
 }))
@@ -27,6 +29,7 @@ const CATS: Category[] = [
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.categories).mockResolvedValue(CATS)
+  vi.mocked(api.newCounts).mockResolvedValue({ categories: 0, streams: 0 })
 })
 
 function renderPanel() {
@@ -127,5 +130,33 @@ describe('CatalogPanel — mirror bouquets', () => {
   it('an active mirror is not preselected as target', async () => {
     const target = await showStreams(2)
     expect(target).toHaveValue('')
+  })
+})
+
+describe('CatalogPanel — new channels in groups', () => {
+  it('shows "+N new" on a group that is not new itself but holds new channels', async () => {
+    vi.mocked(api.categories).mockResolvedValue([
+      { id: 1, sourceId: 2, upstreamId: 'a', contentType: 'live', name: 'Old group', isNew: false, newCount: 5 },
+    ])
+    renderPanel()
+    const row = (await screen.findByText('Old group')).closest('li') as HTMLElement
+    expect(within(row).getByText('+5 new')).toBeTruthy()
+    expect(within(row).queryByText('NEW')).toBeNull()
+    // the group can be marked seen (which also clears its channels server-side)
+    await userEvent.click(within(row).getByTitle('Mark this group as seen'))
+    expect(api.markCategoriesSeen).toHaveBeenCalledWith([1])
+  })
+
+  it('"Mark all as seen" confirms with the counts, then clears the picked source and type', async () => {
+    vi.mocked(api.newCounts).mockResolvedValue({ categories: 2, streams: 30 })
+    vi.mocked(api.markAllSeen).mockResolvedValue({ categories: 2, streams: 30 })
+    renderPanel()
+    await userEvent.click(await screen.findByRole('button', { name: 'Mark all as seen (32)' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Mark 30 channels and 2 groups as seen?')).toBeTruthy()
+    expect(api.markAllSeen).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Mark as seen' }))
+    expect(api.markAllSeen).toHaveBeenCalledWith({ sourceId: undefined, type: 'live' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 })

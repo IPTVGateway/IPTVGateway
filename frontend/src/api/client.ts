@@ -20,6 +20,7 @@ import type {
   MediaGroup,
   MediaStatus,
   MirrorCredential,
+  NewCounts,
 } from '../types'
 import { DEFAULT_PROBE_SECONDS } from '../lib/constants'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../lib/storage'
@@ -211,6 +212,15 @@ export const api = {
     http<void>('/catalog/categories/seen', { method: 'POST', body: JSON.stringify({ ids }) }),
   markStreamsSeen: (ids: number[]) =>
     http<void>('/catalog/streams/seen', { method: 'POST', body: JSON.stringify({ ids }) }),
+  /** New groups + channels of one source (or all) and content type. */
+  newCounts: (q: Pick<CatalogQuery, 'sourceId' | 'type'>) =>
+    http<NewCounts>(`/catalog/new-counts${qs({ sourceId: q.sourceId, type: q.type })}`),
+  /** Marks every new group + channel of one source (or all) and content type as seen. */
+  markAllSeen: (q: Pick<CatalogQuery, 'sourceId' | 'type'>) =>
+    http<NewCounts>('/catalog/seen-all', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId: q.sourceId ?? 0, type: q.type ?? '' }),
+    }),
 
   // EPG
   epg: (tvgId: string) => http<EpgProgramme[]>(`/epg?tvgId=${encodeURIComponent(tvgId)}`), // source EPG for one channel

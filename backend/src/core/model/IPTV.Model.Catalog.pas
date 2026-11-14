@@ -28,6 +28,7 @@ type
     FName: string;
     FIsNew: Boolean;
     FSeenAtUtc: TDateTime;
+    FNewCount: Integer;
   public
     property Id: Integer read FId write FId;
     property SourceId: Integer read FSourceId write FSourceId;
@@ -36,6 +37,9 @@ type
     property Name: string read FName write FName;
     property IsNew: Boolean read FIsNew write FIsNew;
     property SeenAtUtc: TDateTime read FSeenAtUtc write FSeenAtUtc;
+    /// Number of new (unseen, not hidden) streams in this category; filled by
+    /// IStore.LoadCategories, not stored.
+    property NewCount: Integer read FNewCount write FNewCount;
   end;
 
   /// A single ingested stream (channel / movie / series-entry / radio station).

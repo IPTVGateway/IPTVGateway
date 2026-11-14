@@ -54,6 +54,14 @@ export interface Category {
   name: string
   isNew: boolean
   seenAtUtc?: string
+  /** New (unseen) channels in this group; a group that is not new itself can hold some. */
+  newCount?: number
+}
+
+/** How many groups and channels are new (or were just marked seen). */
+export interface NewCounts {
+  categories: number
+  streams: number
 }
 
 export interface StreamItem {

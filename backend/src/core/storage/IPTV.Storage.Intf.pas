@@ -99,6 +99,12 @@ type
     ExcludeFilters: TArray<string>;
   end;
 
+  /// How many categories and streams are flagged new (CountNew) or were cleared (MarkAllSeen).
+  TNewCounts = record
+    Categories: Integer;
+    Streams: Integer;
+  end;
+
   /// Filter for browsing the ingested catalog from the admin API.
   /// Search and Prefix are independent and combine (AND) when both set.
   TCatalogFilter = record
@@ -151,8 +157,14 @@ type
     function LoadStreams(const AFilter: TCatalogFilter): TStreamItemList;
     /// Number of streams matching the filter, ignoring Limit/Offset.
     function CountStreams(const AFilter: TCatalogFilter): Integer; // total ignoring Limit/Offset
-    /// Mark categories/streams as seen (clears the "new" badge).
+    /// Mark categories as seen (clears the "new" badge), together with the new streams in them.
     procedure MarkCategoriesSeen(const AIds: TArray<Integer>);
+    /// Number of new categories and streams (incl. hidden ones) of one source / content type;
+    /// only SourceId (0 = all) and HasContentType/ContentType of AFilter are used.
+    function CountNew(const AFilter: TCatalogFilter): TNewCounts;
+    /// Marks every new category and stream (incl. hidden ones) of one source / content type
+    /// as seen, in one transaction; same filter fields as CountNew. Returns what was cleared.
+    function MarkAllSeen(const AFilter: TCatalogFilter): TNewCounts;
     /// Mark streams as seen (clears the "new" badge).
     procedure MarkStreamsSeen(const AIds: TArray<Integer>);
     /// Single ingested stream by id (for the output redirect). nil if absent.

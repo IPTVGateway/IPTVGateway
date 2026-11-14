@@ -5,6 +5,7 @@ import type {
   ContentType,
   CustomGroup,
   CustomList,
+  NewCounts,
   Source,
   StreamItem,
 } from '../types'
@@ -14,6 +15,7 @@ import { useT } from '../i18n'
 import { isMirror } from '../lib/mirror'
 import { QualityProbeModal } from './QualityProbeModal'
 import { ArchiveBadge } from './ArchiveBadge'
+import { Modal } from './Modal'
 
 interface Props {
   sources: Source[]
@@ -59,6 +61,9 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   const [catReload, setCatReload] = useState(0) // bump to re-fetch the group list
   const [streamReload, setStreamReload] = useState(0) // bump to re-fetch the stream page
   const [probe, setProbe] = useState<StreamItem | null>(null) // "measure quality" dialog
+  // new groups + channels of the picked source (or all) and type, for "Mark all as seen"
+  const [newCounts, setNewCounts] = useState<NewCounts | null>(null)
+  const [confirmAllSeen, setConfirmAllSeen] = useState(false)
   // Note: there is intentionally no client-side "show unfiltered" switch — the
   // backend always applies each source's include/exclude filters, so only the
   // filtered rows ever cross the wire. Manage filters in the source editor.
@@ -146,6 +151,23 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     // `sources` is in the deps so editing a source's filters (which bumps the
     // sources list) re-applies the live filter to the catalog immediately.
   }, [drill, flatSearch, sourceId, type, onlyNew, searchTerm, prefixTerm, catReload, sources])
+
+  // --- new counts for "Mark all as seen" (whole source / type, not the search) --
+  useEffect(() => {
+    if (drill || flatSearch) return
+    let cancelled = false
+    api
+      .newCounts({ sourceId: sourceId === '' ? undefined : sourceId, type })
+      .then((c) => {
+        if (!cancelled) setNewCounts(c)
+      })
+      .catch(() => {
+        if (!cancelled) setNewCounts(null) // only hides the button; the group list shows its own errors
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [drill, flatSearch, sourceId, type, catReload])
 
   // --- load STREAMS (paged) for the drilled group or a flat search ----------
   const streamQuery: CatalogQuery | null = useMemo(() => {
@@ -250,20 +272,19 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     }
   }
 
-  const newCategoryCount = useMemo(
-    () => sortedCategories.filter((c) => c.isNew).length,
-    [sortedCategories],
-  )
+  const newTotal = newCounts ? newCounts.categories + newCounts.streams : 0
 
-  async function markAllGroupsSeen() {
-    const ids = sortedCategories.filter((c) => c.isNew).map((c) => c.id)
-    if (ids.length === 0) return
+  async function markAllSeen() {
+    setBusy('seen-all')
     setError(null)
     try {
-      await api.markCategoriesSeen(ids)
-      setCatReload((n) => n + 1)
+      await api.markAllSeen({ sourceId: sourceId === '' ? undefined : sourceId, type })
+      setConfirmAllSeen(false)
+      setCatReload((n) => n + 1) // re-fetches the groups and the counts
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setBusy(null)
     }
   }
 
@@ -453,11 +474,17 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
         </div>
       ) : (
         <>
-          {newCategoryCount > 0 && (
+          {newCounts && newTotal > 0 && (
             <div className="catalog-nav">
-              <span className="muted">{t('{n} new groups').replace('{n}', String(newCategoryCount))}</span>
+              <span className="muted">
+                {t('{groups} new groups, {channels} new channels')
+                  .replace('{groups}', String(newCounts.categories))
+                  .replace('{channels}', String(newCounts.streams))}
+              </span>
               <span className="spacer" />
-              <button onClick={markAllGroupsSeen}>{t('Mark all groups seen')}</button>
+              <button onClick={() => setConfirmAllSeen(true)}>
+                {t('Mark all as seen ({n})').replace('{n}', String(newTotal))}
+              </button>
             </div>
           )}
           {!hasSource && (
@@ -537,9 +564,14 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
             {sortedCategories.map((c) => (
               <li key={c.id} className="group-row" onClick={() => openGroup(c)}>
                 <span className="group-name">{c.name}</span>
-                {c.isNew && (
+                {c.isNew && <span className="badge new">{t('NEW')}</span>}
+                {!!c.newCount && (
+                  <span className="badge new" title={t('New channels in this group')}>
+                    {t('+{n} new').replace('{n}', String(c.newCount))}
+                  </span>
+                )}
+                {(c.isNew || !!c.newCount) && (
                   <>
-                    <span className="badge new">{t('NEW')}</span>
                     <button
                       className="seen-btn"
                       title={t('Mark this group as seen')}
@@ -563,6 +595,31 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
           </ul>
         )}
       </div>
+      {confirmAllSeen && newCounts && (
+        <Modal
+          title={t('Mark all as seen')}
+          onClose={() => setConfirmAllSeen(false)}
+          footer={
+            <>
+              <button onClick={() => setConfirmAllSeen(false)}>{t('Cancel')}</button>
+              <button className="primary" onClick={markAllSeen} disabled={busy === 'seen-all'}>
+                {busy === 'seen-all' ? t('Marking…') : t('Mark as seen')}
+              </button>
+            </>
+          }
+        >
+          <p>
+            {t('Mark {channels} channels and {groups} groups as seen?')
+              .replace('{channels}', String(newCounts.streams))
+              .replace('{groups}', String(newCounts.categories))}
+          </p>
+          <p className="muted">
+            {t('Scope: {source}, type {type}. The search and prefix filters do not apply.')
+              .replace('{source}', sourceId === '' ? t('all sources') : String(sourceName.get(sourceId) ?? sourceId))
+              .replace('{type}', type)}
+          </p>
+        </Modal>
+      )}
       {probe && (
         <QualityProbeModal
           streamId={probe.id}

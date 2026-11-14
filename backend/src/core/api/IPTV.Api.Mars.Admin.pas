@@ -100,6 +100,13 @@ type
     /// Clear the 'new' badge of the given streams.
     [POST, Path('catalog/streams/seen'), Consumes(TMediaType.APPLICATION_JSON)]
     procedure MarkStreamsSeen([BodyParam] ABody: TJSONObject);
+    /// How many groups and channels are new (sourceId 0 / type '' = all).
+    [GET, Path('catalog/new-counts'), Produces(TMediaType.APPLICATION_JSON)]
+    function GetNewCounts([QueryParam('sourceId')] ASourceId: Integer;
+      [QueryParam('type')] AType: string): TJSONObject;
+    /// Marks every new group and channel as seen, body { sourceId?, type? }; returns what was cleared.
+    [POST, Path('catalog/seen-all'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
+    function MarkAllSeen([BodyParam] ABody: TJSONObject): TJSONObject;
 
     // ── EPG ─────────────────────────────────────────────────────────────
     /// Source EPG of one tvg-id.
@@ -865,6 +872,32 @@ procedure TAdminResource.MarkStreamsSeen(ABody: TJSONObject);
 begin
   RequireApp;
   App.Store.MarkStreamsSeen(ParseIds(ABody));
+end;
+
+function NewCountsToJson(const ACounts: TNewCounts): TJSONObject;
+begin
+  Result := TJSONObject.Create;
+  Result.AddPair('categories', TJSONNumber.Create(ACounts.Categories));
+  Result.AddPair('streams', TJSONNumber.Create(ACounts.Streams));
+end;
+
+function TAdminResource.GetNewCounts(ASourceId: Integer; AType: string): TJSONObject;
+begin
+  RequireApp;
+  Result := NewCountsToJson(App.Store.CountNew(MakeFilter(ASourceId, AType, '', '', '', '')));
+end;
+
+function TAdminResource.MarkAllSeen(ABody: TJSONObject): TJSONObject;
+const
+  cKeySourceId = 'sourceId';
+  cKeyType = 'type';
+  cAllSources = 0;
+begin
+  RequireApp;
+  if ABody = nil then
+    raise EMARSHttpException.Create('A JSON body is required', cHttpBadRequest);
+  Result := NewCountsToJson(App.Store.MarkAllSeen(MakeFilter(ABody.GetValue<Integer>(cKeySourceId, cAllSources),
+    ABody.GetValue<string>(cKeyType, ''), '', '', '', '')));
 end;
 
 function TAdminResource.GetEpg(ATvgId: string): TJSONArray;

@@ -130,6 +130,8 @@ type
     function LoadStreams(const AFilter: TCatalogFilter): TStreamItemList;
     function CountStreams(const AFilter: TCatalogFilter): Integer;
     procedure MarkCategoriesSeen(const AIds: TArray<Integer>);
+    function CountNew(const AFilter: TCatalogFilter): TNewCounts;
+    function MarkAllSeen(const AFilter: TCatalogFilter): TNewCounts;
     procedure MarkStreamsSeen(const AIds: TArray<Integer>);
     function LoadStreamById(AId: Integer): TStreamItem;
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
@@ -584,6 +586,9 @@ begin
   Exec('CREATE INDEX IF NOT EXISTS idx_streams_cat ON streams(source_id, content_type, category_upstream_id)');
   // name ordering + prefix LIKE (case-insensitive)
   Exec('CREATE INDEX IF NOT EXISTS idx_streams_name ON streams(name COLLATE NOCASE)');
+  // new channels per group (catalog "+N new"): partial, so it stays tiny once things are seen
+  Exec('CREATE INDEX IF NOT EXISTS idx_streams_new ON streams(source_id, content_type, category_upstream_id) ' +
+    'WHERE is_new=1');
   Exec('CREATE INDEX IF NOT EXISTS idx_cats_source ON categories(source_id, content_type)');
   Exec('CREATE INDEX IF NOT EXISTS idx_epg_chan ON epg(channel_tvg_id, start_utc)');
   Exec('CREATE INDEX IF NOT EXISTS idx_epg_src ON epg(source_id)');
@@ -1567,24 +1572,64 @@ begin
   Result := True;
 end;
 
+// ' AND source_id=… AND content_type=…' for the source / content type of AFilter
+// (both tables carry these two columns)
+function SourceTypeSql(const AFilter: TCatalogFilter): string;
+begin
+  Result := '';
+  if AFilter.SourceId > 0 then
+    Result := Result + ' AND source_id=' + AFilter.SourceId.ToString;
+  if AFilter.HasContentType then
+    Result := Result + ' AND content_type=' + QuotedStr(ContentTypeNames[AFilter.ContentType]);
+end;
+
+// key of one category for the new-stream counts: source, content type, upstream id
+function CategoryKey(ASourceId: Integer; const AContentType, AUpstreamId: string): string;
+const
+  cCategoryKeyFmt = '%d|%s|%s';
+begin
+  Result := Format(cCategoryKeyFmt, [ASourceId, AContentType, AUpstreamId]);
+end;
+
 function TSQLiteStore.LoadCategories(const AFilter: TCatalogFilter): TCategoryList;
+const
+  // new streams per category (a stream links to its category by upstream id)
+  cSqlNewPerCategory = '''
+    SELECT source_id, content_type, COALESCE(category_upstream_id, '') AS cat, COUNT(*) AS n
+    FROM streams WHERE is_new=1
+    ''';
+  cSqlNewPerCategoryGroup = ' GROUP BY source_id, content_type, cat';
 var
   lQuery: TFDQuery;
   lWhere: string;
   lCat: TCategory;
   lPrepared: TPreparedCatalogFilter;
+  lNewCounts: TDictionary<string, Integer>;
+  lCount: Integer;
 begin
   Result := TCategoryList.Create(True);
   lPrepared := PrepareCatalogFilter(AFilter);
+  lNewCounts := TDictionary<string, Integer>.Create;
   lQuery := NewQuery;
   try
-    lWhere := ' WHERE 1=1';
-    if AFilter.SourceId > 0 then
-      lWhere := lWhere + ' AND source_id=' + AFilter.SourceId.ToString;
-    if AFilter.HasContentType then
-      lWhere := lWhere + ' AND content_type=' + QuotedStr(ContentTypeNames[AFilter.ContentType]);
-    if AFilter.OnlyNew then
-      lWhere := lWhere + ' AND is_new=1';
+    // 1) new streams per category, so a group that is not new itself but holds new
+    //    channels shows "+N new" and stays in the "only new" view
+    lWhere := SourceTypeSql(AFilter);
+    if AFilter.UseHiddenFlag then
+      lWhere := lWhere + ' AND hidden=0';
+    lQuery.SQL.Text := cSqlNewPerCategory + lWhere + cSqlNewPerCategoryGroup;
+    lQuery.Open;
+    while not lQuery.Eof do
+    begin
+      lNewCounts.AddOrSetValue(CategoryKey(lQuery.FieldByName('source_id').AsInteger,
+        lQuery.FieldByName('content_type').AsString, lQuery.FieldByName('cat').AsString),
+        lQuery.FieldByName('n').AsInteger);
+      lQuery.Next;
+    end;
+    lQuery.Close;
+
+    // 2) the categories
+    lWhere := ' WHERE 1=1' + SourceTypeSql(AFilter);
     if AFilter.UseHiddenFlag then
       lWhere := lWhere + ' AND hidden=0';
     lWhere := lWhere + SearchSql('name', AFilter.Search); // multi-word AND search
@@ -1597,7 +1642,12 @@ begin
     while not lQuery.Eof do
     begin
       lCat := ReadCategory(lQuery);
-      if CategoryPassesFilter(lCat, lPrepared) then
+      if lNewCounts.TryGetValue(CategoryKey(lCat.SourceId, ContentTypeNames[lCat.ContentType], lCat.UpstreamId),
+        lCount) then
+        lCat.NewCount := lCount;
+      // "only new": the group itself is new, or it holds new channels
+      if CategoryPassesFilter(lCat, lPrepared) and
+         (not AFilter.OnlyNew or lCat.IsNew or (lCat.NewCount > 0)) then
         Result.Add(lCat)
       else
         FreeAndNil(lCat);
@@ -1605,6 +1655,7 @@ begin
     end;
   finally
     FreeAndNil(lQuery);
+    FreeAndNil(lNewCounts);
   end;
 end;
 
@@ -1691,11 +1742,64 @@ begin
 end;
 
 procedure TSQLiteStore.MarkCategoriesSeen(const AIds: TArray<Integer>);
+const
+  // the new streams of those categories too, so the group's "+N new" badge clears
+  cSqlStreamsOfCategoriesSeen = '''
+    UPDATE streams SET is_new=0, seen_at_utc=:t
+    WHERE is_new=1 AND EXISTS (SELECT 1 FROM categories c WHERE c.id IN (%s)
+      AND c.source_id=streams.source_id AND c.content_type=streams.content_type
+      AND COALESCE(c.upstream_id, '')=COALESCE(streams.category_upstream_id, ''))
+    ''';
+var
+  lNow: string;
 begin
   if Length(AIds) = 0 then
     Exit;
-  FConn.ExecSQL(Format('UPDATE categories SET is_new=0, seen_at_utc=%s WHERE id IN (%s)',
-    [QuotedStr(DateTimeToIsoUtc(NowUtc)), IdsToCsv(AIds)]));
+  lNow := DateTimeToIsoUtc(NowUtc);
+  FConn.StartTransaction;
+  try
+    FConn.ExecSQL(Format('UPDATE categories SET is_new=0, seen_at_utc=:t WHERE id IN (%s)', [IdsToCsv(AIds)]),
+      [lNow]);
+    FConn.ExecSQL(Format(cSqlStreamsOfCategoriesSeen, [IdsToCsv(AIds)]), [lNow]);
+    FConn.Commit;
+  except
+    SafeRollback;
+    raise;
+  end;
+end;
+
+function TSQLiteStore.CountNew(const AFilter: TCatalogFilter): TNewCounts;
+var
+  lQuery: TFDQuery;
+begin
+  lQuery := NewQuery;
+  try
+    lQuery.Open('SELECT COUNT(*) AS n FROM categories WHERE is_new=1' + SourceTypeSql(AFilter));
+    Result.Categories := lQuery.FieldByName('n').AsInteger;
+    lQuery.Close;
+    lQuery.Open('SELECT COUNT(*) AS n FROM streams WHERE is_new=1' + SourceTypeSql(AFilter));
+    Result.Streams := lQuery.FieldByName('n').AsInteger;
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
+function TSQLiteStore.MarkAllSeen(const AFilter: TCatalogFilter): TNewCounts;
+var
+  lNow: string;
+begin
+  lNow := DateTimeToIsoUtc(NowUtc);
+  FConn.StartTransaction;
+  try
+    Result.Categories := FConn.ExecSQL('UPDATE categories SET is_new=0, seen_at_utc=:t WHERE is_new=1' +
+      SourceTypeSql(AFilter), [lNow]);
+    Result.Streams := FConn.ExecSQL('UPDATE streams SET is_new=0, seen_at_utc=:t WHERE is_new=1' +
+      SourceTypeSql(AFilter), [lNow]);
+    FConn.Commit;
+  except
+    SafeRollback;
+    raise;
+  end;
 end;
 
 procedure TSQLiteStore.MarkStreamsSeen(const AIds: TArray<Integer>);

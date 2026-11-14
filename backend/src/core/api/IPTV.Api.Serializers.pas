@@ -246,6 +246,7 @@ begin
   Result.AddPair('name', ACategory.Name);
   Result.AddPair('isNew', TJSONBool.Create(ACategory.IsNew));
   Result.AddPair('seenAtUtc', DateTimeToIsoUtc(ACategory.SeenAtUtc));
+  Result.AddPair('newCount', TJSONNumber.Create(ACategory.NewCount));
 end;
 
 function CategoriesToJson(const AList: TCategoryList): TJSONArray;

@@ -27,6 +27,9 @@ type
     [Test] procedure DeleteSourceCascades;
     [Test] procedure SaveListUpdateRoundtrips;
     [Test] procedure MarkCategoriesSeenClearsNew;
+    [Test] procedure OnlyNewKeepsGroupWithNewChannels;
+    [Test] procedure MarkCategoriesSeenClearsItsStreams;
+    [Test] procedure MarkAllSeenIsScoped;
     [Test] procedure LoadStreamByIdFoundAndMissing;
     [Test] procedure LoadKnownTvgIdsDistinctSortedByName;
     [Test] procedure AppStateGetSetRoundtrips;
@@ -361,6 +364,135 @@ begin
   finally
     FreeAndNil(lL);
   end;
+end;
+
+// a group that is not new itself but holds a new channel: newCount + "only new" view
+function SnapWithGroup(ASourceId: Integer; ACt: TContentType; const AGroupId: string;
+  const AStreamIds: array of string): TSourceSnapshot;
+var
+  lCat: TCategory;
+  lStream: TStreamItem;
+  lId: string;
+begin
+  Result := TSourceSnapshot.Create(ASourceId);
+  lCat := TCategory.Create;
+  lCat.ContentType := ACt;
+  lCat.UpstreamId := AGroupId;
+  lCat.Name := 'Group ' + AGroupId;
+  Result.Categories.Add(lCat);
+  for lId in AStreamIds do
+  begin
+    lStream := MakeStream(ASourceId, ACt, lId, 'Ch ' + lId, '', '', 'http://p/' + lId + '.ts');
+    lStream.CategoryUpstreamId := AGroupId;
+    Result.Streams.Add(lStream);
+  end;
+end;
+
+procedure TStorageTests.OnlyNewKeepsGroupWithNewChannels;
+var
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lL: TCategoryList;
+begin
+  lStore := NewStore(FDbPath);
+  lSnap := SnapWithGroup(1, ctLive, 'g', ['a']);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lF := Default(TCatalogFilter);
+  lStore.MarkAllSeen(lF);
+  // refresh #2: same group, one channel more
+  lSnap := SnapWithGroup(1, ctLive, 'g', ['a', 'b']);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+
+  lF.OnlyNew := True;
+  lL := lStore.LoadCategories(lF);
+  try
+    Assert.AreEqual<Integer>(1, lL.Count, 'a group holding a new channel stays in the only-new view');
+    Assert.IsFalse(lL[0].IsNew, 'the group itself is not new');
+    Assert.AreEqual<Integer>(1, lL[0].NewCount, 'one new channel in it');
+  finally
+    FreeAndNil(lL);
+  end;
+end;
+
+procedure TStorageTests.MarkCategoriesSeenClearsItsStreams;
+var
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lL: TCategoryList;
+  lGroupId: Integer;
+begin
+  lStore := NewStore(FDbPath);
+  lSnap := SnapWithGroup(1, ctLive, 'g', ['a', 'b']);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lSnap := SnapWithGroup(2, ctLive, 'h', ['c']); // own source: a refresh replaces a source's catalog
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+
+  lF := Default(TCatalogFilter);
+  lF.SourceId := 1;
+  lL := lStore.LoadCategories(lF);
+  try
+    Assert.AreEqual<Integer>(1, lL.Count, 'group g found');
+    Assert.AreEqual<Integer>(2, lL[0].NewCount, 'two new channels before');
+    lGroupId := lL[0].Id;
+  finally
+    FreeAndNil(lL);
+  end;
+  lStore.MarkCategoriesSeen([lGroupId]);
+
+  lF := Default(TCatalogFilter);
+  lF.OnlyNew := True;
+  Assert.AreEqual<Integer>(1, lStore.CountStreams(lF), 'only the other group''s channel is still new');
+  lL := lStore.LoadCategories(lF);
+  try
+    Assert.AreEqual<Integer>(1, lL.Count, 'only group h left in the only-new view');
+    Assert.AreEqual('h', lL[0].UpstreamId);
+  finally
+    FreeAndNil(lL);
+  end;
+end;
+
+procedure TStorageTests.MarkAllSeenIsScoped;
+var
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lF: TCatalogFilter;
+  lCounts: TNewCounts;
+begin
+  lStore := NewStore(FDbPath);
+  lSnap := SnapWithGroup(1, ctLive, 'g', ['a', 'b']);
+  lSnap.Streams.Add(MakeStream(1, ctMovie, 'm', 'Movie', '', '', 'http://p/m.mp4'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lSnap := SnapWithGroup(2, ctLive, 'x', ['c']);
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+
+  lF := Default(TCatalogFilter);
+  lCounts := lStore.CountNew(lF);
+  Assert.AreEqual<Integer>(2, lCounts.Categories, 'all new groups');
+  Assert.AreEqual<Integer>(4, lCounts.Streams, 'all new channels');
+
+  // only source 1, live
+  lF.SourceId := 1;
+  lF.HasContentType := True;
+  lF.ContentType := ctLive;
+  lCounts := lStore.MarkAllSeen(lF);
+  Assert.AreEqual<Integer>(1, lCounts.Categories, 'cleared groups');
+  Assert.AreEqual<Integer>(2, lCounts.Streams, 'cleared channels');
+
+  lCounts := lStore.CountNew(Default(TCatalogFilter));
+  Assert.AreEqual<Integer>(1, lCounts.Categories, 'source 2 group still new');
+  Assert.AreEqual<Integer>(2, lCounts.Streams, 'the movie and source 2 channel still new');
+
+  lCounts := lStore.MarkAllSeen(Default(TCatalogFilter));
+  Assert.AreEqual<Integer>(2, lCounts.Streams, 'everything else cleared');
+  Assert.AreEqual<Integer>(0, lStore.CountNew(Default(TCatalogFilter)).Streams, 'nothing new left');
 end;
 
 procedure TStorageTests.MarkCategoriesSeenClearsNew;

@@ -80,6 +80,8 @@ type
     function LoadStreams(const AFilter: TCatalogFilter): TStreamItemList;
     function CountStreams(const AFilter: TCatalogFilter): Integer;
     procedure MarkCategoriesSeen(const AIds: TArray<Integer>);
+    function CountNew(const AFilter: TCatalogFilter): TNewCounts;
+    function MarkAllSeen(const AFilter: TCatalogFilter): TNewCounts;
     procedure MarkStreamsSeen(const AIds: TArray<Integer>);
     function LoadStreamById(AId: Integer): TStreamItem;
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
@@ -299,6 +301,27 @@ begin
   FWriteLock.Acquire;
   try
     FWrite.MarkCategoriesSeen(AIds);
+  finally
+    FWriteLock.Release;
+  end;
+end;
+
+function TLockingStore.CountNew(const AFilter: TCatalogFilter): TNewCounts;
+begin
+  FReadLock.Acquire;
+  try
+    Result := FRead.CountNew(AFilter);
+  finally
+    FReadLock.Release;
+  end;
+end;
+
+// "new" flags only: no list/item/stream URL changes, so the zap cache stays valid
+function TLockingStore.MarkAllSeen(const AFilter: TCatalogFilter): TNewCounts;
+begin
+  FWriteLock.Acquire;
+  try
+    Result := FWrite.MarkAllSeen(AFilter);
   finally
     FWriteLock.Release;
   end;

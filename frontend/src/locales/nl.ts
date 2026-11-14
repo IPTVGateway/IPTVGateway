@@ -196,8 +196,16 @@ export const nl: Record<string, string> = {
   '‹ Prev': '‹ Vorige',
   'Page {page} / {count}': 'Pagina {page} / {count}',
   'Next ›': 'Volgende ›',
-  '{n} new groups': '{n} nieuwe groepen',
-  'Mark all groups seen': 'Alle groepen als gezien markeren',
+  '{groups} new groups, {channels} new channels': '{groups} nieuwe groepen, {channels} nieuwe zenders',
+  'Mark all as seen ({n})': 'Alles als gezien ({n})',
+  'Mark all as seen': 'Alles als gezien markeren',
+  'Mark as seen': 'Als gezien markeren',
+  'Mark {channels} channels and {groups} groups as seen?': '{channels} zenders en {groups} groepen als gezien markeren?',
+  'Scope: {source}, type {type}. The search and prefix filters do not apply.':
+    'Bereik: {source}, type {type}. Het zoek- en prefixfilter tellen hierbij niet mee.',
+  'all sources': 'alle bronnen',
+  '+{n} new': '+{n} nieuw',
+  'New channels in this group': 'Nieuwe zenders in deze groep',
   'Pick a source to browse its groups, or type a search term for a flat channel list.':
     'Kies een bron om de groepen te bekijken, of typ een zoekterm voor een platte zenderlijst.',
   'Select all on this page': 'Alles op deze pagina selecteren',

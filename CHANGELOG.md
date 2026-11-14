@@ -5,6 +5,11 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+## [1.2.39] - 2026-11-14
+
+Mirror bouquets, "Set up in Plex", a smarter "Refresh Plex" and a quality filter for
+replacing channels.
+
 ### Added
 - **"Set up in Plex"** (Media Servers tab): the gateway sets itself up in Plex Live TV &
   DVR through the Plex API. It registers the HDHomeRun tuner, creates a DVR with the

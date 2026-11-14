@@ -356,3 +356,7 @@ if (-not $NoSave) {
 else {
   Write-Host "Done. Image '$Tag' built." -ForegroundColor Green
 }
+
+# every failure above throws; a leftover native exit code (robocopy returns 1 for
+# "files copied") must not make a successful BUILD look failed
+exit 0

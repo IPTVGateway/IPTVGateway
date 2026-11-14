@@ -5,6 +5,25 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+## [1.2.40] - 2026-11-14
+
+Catalog: "Only new" keeps groups with new channels, a "+N new" badge per group and
+"Mark all as seen".
+
+### Added
+- **Catalog: "Mark all as seen"**. The groups view shows how many groups and channels
+  are new for the picked source (or all sources) and type, with one button that marks
+  them all as seen after a confirmation with the counts. The search and prefix filters
+  don't narrow it.
+- **Catalog: "+N new" per group**. A group that is not new itself but holds new
+  channels shows how many. Marking a group as seen (✓) now also marks its new channels
+  as seen.
+
+### Fixed
+- **Catalog "Only new" dropped groups with new channels.** It only showed groups that
+  were new themselves, so an existing group that got new channels disappeared. It now
+  also shows every group that holds at least one new channel.
+
 ## [1.2.39] - 2026-11-14
 
 Mirror bouquets, "Set up in Plex", a smarter "Refresh Plex" and a quality filter for

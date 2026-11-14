@@ -281,12 +281,27 @@ const
   cQueryTrueDigit = '1';
   cQueryTrueText = 'true';
 
-  // settings ranges (also checked on import)
-  cMaxHour = 23;
-  cMaxMinute = 59;
-  cMinPort = 1;
-  cMaxPort = 65535;
-  cMaxEpgDays = 31;
+  // settings fields whose values are checked (POST /api/config and import); the
+  // valid ranges come from IPTV.App.Config (the same ones TAppConfig.Load clamps to)
+  cFieldRefreshHour = 'refreshHour';
+  cFieldRefreshMinute = 'refreshMinute';
+  cFieldProxyPort = 'proxyPort';
+  cFieldEpgMaxDays = 'epgMaxDays';
+  cFieldPlexTunerCount = 'plexTunerCount';
+  cFieldPlexListId = 'plexListId';
+  cFieldDummyEpgBlockMinutes = 'dummyEpgBlockMinutes';
+  cFieldDummyEpgHoursBack = 'dummyEpgHoursBack';
+  cFieldDummyEpgHoursAhead = 'dummyEpgHoursAhead';
+  cFieldPublicBaseUrl = 'publicBaseUrl';
+  cFieldWarnings = 'warnings';
+  // settings fields that must be true/false when present
+  cBoolFields: array[0..10] of string = ('proxyStreams', 'streamFailover', 'plexM3uEnabled',
+    'plexM3uProxy', 'plexHdhrEnabled', 'plexHdhrProxy', 'dummyEpgEnabled', 'nameShowGroup',
+    'nameShowNumber', 'nameShowSource', 'idSortPrefix');
+  cMinRefreshHour = 0;
+  cMinRefreshMinute = 0;
+  cMinEpgMaxDays = 0;
+  cBadBaseUrlMsg = 'publicBaseUrl is not a valid URL (e.g. http://192.168.1.10:7777)';
 
   // catalog paging / EPG window: 0 = unlimited
   cNoLimit = 0;
@@ -337,17 +352,55 @@ begin
   Result := (AValue = cQueryTrueDigit) or SameText(AValue, cQueryTrueText);
 end;
 
-// 400 for values the service can't use (also checked on import)
-procedure CheckSettingsRange(AHour, AMinute, AProxyPort, AEpgDays: Integer);
+// The integer of a settings field. False when the body doesn't carry it; 400 when
+// it is there but no whole number (it used to surface as a 500 half-way the apply).
+function SettingsInt(const ACfg: TJSONObject; const AKey: string; out AValue: Integer): Boolean;
+var
+  lValue: TJSONValue;
 begin
-  if (AHour < 0) or (AHour > cMaxHour) or (AMinute < 0) or (AMinute > cMaxMinute) then
-    raise EMARSHttpException.Create('refreshHour/refreshMinute out of range (0-23 / 0-59)', cHttpBadRequest);
-  if (AProxyPort < cMinPort) or (AProxyPort > cMaxPort) then
-    raise EMARSHttpException.Create(Format('proxyPort must be %d-%d', [cMinPort, cMaxPort]), cHttpBadRequest);
-  if AProxyPort = App.Config.HttpPort then
+  AValue := 0;
+  lValue := ACfg.GetValue(AKey);
+  Result := lValue <> nil;
+  if Result and not ((lValue is TJSONNumber) and TryStrToInt(TJSONNumber(lValue).Value, AValue)) then
+    raise EMARSHttpException.Create(Format('%s must be a whole number', [AKey]), cHttpBadRequest);
+end;
+
+// 400 when the body carries AKey with a value outside AMin..AMax
+procedure CheckIntField(const ACfg: TJSONObject; const AKey: string; AMin, AMax: Integer);
+var
+  lValue: Integer;
+begin
+  if SettingsInt(ACfg, AKey, lValue) and ((lValue < AMin) or (lValue > AMax)) then
+    raise EMARSHttpException.Create(Format('%s must be %d-%d', [AKey, AMin, AMax]), cHttpBadRequest);
+end;
+
+// 400 for values the service can't use (POST /api/config and the import's config
+// section), checked BEFORE anything is applied. Only the fields the body carries are
+// checked: a stored value that is out of range must not block an unrelated save
+// (config.json with epgMaxDays 60 used to fail every POST /api/config).
+procedure CheckSettingsRange(const ACfg: TJSONObject);
+var
+  lValue: Integer;
+  lKey: string;
+  lField: TJSONValue;
+begin
+  CheckIntField(ACfg, cFieldRefreshHour, cMinRefreshHour, cMaxRefreshHour);
+  CheckIntField(ACfg, cFieldRefreshMinute, cMinRefreshMinute, cMaxRefreshMinute);
+  CheckIntField(ACfg, cFieldProxyPort, cMinPort, cMaxPort);
+  if SettingsInt(ACfg, cFieldProxyPort, lValue) and (lValue = App.Config.HttpPort) then
     raise EMARSHttpException.Create('proxyPort must differ from the web/API port', cHttpBadRequest);
-  if (AEpgDays < 0) or (AEpgDays > cMaxEpgDays) then
-    raise EMARSHttpException.Create(Format('epgMaxDays must be 0-%d', [cMaxEpgDays]), cHttpBadRequest);
+  CheckIntField(ACfg, cFieldEpgMaxDays, cMinEpgMaxDays, cMaxEpgMaxDays);
+  CheckIntField(ACfg, cFieldPlexTunerCount, cMinPlexTunerCount, cMaxPlexTunerCount);
+  CheckIntField(ACfg, cFieldDummyEpgBlockMinutes, cMinDummyEpgBlockMinutes, cMaxDummyEpgBlockMinutes);
+  CheckIntField(ACfg, cFieldDummyEpgHoursBack, cMinDummyEpgHoursBack, cMaxDummyEpgHoursBack);
+  CheckIntField(ACfg, cFieldDummyEpgHoursAhead, cMinDummyEpgHoursAhead, cMaxDummyEpgHoursAhead);
+  SettingsInt(ACfg, cFieldPlexListId, lValue); // type check only
+  for lKey in cBoolFields do
+  begin
+    lField := ACfg.GetValue(lKey);
+    if (lField <> nil) and not (lField is TJSONBool) then
+      raise EMARSHttpException.Create(Format('%s must be true or false', [lKey]), cHttpBadRequest);
+  end;
 end;
 
 // The Plex bouquet of an imported bundle: the import recreates the lists (new ids),
@@ -380,12 +433,20 @@ begin
   end;
 end;
 
-// an imported publicBaseUrl, normalised like a saved one; an unusable value keeps
-// the current setting
-function ImportedBaseUrl(const AValue: string): string;
+// The publicBaseUrl a settings body asks for, normalised like a saved one; the
+// current one when the body doesn't carry it. False (ABaseUrl = the current one) when
+// the given value is unusable (no scheme/host - that used to break every box login).
+function SettingsBaseUrl(const ACfg: TJSONObject; out ABaseUrl: string): Boolean;
+var
+  lValue: TJSONValue;
 begin
-  if not NormalizePublicBaseUrl(AValue, Result) then
-    Result := App.Config.PublicBaseUrl;
+  ABaseUrl := App.Config.PublicBaseUrl;
+  lValue := ACfg.GetValue(cFieldPublicBaseUrl);
+  if lValue = nil then
+    Exit(True);
+  Result := (lValue is TJSONString) and NormalizePublicBaseUrl(TJSONString(lValue).Value, ABaseUrl);
+  if not Result then
+    ABaseUrl := App.Config.PublicBaseUrl;
 end;
 
 function MakeFilter(ASourceId: Integer; const AType, AOnlyNew, ASearch, APrefix, ACategory: string;
@@ -833,13 +894,17 @@ var
   lHour, lMinute, lProxyPort, lEpgDays: Integer;
 begin
   RequireApp;
+  // EVERY field is checked BEFORE anything is applied (hour 24 never fired; -1
+  // wrapped to 65535; a bad dummy-EPG value used to fail after the relay had moved)
+  CheckSettingsRange(ABody);
+  // validated: a value without scheme/host used to break every box login (500)
+  if not SettingsBaseUrl(ABody, lBase) then
+    raise EMARSHttpException.Create(cBadBaseUrlMsg, cHttpBadRequest);
   // default each field to its current value, so a partial body is fine
-  lHour := ABody.GetValue<Integer>('refreshHour', App.Config.RefreshHour);
-  lMinute := ABody.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute);
-  lProxyPort := ABody.GetValue<Integer>('proxyPort', App.Config.ProxyPort);
-  lEpgDays := ABody.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays);
-  // checked BEFORE anything is applied (hour 24 never fired; -1 wrapped to 65535)
-  CheckSettingsRange(lHour, lMinute, lProxyPort, lEpgDays);
+  lHour := ABody.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour);
+  lMinute := ABody.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute);
+  lProxyPort := ABody.GetValue<Integer>(cFieldProxyPort, App.Config.ProxyPort);
+  lEpgDays := ABody.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays);
   App.UpdateSettings(lHour, lMinute,
     ABody.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
     lProxyPort, lEpgDays,
@@ -859,10 +924,6 @@ begin
     lGroups := StrArrayFromJson(TJSONArray(lArrValue))
   else
     lGroups := App.Config.VisibleGroups;
-  // validated: a value without scheme/host used to break every box login (500)
-  if not NormalizePublicBaseUrl(ABody.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl), lBase) then
-    raise EMARSHttpException.Create('publicBaseUrl is not a valid URL (e.g. http://192.168.1.10:7777)',
-      cHttpBadRequest);
   App.UpdateMediaConfig(lGroups, lBase,
     ABody.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
     ABody.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
@@ -917,10 +978,21 @@ var
   lCounts: TImportCounts;
   lCfg: TJSONObject;
   lGroups: TArray<string>;
+  lBase: string;
+  lWarnings: TList<string>;
 begin
   RequireApp;
   if not ((ABody.GetValue('sources') is TJSONArray) or (ABody.GetValue('lists') is TJSONArray)) then
     raise EMARSHttpException.Create('Invalid import file (no "sources"/"lists")', cHttpBadRequest);
+
+  // the bundle's settings are checked BEFORE the store is replaced: a bad value used
+  // to fail the import (400) after the sources and bouquets were already swapped
+  lCfg := nil;
+  if ABody.GetValue('config') is TJSONObject then
+  begin
+    lCfg := TJSONObject(ABody.GetValue('config'));
+    CheckSettingsRange(lCfg);
+  end;
 
   // one transaction: a failure half-way leaves the old sources and bouquets intact
   // (before, an error after the wipe left a half-imported setup)
@@ -930,60 +1002,95 @@ begin
       lCounts := ImportStoreSettings(AStore, ABody);
     end);
 
-  if ABody.GetValue('config') is TJSONObject then
-  begin
-    lCfg := TJSONObject(ABody.GetValue('config'));
-    CheckSettingsRange(
-      lCfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
-      lCfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
-      lCfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
-      lCfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays));
-    App.UpdateSettings(
-      lCfg.GetValue<Integer>('refreshHour', App.Config.RefreshHour),
-      lCfg.GetValue<Integer>('refreshMinute', App.Config.RefreshMinute),
-      lCfg.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
-      lCfg.GetValue<Integer>('proxyPort', App.Config.ProxyPort),
-      lCfg.GetValue<Integer>('epgMaxDays', App.Config.EpgMaxDays), // was dropped on import
-      lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
-    // were exported but never restored
-    if lCfg.GetValue('extraEpgUrls') is TJSONArray then
-      App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(lCfg.GetValue('extraEpgUrls'))));
-    if lCfg.GetValue('mediaAllowedClients') is TJSONArray then
-      App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lCfg.GetValue('mediaAllowedClients'))));
-    App.SetPlexListId(ImportedPlexListId(ABody, lCfg));
-    // the Plex tuner surfaces are part of the clone too — restore them as well
-    App.UpdatePlexSettings(
-      lCfg.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
-      lCfg.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
-      lCfg.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
-      lCfg.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
-      lCfg.GetValue<Integer>('plexTunerCount', App.Config.PlexTunerCount),
-      lCfg.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
-      lCfg.GetValue<string>('plexToken', App.Config.PlexToken));
-    // media servers: the global group filter + base URL + dummy-EPG settings
-    // the base URL, dummy EPG and name options are restored also when the bundle has
-    // no group filter (then the current filter stays)
-    if lCfg.GetValue('visibleGroups') is TJSONArray then
-      lGroups := StrArrayFromJson(TJSONArray(lCfg.GetValue('visibleGroups')))
-    else
-      lGroups := App.Config.VisibleGroups;
-    App.UpdateMediaConfig(lGroups,
-        ImportedBaseUrl(lCfg.GetValue<string>('publicBaseUrl', App.Config.PublicBaseUrl)),
-        lCfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
-        lCfg.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
-        lCfg.GetValue<Integer>('dummyEpgHoursBack', App.Config.DummyEpgHoursBack),
-        lCfg.GetValue<Integer>('dummyEpgHoursAhead', App.Config.DummyEpgHoursAhead),
-        lCfg.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
-        lCfg.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
-        lCfg.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
-        lCfg.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
-  end;
+  // from here on the store IS replaced: a setting that can't be applied (the relay
+  // port is taken here, SSDP can't bind) is reported as a warning, not as a failed
+  // import
+  lWarnings := TList<string>.Create;
+  try
+    if lCfg <> nil then
+    begin
+      try
+        App.UpdateSettings(
+          lCfg.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour),
+          lCfg.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute),
+          lCfg.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
+          lCfg.GetValue<Integer>(cFieldProxyPort, App.Config.ProxyPort),
+          lCfg.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays), // was dropped on import
+          lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
+      except
+        on E: Exception do
+        begin
+          lWarnings.Add('Stream relay settings not applied (relay could not be started): ' + E.Message);
+          // UpdateSettings changed nothing: apply the rest with the relay as it is now
+          try
+            App.UpdateSettings(
+              lCfg.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour),
+              lCfg.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute),
+              App.Config.ProxyStreams,
+              App.Config.ProxyPort,
+              lCfg.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays),
+              lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
+          except
+            on E2: Exception do
+              lWarnings.Add('Refresh/EPG settings not applied: ' + E2.Message);
+          end;
+        end;
+      end;
+      // were exported but never restored
+      if lCfg.GetValue('extraEpgUrls') is TJSONArray then
+        App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(lCfg.GetValue('extraEpgUrls'))));
+      if lCfg.GetValue('mediaAllowedClients') is TJSONArray then
+        App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lCfg.GetValue('mediaAllowedClients'))));
+      App.SetPlexListId(ImportedPlexListId(ABody, lCfg));
+      // the Plex tuner surfaces are part of the clone too — restore them as well
+      try
+        App.UpdatePlexSettings(
+          lCfg.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
+          lCfg.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
+          lCfg.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
+          lCfg.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
+          lCfg.GetValue<Integer>(cFieldPlexTunerCount, App.Config.PlexTunerCount),
+          lCfg.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
+          lCfg.GetValue<string>('plexToken', App.Config.PlexToken));
+      except
+        on E: Exception do
+          lWarnings.Add('Plex relay/discovery could not be started: ' + E.Message);
+      end;
+      // media servers: the global group filter + base URL + dummy-EPG settings
+      // the base URL, dummy EPG and name options are restored also when the bundle has
+      // no group filter (then the current filter stays)
+      if lCfg.GetValue('visibleGroups') is TJSONArray then
+        lGroups := StrArrayFromJson(TJSONArray(lCfg.GetValue('visibleGroups')))
+      else
+        lGroups := App.Config.VisibleGroups;
+      // an unusable base URL keeps the current one
+      if not SettingsBaseUrl(lCfg, lBase) then
+        lWarnings.Add('publicBaseUrl in the bundle is not a valid URL - kept ' + lBase);
+      try
+        App.UpdateMediaConfig(lGroups, lBase,
+          lCfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
+          lCfg.GetValue<Integer>(cFieldDummyEpgBlockMinutes, App.Config.DummyEpgBlockMinutes),
+          lCfg.GetValue<Integer>(cFieldDummyEpgHoursBack, App.Config.DummyEpgHoursBack),
+          lCfg.GetValue<Integer>(cFieldDummyEpgHoursAhead, App.Config.DummyEpgHoursAhead),
+          lCfg.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
+          lCfg.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
+          lCfg.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
+          lCfg.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
+      except
+        on E: Exception do
+          lWarnings.Add('Plex relay/discovery could not be started: ' + E.Message);
+      end;
+    end;
 
-  Result := TJSONObject.Create;
-  Result.AddPair('sources', TJSONNumber.Create(lCounts.Sources));
-  Result.AddPair('lists', TJSONNumber.Create(lCounts.Lists));
-  Result.AddPair('groups', TJSONNumber.Create(lCounts.Groups));
-  Result.AddPair('items', TJSONNumber.Create(lCounts.Items));
+    Result := TJSONObject.Create;
+    Result.AddPair('sources', TJSONNumber.Create(lCounts.Sources));
+    Result.AddPair('lists', TJSONNumber.Create(lCounts.Lists));
+    Result.AddPair('groups', TJSONNumber.Create(lCounts.Groups));
+    Result.AddPair('items', TJSONNumber.Create(lCounts.Items));
+    Result.AddPair(cFieldWarnings, StrArrayToJson(lWarnings.ToArray));
+  finally
+    FreeAndNil(lWarnings);
+  end;
 end;
 
 function TAdminResource.PlexStatus: TJSONObject;

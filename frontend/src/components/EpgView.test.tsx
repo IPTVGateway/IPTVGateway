@@ -105,4 +105,13 @@ describe('EpgView', () => {
       expect(idx('P-O1')).toBeLessThan(idx('P-O2'))
     })
   })
+
+  it('re-reads the list items when the guide is reloaded (not only on a list switch)', async () => {
+    render(<EpgView lists={LISTS} activeListId={1} />)
+    await screen.findByText('The News')
+    const before = vi.mocked(api.listItems).mock.calls.length
+    await userEvent.click(screen.getByRole('button', { name: 'Reload' }))
+    await waitFor(() => expect(vi.mocked(api.listItems).mock.calls.length).toBeGreaterThan(before))
+  })
 })
+

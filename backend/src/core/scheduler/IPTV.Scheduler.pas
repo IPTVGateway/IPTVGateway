@@ -76,17 +76,22 @@ end;
 
 function TDailyScheduler.DueNow: Boolean;
 const
-  cFireWindow = 1 / HoursPerDay; // the hour after the configured time
+  // two hours after the configured time: one for the run itself plus one for the
+  // DST jump (see below)
+  cFireWindowHours = 2;
+  cFireWindow = cFireWindowHours / HoursPerDay;
 var
   lNow, lTarget: TDateTime;
 begin
   lNow := Now;
   lTarget := DateOf(lNow) + EncodeTime(FHour, FMinute, 0, 0);
-  // fire only DURING the hour after the configured time — crucially NOT on every
+  // fire only DURING the window after the configured time — crucially NOT on every
   // startup that happens to be past the daily time, which would run a heavy full
   // refresh (holding the store lock, hanging the UI) on every container restart.
-  // A window, not "hour = FHour": on the spring DST day 02:30 local never exists,
-  // and the clock jumps to 03:00 - still inside the window, so the run happens.
+  // A window, not "hour = FHour", and two hours wide: on the spring DST day the
+  // clock jumps 01:59:59 -> 03:00:00, so a 02:00 (or 02:30) target is first seen at
+  // 03:00 - a one-hour window would end exactly there and skip the day's run.
+  // FLastRunDate keeps it to one run per day.
   Result := (DateOf(lNow) <> FLastRunDate) and (lNow >= lTarget) and
     (lNow < lTarget + cFireWindow);
 end;

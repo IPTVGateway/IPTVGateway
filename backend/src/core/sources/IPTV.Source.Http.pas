@@ -52,8 +52,10 @@ function HttpGetString(const AUrl: string; const AUserAgent: string = '';
 /// playlists where the panel's charset is unknown.
 function HttpGetText(const AUrl: string; const AUserAgent: string = '';
   AReadTimeoutMs: Integer = cTimeoutDefaultReadMs; const AReferer: string = ''): string;
-/// Decode bytes: honour a BOM; else accept valid UTF-8; else fall back to
-/// Windows-1251 (common on RU/UA panels).
+/// Decode bytes: honour a BOM; else accept valid UTF-8 (also when the XML prolog
+/// declares UTF-8 or only a tiny share of the sequences is invalid); else the
+/// declared legacy code page, else a guess between Windows-1251 (RU/UA panels)
+/// and Windows-1252 (Western).
 function DecodeBytes(const ABytes: TBytes): string;
 
 const
@@ -93,6 +95,8 @@ const
   cHeaderReferer = 'Referer';
 
   // HTTP status codes
+  cHttpStatusRedirectMin = 300;
+  cHttpStatusRedirectMax = 399;
   cHttpStatusErrorMin = 400;
   cHttpStatusForbidden = 403;
   cHttpStatusTooManyRequests = 429;
@@ -112,11 +116,16 @@ const
   cCodePageLatin9 = 28605;  // ISO-8859-15
   cDeclScanBytes = 256;     // the XML prolog sits at the very start
   cXmlEncodingAttr = 'encoding=';
-  // share of high (>= $C0) bytes among letters above which a non-UTF-8 text is
-  // taken as Cyrillic: Russian text is nearly all high bytes, Western text only
-  // has a few accented letters between ASCII
-  cCyrillicHighShare = 0.3;
+  cCodePageUtf8 = 65001;    // only as a DeclaredCodePage result
+  // Cyrillic vs Western guess: only the high bytes vote (markup, URLs and
+  // attribute names are ASCII in both and say nothing). Cyrillic words are RUNS of
+  // high bytes; a Latin-1 accent mostly stands alone between ASCII letters.
   cLegacyHighLetterMin = $C0; // CP1251: the Cyrillic letters are $C0..$FF
+  cLegacyHighByteMin = $80;   // a "high" neighbour (CP1251 also has Ё ё Є є І і Ї ї at $A8..$BF)
+  // a non-UTF-8 body that is still overwhelmingly valid UTF-8 (a few stray bytes
+  // in a big guide) is decoded as UTF-8: at most this share of the non-ASCII
+  // sequences may be invalid
+  cUtf8MaxInvalidShare = 0.02;
 
   // UTF-8 lead/continuation byte masks
   cUtf8AsciiMax = $80;        // below: a 1-byte (ASCII) sequence
@@ -164,36 +173,51 @@ end;
 
 // ── charset detection ──────────────────────────────────────────────────────
 
-function IsValidUtf8(const ABytes: TBytes): Boolean;
+// Scan the bytes as UTF-8: AValidMulti = well-formed multi-byte sequences,
+// AInvalid = bytes that start no well-formed sequence (each skipped singly).
+procedure CountUtf8(const ABytes: TBytes; out AValidMulti, AInvalid: Int64);
 var
-  i, lLen, lExtra: Integer;
+  i, j, lLen, lExtra: Integer;
+  lOk: Boolean;
 begin
+  AValidMulti := 0;
+  AInvalid := 0;
   i := 0;
   lLen := Length(ABytes);
   while i < lLen do
   begin
     if ABytes[i] < cUtf8AsciiMax then
-      lExtra := 0
-    else if (ABytes[i] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
+    begin
+      Inc(i);
+      Continue;
+    end;
+    if (ABytes[i] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
       lExtra := 1
     else if (ABytes[i] and cUtf8Lead3Mask) = cUtf8Lead3Bits then
       lExtra := 2
     else if (ABytes[i] and cUtf8Lead4Mask) = cUtf8Lead4Bits then
       lExtra := 3
     else
-      Exit(False);
-    if i + lExtra >= lLen then
-      Exit(False);
-    while lExtra > 0 do
+      lExtra := -1;
+    lOk := (lExtra > 0) and (i + lExtra < lLen);
+    if lOk then
+      for j := i + 1 to i + lExtra do
+        if (ABytes[j] and cUtf8ContMask) <> cUtf8ContBits then
+        begin
+          lOk := False;
+          Break;
+        end;
+    if lOk then
     begin
+      Inc(AValidMulti);
+      Inc(i, lExtra + 1);
+    end
+    else
+    begin
+      Inc(AInvalid);
       Inc(i);
-      if (ABytes[i] and cUtf8ContMask) <> cUtf8ContBits then
-        Exit(False);
-      Dec(lExtra);
     end;
-    Inc(i);
   end;
-  Result := True;
 end;
 
 // code page named by an XML prolog (<?xml ... encoding="ISO-8859-1"?>), 0 if none / unknown
@@ -219,39 +243,124 @@ begin
   else if lEnc = 'iso-8859-15' then
     Result := cCodePageLatin9
   else if lEnc = 'windows-1251' then
-    Result := cCodePageCyrillic;
+    Result := cCodePageCyrillic
+  else if (lEnc = 'utf-8') or (lEnc = 'utf8') then
+    Result := cCodePageUtf8;
+end;
+
+function IsAsciiLetter(AByte: Byte): Boolean;
+begin
+  Result := ((AByte >= Ord('A')) and (AByte <= Ord('Z'))) or ((AByte >= Ord('a')) and (AByte <= Ord('z')));
 end;
 
 // non-UTF-8 text without a declaration: Cyrillic (1251) or Western (1252)?
+// Only the high letters (>= $C0) vote: one with a high neighbour is part of a
+// run (a Cyrillic word), one next to an ASCII letter is a Latin-1 accent in a
+// Western word; one standing alone (a one-letter word: French "à", Russian "в")
+// says nothing. Cyrillic when more than half of the votes are runs; with no votes
+// at all Cyrillic stays the default (as before 1.2.36).
 function GuessLegacyCodePage(const ABytes: TBytes): Integer;
 var
-  lLetters, lHigh: Int64;
+  lRuns, lAccents: Int64;
   i: Integer;
-  lByte: Byte;
+  lPrevHigh, lNextHigh, lPrevAscii, lNextAscii: Boolean;
 begin
-  lLetters := 0;
-  lHigh := 0;
+  lRuns := 0;
+  lAccents := 0;
   for i := 0 to High(ABytes) do
   begin
-    lByte := ABytes[i];
-    if (lByte >= Ord('A')) and (lByte <= Ord('z')) then
-      Inc(lLetters)
-    else if lByte >= cLegacyHighLetterMin then
-    begin
-      Inc(lLetters);
-      Inc(lHigh);
-    end;
+    if ABytes[i] < cLegacyHighLetterMin then
+      Continue;
+    lPrevHigh := (i > 0) and (ABytes[i - 1] >= cLegacyHighByteMin);
+    lNextHigh := (i < High(ABytes)) and (ABytes[i + 1] >= cLegacyHighByteMin);
+    lPrevAscii := (i > 0) and IsAsciiLetter(ABytes[i - 1]);
+    lNextAscii := (i < High(ABytes)) and IsAsciiLetter(ABytes[i + 1]);
+    if lPrevHigh or lNextHigh then
+      Inc(lRuns)
+    else if lPrevAscii or lNextAscii then
+      Inc(lAccents);
   end;
-  if (lLetters > 0) and (lHigh / lLetters > cCyrillicHighShare) then
+  if (lRuns + lAccents = 0) or (lRuns > lAccents) then
     Result := cCodePageCyrillic
   else
     Result := cCodePageWestern;
+end;
+
+// UTF-8 decode that never raises (TEncoding.UTF8 replaces invalid bytes); False
+// when the RTL refused the bytes anyway
+// ABytes with every byte that isn't part of a well-formed UTF-8 sequence replaced by
+// U+FFFD (EF BF BD) - the RTL's UTF-8 decoder raises on such bytes instead of
+// replacing them, on Windows as well as on Linux
+function SanitizedUtf8(const ABytes: TBytes): TBytes;
+const
+  cReplacement: array[0..2] of Byte = ($EF, $BF, $BD);
+var
+  i, j, lLen, lExtra, lOut: Integer;
+  lOk: Boolean;
+begin
+  lLen := Length(ABytes);
+  SetLength(Result, lLen * Length(cReplacement)); // worst case: every byte replaced
+  lOut := 0;
+  i := 0;
+  while i < lLen do
+  begin
+    if ABytes[i] < cUtf8AsciiMax then
+    begin
+      Result[lOut] := ABytes[i];
+      Inc(lOut);
+      Inc(i);
+      Continue;
+    end;
+    if (ABytes[i] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
+      lExtra := 1
+    else if (ABytes[i] and cUtf8Lead3Mask) = cUtf8Lead3Bits then
+      lExtra := 2
+    else if (ABytes[i] and cUtf8Lead4Mask) = cUtf8Lead4Bits then
+      lExtra := 3
+    else
+      lExtra := -1;
+    lOk := (lExtra > 0) and (i + lExtra < lLen);
+    if lOk then
+      for j := i + 1 to i + lExtra do
+        if (ABytes[j] and cUtf8ContMask) <> cUtf8ContBits then
+        begin
+          lOk := False;
+          Break;
+        end;
+    if lOk then
+    begin
+      Move(ABytes[i], Result[lOut], lExtra + 1);
+      Inc(lOut, lExtra + 1);
+      Inc(i, lExtra + 1);
+    end
+    else
+    begin
+      Move(cReplacement[0], Result[lOut], Length(cReplacement));
+      Inc(lOut, Length(cReplacement));
+      Inc(i);
+    end;
+  end;
+  SetLength(Result, lOut);
+end;
+
+function TryDecodeUtf8(const ABytes: TBytes; out AText: string): Boolean;
+begin
+  try
+    // (overlong / surrogate sequences still pass the scan above; the strict RTL
+    // decoder then raises and the caller falls back to the legacy code page)
+    AText := TEncoding.UTF8.GetString(SanitizedUtf8(ABytes));
+    Result := True;
+  except
+    AText := '';
+    Result := False;
+  end;
 end;
 
 function DecodeBytes(const ABytes: TBytes): string;
 var
   lEnc: TEncoding;
   lBomLen, lCodePage: Integer;
+  lValidMulti, lInvalid: Int64;
 begin
   if Length(ABytes) = 0 then
     Exit('');
@@ -260,12 +369,19 @@ begin
   lBomLen := TEncoding.GetBufferEncoding(ABytes, lEnc, TEncoding.UTF8);
   if lBomLen > 0 then
     Exit(lEnc.GetString(ABytes, lBomLen, Length(ABytes) - lBomLen));
-  if IsValidUtf8(ABytes) then
+  CountUtf8(ABytes, lValidMulti, lInvalid);
+  if lInvalid = 0 then
     Exit(TEncoding.UTF8.GetString(ABytes));
-  // not UTF-8: the XML prolog's encoding, else a Cyrillic/Western guess (older
-  // European grabbers send ISO-8859-1; it used to come out as Cyrillic)
+  // not clean UTF-8: the XML prolog's encoding, else a Cyrillic/Western guess
+  // (older European grabbers send ISO-8859-1; it used to come out as Cyrillic)
   lCodePage := DeclaredCodePage(ABytes);
-  if lCodePage = 0 then
+  // a body declared UTF-8, or one that is overwhelmingly valid UTF-8, keeps UTF-8:
+  // one stray byte in a big guide must not turn every name into mojibake
+  if ((lCodePage = cCodePageUtf8) or
+    ((lCodePage = 0) and (lInvalid <= cUtf8MaxInvalidShare * (lValidMulti + lInvalid)))) and
+    TryDecodeUtf8(ABytes, Result) then
+    Exit;
+  if (lCodePage = 0) or (lCodePage = cCodePageUtf8) then
     lCodePage := GuessLegacyCodePage(ABytes);
   // guarded: a code page may be unavailable on a bare Linux without ICU
   try
@@ -435,6 +551,11 @@ begin
         'Provider zit achter een Cloudflare browser-challenge — niet zonder browser op te halen.');
     if lStatus >= cHttpStatusErrorMin then
       raise EIdHTTPProtocolException.CreateError(lStatus, lHttp.ResponseText, DecodeBytes(Result));
+    // still a 3xx: the redirect chain exceeded cMaxRedirects (or had no Location)
+    // and Indy handed back the redirect itself (hoNoProtocolErrorException) - its
+    // HTML body is no playlist/EPG
+    if (lStatus >= cHttpStatusRedirectMin) and (lStatus <= cHttpStatusRedirectMax) then
+      raise Exception.CreateFmt('HTTP %d (too many redirects?) fetching %s', [lStatus, MaskUrlSecrets(AUrl)]);
     // Truncation guard: with identity encoding a declared Content-Length equals the
     // body length, so fewer received bytes means the connection dropped mid-transfer.
     // Fail rather than hand back a truncated playlist/EPG (for EPG, ReplaceEpg would

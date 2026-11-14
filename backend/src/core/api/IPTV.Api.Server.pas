@@ -132,13 +132,27 @@ const
   cMimeTextPlain = 'text/plain';
   cHttpStatusForbidden = 403;
   cHttpStatusUnauthorized = 401;
+  cHttpStatusSuccessMin = 200;
+  cHttpStatusSuccessMax = 299;
+  cHttpStatusRedirectMax = 399;
+  // a box login: ?username= or a path login (/live/{user}/{pass}/{id},
+  // /timeshift/{user}/{pass}/...) = at least 3 segments
+  cBoxUserQuery = 'username';
+  cBoxPathLoginTokens = 3;
+  // box routes that check a ?username= login and answer a wrong one with 401.
+  // player_api.php is NOT one: it answers a wrong login with 200 + auth:0 (like real
+  // panels), so its status says nothing about the login (TPlayerApiResource must clear
+  // the counter itself on a resolved login);
+  // the Plex routes have no login at all.
+  cBoxQueryLoginRoutes: array[0..2] of string = ('get.php', 'xmltv.php', 'streaming');
+  // box routes that carry the login in the path; a good one is answered with a 302
+  cBoxPathLoginRoutes: array[0..3] of string = ('live', 'movie', 'series', 'timeshift');
   // the admin password as the web app / download links send it
   cAdminPasswordHeader = 'X-Admin-Password';
   cAdminPasswordQuery = 'pw';
 
 const
-  // startup warm-up (see GWarmGate)
-  cWarmupHeader = 'X-IPTV-Warmup';
+  // startup warm-up (see GWarmGate); the header is IPTV.Api.AuthThrottle.cWarmupHeader
   cWarmupWaitMs = 30000;
   cWarmupConnectTimeoutMs = 5000;
   cWarmupResponseTimeoutMs = 15000;
@@ -286,6 +300,60 @@ begin
   Result := True;
 end;
 
+// the failed-login lockout key of a request: /api counts per admin surface, every
+// other backend route per box surface (a box's wrong login can't lock the web app out)
+function ThrottleKey(const AFirstSeg: string; const ARequest: IMARSRequest): string;
+var
+  lSurface: string;
+begin
+  if SameText(AFirstSeg, cApiRoot) then
+    lSurface := cSurfaceAdmin
+  else
+    lSurface := cSurfaceBox;
+  Result := GAuthThrottle.ClientKey(lSurface, ARequest.RemoteIP,
+    ARequest.GetHeaderParamValue(cHeaderForwardedFor));
+end;
+
+function IsBoxPathLoginRoute(const AFirstSeg: string): Boolean;
+var
+  lRoute: string;
+begin
+  for lRoute in cBoxPathLoginRoutes do
+    if SameText(AFirstSeg, lRoute) then
+      Exit(True);
+  Result := False;
+end;
+
+function IsBoxQueryLoginRoute(const AFirstSeg: string): Boolean;
+var
+  lRoute: string;
+begin
+  for lRoute in cBoxQueryLoginRoutes do
+    if SameText(AFirstSeg, lRoute) then
+      Exit(True);
+  Result := False;
+end;
+
+// was this answer a successful login? /api: 2xx with the RIGHT admin password sent
+// (/api/health answers 200 to any password, so the status alone proves nothing);
+// box: 2xx (or the 302 of a stream/timeshift redirect) on a route that checks the
+// login it carried (see cBoxQueryLoginRoutes / cBoxPathLoginRoutes).
+function IsSuccessfulLogin(const AFirstSeg: string; const AURL: TMARSURL;
+  const ARequest: IMARSRequest; AStatus: Integer; const AAdminPassword: string): Boolean;
+begin
+  if AStatus < cHttpStatusSuccessMin then
+    Exit(False);
+  if SameText(AFirstSeg, cApiRoot) then
+    Result := (AStatus <= cHttpStatusSuccessMax) and (AAdminPassword <> '') and
+      (IsSamePassword(ARequest.GetHeaderParamValue(cAdminPasswordHeader), AAdminPassword) or
+       IsSamePassword(ARequest.GetQueryParamValue(cAdminPasswordQuery), AAdminPassword))
+  else if IsBoxPathLoginRoute(AFirstSeg) then
+    Result := (AStatus <= cHttpStatusRedirectMax) and AURL.HasPathTokens(cBoxPathLoginTokens)
+  else
+    Result := (AStatus <= cHttpStatusSuccessMax) and IsBoxQueryLoginRoute(AFirstSeg) and
+      (ARequest.GetQueryParamValue(cBoxUserQuery) <> '');
+end;
+
 function TApiServer.GetPort: Integer;
 begin
   Result := FConfig.HttpPort;
@@ -313,6 +381,12 @@ begin
   // against floods. Failed logins are limited separately (IPTV.Api.AuthThrottle).
   FEngine.Parameters.Values[cParamRateLimitRequests] := IntToStr(FConfig.RateLimitPerMinute);
   FEngine.Parameters.Values[cParamRateLimitWindow] := IntToStr(cRateLimitWindowSec);
+  // behind a reverse proxy every client has the proxy's address: let the failed-login
+  // lockout use X-Forwarded-For (only from the configured proxies). MARS's rate limiter
+  // is NOT pointed at that header: it would believe it from ANY client, so a flooder
+  // could dodge it by sending a fresh X-Forwarded-For per request. It keeps keying on
+  // the socket address (behind a proxy: one shared bucket - raise rateLimitPerMinute).
+  GAuthThrottle.TrustedProxies := FConfig.TrustedProxies;
   if FConfig.UseHttps then
   begin
     if (FConfig.TlsCertFile = '') or (FConfig.TlsKeyFile = '') then
@@ -386,7 +460,7 @@ begin
       if (FWebRoot = '') or IsBackendRoute(lFirst) then
       begin
         // too many failed logins from this client: 429 until the lockout ends
-        if GAuthThrottle.IsBlocked(ARequest.RemoteIP, lRetryAfter) then
+        if GAuthThrottle.IsBlocked(ThrottleKey(lFirst, ARequest), lRetryAfter) then
         begin
           AResponse.SetStatusCode(cHttpTooManyRequests);
           AResponse.SetHeader(cHeaderRetryAfter, IntToStr(lRetryAfter));
@@ -438,18 +512,26 @@ begin
       lMs: Int64;
       lFirst: string;
     begin
-      // a failed login counts towards the per-IP lockout. On /api only when a
+      // a failed login counts towards the per-client lockout. On /api only when a
       // password was actually sent (the web app's first probe without one is no
-      // guess); the box endpoints always carry a login.
-      if AResponse.StatusCode = cHttpStatusUnauthorized then
+      // guess); the box endpoints always carry a login. Our own warm-up requests
+      // (bogus login on purpose) never count. A successful answer to a request that
+      // carried a login clears the counter, so one good login undoes earlier typos.
+      lFirst := '';
+      if AURL.HasPathTokens then
+        lFirst := AURL.PathTokens[0];
+      if ((FWebRoot = '') or IsBackendRoute(lFirst)) and
+         ((GWarmToken = '') or (ARequest.GetHeaderParamValue(cWarmupHeader) <> GWarmToken)) then
       begin
-        lFirst := '';
-        if AURL.HasPathTokens then
-          lFirst := AURL.PathTokens[0];
-        if not SameText(lFirst, cApiRoot) or
-           (ARequest.GetHeaderParamValue(cAdminPasswordHeader) <> '') or
-           (ARequest.GetQueryParamValue(cAdminPasswordQuery) <> '') then
-          GAuthThrottle.RegisterFailure(ARequest.RemoteIP);
+        if AResponse.StatusCode = cHttpStatusUnauthorized then
+        begin
+          if not SameText(lFirst, cApiRoot) or
+             (ARequest.GetHeaderParamValue(cAdminPasswordHeader) <> '') or
+             (ARequest.GetQueryParamValue(cAdminPasswordQuery) <> '') then
+            GAuthThrottle.RegisterFailure(ThrottleKey(lFirst, ARequest));
+        end
+        else if IsSuccessfulLogin(lFirst, AURL, ARequest, AResponse.StatusCode, FConfig.AdminPassword) then
+          GAuthThrottle.RegisterSuccess(ThrottleKey(lFirst, ARequest));
       end;
       if not Assigned(FLog) then
         Exit;

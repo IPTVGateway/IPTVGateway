@@ -117,6 +117,8 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
       type,
       onlyNew: onlyNew || undefined,
       search: searchTerm || undefined,
+      // the Prefix filter narrows the group list too (groups holding such channels)
+      prefix: prefixTerm || undefined,
     }
     api
       .categories(q)
@@ -134,7 +136,7 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     }
     // `sources` is in the deps so editing a source's filters (which bumps the
     // sources list) re-applies the live filter to the catalog immediately.
-  }, [drill, flatSearch, sourceId, type, onlyNew, searchTerm, catReload, sources])
+  }, [drill, flatSearch, sourceId, type, onlyNew, searchTerm, prefixTerm, catReload, sources])
 
   // --- load STREAMS (paged) for the drilled group or a flat search ----------
   const streamQuery: CatalogQuery | null = useMemo(() => {
@@ -187,6 +189,11 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   }, [streamQuery, pageSize, page, sources, streamReload])
 
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  // the total can shrink under us (e.g. "mark seen" in the only-new view): never
+  // stay on a page past the last one ("Page 3 / 2")
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(pageCount - 1)
+  }, [page, pageCount])
   const showingStreams = drill != null || flatSearch
 
   const sortedCategories = useMemo(

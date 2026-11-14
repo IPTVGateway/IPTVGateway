@@ -36,6 +36,9 @@ type
     [Test] procedure CorruptConfigIsKeptAsBackup;
     /// <summary>A leftover config.json.tmp is recovered.</summary>
     [Test] procedure InterruptedSaveIsRecovered;
+    /// <summary>trustedProxies survives a save/load (trimmed, blanks dropped) and is
+    /// empty by default.</summary>
+    [Test] procedure TrustedProxiesRoundtrip;
   end;
 
 implementation
@@ -267,6 +270,25 @@ begin
   finally
     TDirectory.Delete(lDir, True);
   end;
+end;
+
+procedure TConfigTests.TrustedProxiesRoundtrip;
+const
+  cProxyA = '192.168.1.2';
+  cProxyB = '::1';
+var
+  lConfig: TAppConfig;
+  lLoaded: TAppConfig;
+begin
+  Assert.AreEqual<Integer>(0, Length(TAppConfig.Default.TrustedProxies), 'no trusted proxies by default');
+  lConfig := TAppConfig.Default;
+  lConfig.TrustedProxies := [cProxyA, ' ', cProxyB];
+  lConfig.Save(FPath);
+
+  lLoaded := TAppConfig.Load(FPath);
+  Assert.AreEqual<Integer>(2, Length(lLoaded.TrustedProxies), 'a blank entry is dropped');
+  Assert.AreEqual(cProxyA, lLoaded.TrustedProxies[0], 'first proxy round-trips');
+  Assert.AreEqual(cProxyB, lLoaded.TrustedProxies[1], 'IPv6 proxy round-trips');
 end;
 
 initialization

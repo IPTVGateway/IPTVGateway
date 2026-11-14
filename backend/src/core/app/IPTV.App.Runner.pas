@@ -112,8 +112,15 @@ begin
   finally
     FStarted := False;
     if Assigned(FContext) then
+    begin
       FContext.Stop;
-    FreeAndNil(FContext);
+      if FContext.Abandoned then
+        // a refresh still runs on another thread and uses the context: freeing it
+        // would be a use-after-free once that refresh ends - leave it to the exit
+        FContext := nil
+      else
+        FreeAndNil(FContext);
+    end;
   end;
 end;
 

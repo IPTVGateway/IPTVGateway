@@ -377,6 +377,8 @@ var
   lSource: TSourceConfig;
   lHlsUrl: string;
   lRetryAfter: Integer;
+  lThrottleKey: string;
+  lSibling: string;
 begin
   lHlsUrl := '';
   if App = nil then
@@ -384,8 +386,12 @@ begin
     AResponseInfo.ResponseNo := cHttpStatusServiceUnavailable;
     Exit;
   end;
+  // the same lockout key as the box endpoints on the API port (behind a trusted
+  // reverse proxy: the client from X-Forwarded-For, not the proxy's address)
+  lThrottleKey := GAuthThrottle.ClientKey(cSurfaceBox, AContext.Binding.PeerIP,
+    ARequestInfo.RawHeaders.Values[cHeaderForwardedFor]);
   // too many failed logins from this client: 429 until the lockout ends
-  if GAuthThrottle.IsBlocked(AContext.Binding.PeerIP, lRetryAfter) then
+  if GAuthThrottle.IsBlocked(lThrottleKey, lRetryAfter) then
   begin
     AResponseInfo.ResponseNo := cHttpTooManyRequests;
     AResponseInfo.CustomHeaders.Values[cHeaderRetryAfter] := IntToStr(lRetryAfter);
@@ -451,10 +457,11 @@ begin
   lList := FindListForPath(lStore, lUser, lPass); // '-' = empty login, %-encoding
   if lList = nil then
   begin
-    GAuthThrottle.RegisterFailure(AContext.Binding.PeerIP); // a wrong bouquet login
+    GAuthThrottle.RegisterFailure(lThrottleKey); // a wrong bouquet login
     AResponseInfo.ResponseNo := cHttpStatusUnauthorized;
     Exit;
   end;
+  GAuthThrottle.RegisterSuccess(lThrottleKey);
   try
     // scope to the authenticated list — don't relay a stream that isn't on it
     lStream := lStore.LoadListStreamById(lList.Id, lStreamId);
@@ -477,13 +484,15 @@ begin
       else
       begin
         lUpstream := lStream.UpstreamUrl;
-        // HLS (asked as .m3u8, or the source forces it) can't be relayed as one
-        // byte stream: bounce the box to the provider's playlist instead
+        // HLS (asked as .m3u8, the source forces it, or the upstream URL itself is
+        // a playlist - e.g. an M3U source's .../playlist.m3u8) can't be relayed as
+        // one byte stream: bounce the box to the provider's playlist instead
         if lStream.ContentType = ctLive then
         begin
           lSource := FindSourceById(lStore, lStream.SourceId);
           try
-            if SameText(UrlExt(lIdPart), cExtHls) or ((lSource <> nil) and lSource.ForceHls) then
+            if SameText(UrlExt(lIdPart), cExtHls) or ((lSource <> nil) and lSource.ForceHls) or
+               SameText(UrlExt(lUpstream), cExtHls) then
               lHlsUrl := LiveUpstreamUrl(lStore, lStream, cExtHls);
           finally
             FreeAndNil(lSource);
@@ -500,6 +509,15 @@ begin
     FreeAndNil(lList);
   end;
 
+  // HLS first, so a HEAD probe on such a channel gets the same 302 as the GET
+  if lHlsUrl <> '' then
+  begin
+    if Assigned(FLog) then
+      FLog(Format('proxy relay %s: HLS -> 302 to the provider %s', [lIdPart, MaskCreds(lHlsUrl)]));
+    AResponseInfo.Redirect(lHlsUrl);
+    Exit;
+  end;
+
   // HEAD (players probing the URL): answer the headers, never start a relay that
   // would pull the whole stream from the provider
   if SameText(ARequestInfo.Command, cMethodHead) then
@@ -509,21 +527,16 @@ begin
     Exit;
   end;
 
-  if lHlsUrl <> '' then
-  begin
-    if Assigned(FLog) then
-      FLog(Format('proxy relay %s: HLS -> 302 to the provider %s', [lIdPart, MaskCreds(lHlsUrl)]));
-    AResponseInfo.Redirect(lHlsUrl);
-    Exit;
-  end;
-
   // Candidate upstreams: the primary first, then the SAME channel from other sources
   // when failover is enabled — so a dead provider transparently falls back to another.
   // (Failover is only possible in relay mode; a single 302 redirect can't fail over.)
   lCandidates := [lUpstream];
-  // (no failover for an archive: another provider's archive is a different recording)
+  // (no failover for an archive: another provider's archive is a different recording;
+  // and no HLS sibling: this relay pumps one TS byte stream, a playlist is useless)
   if App.Config.StreamFailover and not lIsTimeshift then
-    lCandidates := lCandidates + lStore.LoadStreamSiblings(lStreamId);
+    for lSibling in lStore.LoadStreamSiblings(lStreamId) do
+      if not SameText(UrlExt(lSibling), cExtHls) then
+        lCandidates := lCandidates + [lSibling];
 
   // We take the connection over completely: instead of letting Indy build a
   // response (it would emit a default text/html header + bogus Content-Length

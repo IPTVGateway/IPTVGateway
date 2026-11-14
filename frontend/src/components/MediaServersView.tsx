@@ -7,7 +7,7 @@ import { useT } from '../i18n'
 const DUMMY_EPG_BLOCK_MINUTES = { min: 5, max: 720, def: 120 }
 const DUMMY_EPG_HOURS_BACK = { min: 0, max: 168, def: 12 } // up to a week back
 const DUMMY_EPG_HOURS_AHEAD = { min: 1, max: 336, def: 48 } // up to two weeks ahead
-const PLEX_TUNER_COUNT = { min: 1, max: 32, def: 4 }
+const PLEX_TUNER_COUNT = { min: 1, max: 100, def: 4 } // backend cMaxPlexTunerCount
 // how long the "Copied ✓" feedback stays
 const COPIED_FEEDBACK_MS = 1500
 

@@ -17,6 +17,7 @@ uses
   // own units
   Test.M3U in 'Test.M3U.pas',
   Test.Utils in 'Test.Utils.pas',
+  Test.AuthThrottle in 'Test.AuthThrottle.pas',
   Test.Config in 'Test.Config.pas',
   Test.Storage in 'Test.Storage.pas',
   Test.Probe in 'Test.Probe.pas',

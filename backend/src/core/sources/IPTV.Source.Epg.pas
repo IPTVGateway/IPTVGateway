@@ -310,11 +310,15 @@ end;
 function TXmltvEpgReader.Read(const ASource: TSourceConfig;
   const AKeepTvgIds: TArray<string>): TEpgProgrammeList;
 var
-  lUrl, lXml, lBlock, lChannel, lWanted: string;
-  lKeep: TDictionary<string, string>; // lower-case id -> the id as the list spells it
+  lUrl, lXml, lBlock, lChannel, lSpelling, lTitle, lDescription: string;
+  // lower-case id -> every spelling of it on the list (NPO1.nl and npo1.nl from two
+  // providers / an override are two channels that both want this guide)
+  lKeep: TDictionary<string, TArray<string>>;
+  lSpellings: TArray<string>;
   lKeepAll: Boolean;
   lId: string;
   lStart, lEnd, lCursor, lTagEnd: Integer;
+  lStartUtc, lStopUtc: TDateTime;
   lProg: TEpgProgramme;
 begin
   Result := TEpgProgrammeList.Create(True);
@@ -322,12 +326,17 @@ begin
   if lUrl = '' then
     Exit;
 
-  lKeep := TDictionary<string, string>.Create;
+  lKeep := TDictionary<string, TArray<string>>.Create;
   try
     try
       for lId in AKeepTvgIds do
         if lId <> '' then
-          lKeep.AddOrSetValue(LowerCase(lId), lId);
+        begin
+          if not lKeep.TryGetValue(LowerCase(lId), lSpellings) then
+            lSpellings := nil;
+          if IndexStr(lId, lSpellings) < 0 then
+            lKeep.AddOrSetValue(LowerCase(lId), lSpellings + [lId]);
+        end;
       lKeepAll := lKeep.Count = 0;
 
       // hybrid fetch (http via Indy / https via OS TLS) + per-provider UA;
@@ -358,29 +367,33 @@ begin
         // for programmes we actually keep (most are discarded for unlisted channels)
         // decoded: an id like "Sky&amp;Co.uk" is "Sky&Co.uk" on the M3U side
         lChannel := XmlDecode(AttrValIn(lXml, cAttrChannel, lStart, lEnd));
-        if lKeepAll or lKeep.TryGetValue(LowerCase(lChannel), lWanted) then
+        // stored under the list's spelling(s): matching is case-insensitive, but the
+        // guide is served by exact id (npo1.nl in the guide, NPO1.nl on the list)
+        if lKeepAll then
+          lSpellings := [lChannel]
+        else if not lKeep.TryGetValue(LowerCase(lChannel), lSpellings) then
+          Continue;
+        lBlock := Copy(lXml, lStart, lEnd - lStart);
+        lStartUtc := ParseXmltvTime(AttrVal(lBlock, cAttrStart));
+        // ParseXmltvTime returns 0 on an unparseable timestamp; skip such a
+        // programme rather than storing it pinned to 1899-12-30 (the comment in
+        // ParseXmltvTime promises the caller skips — this is where).
+        if lStartUtc = 0 then
+          Continue;
+        lStopUtc := ParseXmltvTime(AttrVal(lBlock, cAttrStop));
+        lTitle := XmlDecode(TagText(lBlock, cTagTitle));
+        lDescription := XmlDecode(TagText(lBlock, cTagDesc));
+        // one copy per list spelling, so every channel that wants it gets the guide
+        for lSpelling in lSpellings do
         begin
-          // stored under the list's spelling: matching is case-insensitive, but the
-          // guide is served by exact id (npo1.nl in the guide, NPO1.nl on the list)
-          if not lKeepAll then
-            lChannel := lWanted;
-          lBlock := Copy(lXml, lStart, lEnd - lStart);
           lProg := TEpgProgramme.Create;
           lProg.SourceId := ASource.Id;
-          lProg.ChannelTvgId := lChannel;
-          lProg.StartUtc := ParseXmltvTime(AttrVal(lBlock, cAttrStart));
-          lProg.StopUtc := ParseXmltvTime(AttrVal(lBlock, cAttrStop));
-          // ParseXmltvTime returns 0 on an unparseable timestamp; skip such a
-          // programme rather than storing it pinned to 1899-12-30 (the comment in
-          // ParseXmltvTime promises the caller skips — this is where).
-          if lProg.StartUtc = 0 then
-            FreeAndNil(lProg)
-          else
-          begin
-            lProg.Title := XmlDecode(TagText(lBlock, cTagTitle));
-            lProg.Description := XmlDecode(TagText(lBlock, cTagDesc));
-            Result.Add(lProg);
-          end;
+          lProg.ChannelTvgId := lSpelling;
+          lProg.StartUtc := lStartUtc;
+          lProg.StopUtc := lStopUtc;
+          lProg.Title := lTitle;
+          lProg.Description := lDescription;
+          Result.Add(lProg);
         end;
       until False;
       FillMissingStops(Result);
@@ -395,23 +408,37 @@ end;
 
 procedure FillMissingStops(AList: TEpgProgrammeList);
 var
-  lOpen: TDictionary<string, TEpgProgramme>; // channel -> programme waiting for a stop
+  // channel -> the programme(s) waiting for a stop; several only when a guide lists
+  // the same start twice (a duplicate entry) - all of them end at the next start
+  lOpen: TDictionary<string, TArray<TEpgProgramme>>;
+  lWaiting: TArray<TEpgProgramme>;
   lProg, lPrev: TEpgProgramme;
 begin
-  lOpen := TDictionary<string, TEpgProgramme>.Create;
+  lOpen := TDictionary<string, TArray<TEpgProgramme>>.Create;
   try
     for lProg in AList do
     begin
-      if lOpen.TryGetValue(lProg.ChannelTvgId, lPrev) and (lProg.StartUtc > lPrev.StartUtc) then
+      if lOpen.TryGetValue(lProg.ChannelTvgId, lWaiting) and (lProg.StartUtc > lWaiting[0].StartUtc) then
       begin
-        lPrev.StopUtc := lProg.StartUtc;
+        for lPrev in lWaiting do
+          lPrev.StopUtc := lProg.StartUtc;
         lOpen.Remove(lProg.ChannelTvgId);
       end;
       if lProg.StopUtc = 0 then
-        lOpen.AddOrSetValue(lProg.ChannelTvgId, lProg);
+      begin
+        // a duplicate start joins the waiting one instead of replacing it (the
+        // replaced one kept StopUtc = 0, stored as 1899-12-30)
+        if lOpen.TryGetValue(lProg.ChannelTvgId, lWaiting) and (lProg.StartUtc = lWaiting[0].StartUtc) then
+          lOpen.AddOrSetValue(lProg.ChannelTvgId, lWaiting + [lProg])
+        else
+          lOpen.AddOrSetValue(lProg.ChannelTvgId, [lProg]);
+      end;
     end;
-    for lProg in lOpen.Values do
-      lProg.StopUtc := IncHour(lProg.StartUtc, cDefaultLastProgrammeHours);
+    // the last of each channel - and any still without a stop (an out-of-order
+    // start) - gets the default length
+    for lProg in AList do
+      if lProg.StopUtc = 0 then
+        lProg.StopUtc := IncHour(lProg.StartUtc, cDefaultLastProgrammeHours);
   finally
     FreeAndNil(lOpen);
   end;
@@ -453,11 +480,25 @@ begin
           lCursor := lStart + 1;
           Continue;
         end;
-        lEnd := PosEx(cTagChannelClose, lXml, lStart);
-        if lEnd = 0 then
+        // a self-closing <channel id="x"/> is valid (an id without display-name):
+        // take just the tag, else the search for </channel> would swallow the NEXT
+        // channel into it
+        lTagEnd := PosEx('>', lXml, lStart);
+        if lTagEnd = 0 then
           Break;
-        lBlock := Copy(lXml, lStart, lEnd - lStart);
-        lCursor := lEnd + Length(cTagChannelClose);
+        if lXml[lTagEnd - 1] = '/' then
+        begin
+          lBlock := Copy(lXml, lStart, lTagEnd + 1 - lStart);
+          lCursor := lTagEnd + 1;
+        end
+        else
+        begin
+          lEnd := PosEx(cTagChannelClose, lXml, lStart);
+          if lEnd = 0 then
+            Break;
+          lBlock := Copy(lXml, lStart, lEnd - lStart);
+          lCursor := lEnd + Length(cTagChannelClose);
+        end;
         lInfo.Id := XmlDecode(AttrVal(lBlock, cAttrId));
         lInfo.Name := XmlDecode(TagText(lBlock, cTagDisplayName));
         if lInfo.Id <> '' then

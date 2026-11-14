@@ -5,6 +5,75 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+Third bug hunt (five separate runs). The big code-style pass of 1.2.36 was checked
+rename by rename: no regressions.
+
+### Fixed
+- **Cyrillic playlists and guides** (Windows-1251, e.g. RU/UA panels) are decoded
+  correctly again. 1.2.36 counted the ASCII of tags and URLs and took them for
+  Western text.
+- A UTF-8 guide with a single invalid byte is no longer decoded as Western text
+  from start to end.
+- **Login lockout:**
+  - The web app no longer locks itself out. After a 401 it forgets the stale password,
+    so background polls stop counting as failed logins.
+  - A lockout shows the login screen with a countdown.
+  - One good login clears the counter.
+  - Admin and boxes are counted separately.
+  - Behind a reverse proxy, list it under `trustedProxies` in `config.json` to count
+    per real client.
+  - The lockout timer ignores daylight-saving changes.
+  - The server's own warm-up and a box logging in while the service starts no longer
+    count. During startup boxes get 503 instead of "wrong password".
+- **Settings:**
+  - Saving no longer fails when `config.json` holds an EPG day count above 31.
+  - All values are checked before anything is saved.
+  - An import is checked before the store is replaced, and a relay that can't bind
+    becomes a warning.
+- A refresh that finishes after its source was deleted (or replaced by an import) no
+  longer leaves channels and guide data behind. Such leftovers are removed on start.
+- A stream that is now recognised as another content type keeps its place also when
+  the same provider id exists under two types.
+- **Container:**
+  - When the data folder can't be handed to `PUID:PGID` (SMB/NFS share, read-only),
+    the container says so and runs as root instead of restarting forever.
+  - TLS keys or a database outside the volume must be readable by that user (or set
+    `PUID=0`). Ports below 1024 need `PUID=0`.
+- **Shutdown:**
+  - It stays within the stop budget (no double wait).
+  - A refresh or background job that still hangs is left alone instead of freed under it.
+  - Closing the console window on Windows stops cleanly.
+- **Proxy mode:** an M3U channel that is HLS (`.m3u8`) is redirected to the provider
+  instead of relayed as bytes (also for HEAD), and HLS sources are no longer used as
+  failover.
+- **Plex:** the tuner and lineup addresses follow the port and scheme of the public base
+  URL (Docker port mapping).
+- **Bouquet logins:** a `+` in a bouquet password works on the web port too.
+- **EPG:**
+  - Two channels whose tvg-ids differ only in upper/lower case both get their guide.
+  - The box's "now/next" is in time order.
+  - `channel_id` matches the guide.
+  - A self-closing `<channel/>` no longer hides the next channel.
+  - A duplicate programme without an end time gets one.
+- **Downloads:** a download stuck in a redirect loop fails instead of storing the
+  redirect page.
+- **Daily refresh:** a refresh at 02:00 also runs on the spring daylight-saving day.
+- **M3U credential swap:** a recovered M3U password with `%`-escapes keeps
+  credential-swap ids stable.
+- **Movie and series info:** no longer passes the provider's `direct_source` (with its
+  login) to boxes.
+- **Windows Service:** recovers an interrupted settings save.
+- **VCL dev host:** the proxy switch no longer turns failover off.
+- **Web app:**
+  - Confirming "empty group" or a list message no longer carries over to another
+    bouquet.
+  - A failed bouquet switch no longer shows the previous bouquet.
+  - Catalog paging stays in range.
+  - The prefix filter works in the groups view.
+  - QHD and 2K can be picked.
+  - The EPG view reloads its channel names.
+  - The limits match the server (EPG days up to 366, Plex tuners up to 100).
+
 ## [1.2.37] - 2026-11-14
 
 Hardening release.

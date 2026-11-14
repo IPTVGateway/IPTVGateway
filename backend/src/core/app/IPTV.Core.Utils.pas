@@ -47,7 +47,11 @@ function FoldDecorativeLetters(const AValue: string): string;
 /// Read a query-string parameter from a URL by name (case-insensitive); '' if
 /// absent. Used to recover provider credentials embedded in a get.php playlist
 /// URL (…?username=X&password=Y…) when the source's own fields are empty.
+/// Percent-decoded (UTF-8; "a%40b" -> "a@b"; '+' is kept as typed, since a raw
+/// '+' in a password is far more common than a form-encoded space).
 function UrlQueryParam(const AUrl, AName: string): string;
+/// As UrlQueryParam, but exactly as written in the URL (not decoded).
+function UrlQueryParamRaw(const AUrl, AName: string): string;
 
 /// Canonical quality token (uppercased; FULLHD→FHD) if AToken is a known quality
 /// label (SD/HD/FHD/UHD/4K/4K+/8K/8K+ …); '' otherwise. Used to spot the quality
@@ -75,7 +79,12 @@ function QualityMatchKey(const AName: string; out AQuality, AHeadKey: string): s
 /// credentials swap preserves the curated layout. Only the supplied creds are
 /// stripped (no blind path-segment guessing); when both are empty it falls back
 /// to hashing the whole URL (legacy behaviour — there's nothing to strip).
-function M3uStreamId(const AUrl, AUser, APass: string): string;
+function M3uStreamId(const AUrl, AUser, APass: string): string; overload;
+/// As above for any number of credential spellings (e.g. a password as written in
+/// the get.php URL AND percent-decoded): each is blanked, the longest first;
+/// duplicates and empties are ignored; equal lengths keep the given order. With
+/// [pass, user] it equals the overload above.
+function M3uStreamId(const AUrl: string; const ACreds: array of string): string; overload;
 
 /// ISO-8601 UTC text; '' when ADt = 0.
 function DateTimeToIsoUtc(const ADt: TDateTime): string;
@@ -204,6 +213,13 @@ const
 
   // M3uStreamId: shorter credentials are not blanked (they'd hit incidental chars)
   cMinCredLength = 2;
+
+  // UrlPercentDecode
+  cPercent = '%';
+  cPercentEscapeLen = 3;           // "%XX"
+  cHexBase = 16;
+  cHexLetterBase = 10;             // 'a'/'A' = 10
+  cReplacementChar = #$FFFD;       // what the UTF-8 decoder puts for invalid bytes
 
   // StripNamePrefixes / StripNameSuffixes: upper bound on strip passes
   cMaxStripPasses = 16;
@@ -359,7 +375,70 @@ begin
   end;
 end;
 
+function HexDigitValue(AByte: Byte): Integer;
+begin
+  case AByte of
+    Ord('0')..Ord('9'):
+      Result := AByte - Ord('0');
+    Ord('a')..Ord('f'):
+      Result := AByte - Ord('a') + cHexLetterBase;
+    Ord('A')..Ord('F'):
+      Result := AByte - Ord('A') + cHexLetterBase;
+  else
+    Result := -1;
+  end;
+end;
+
+// %XX sequences -> bytes -> UTF-8 text; malformed escapes stay as typed, and a
+// value whose escapes are no valid UTF-8 (e.g. Latin-1 "%E9") is returned undecoded
+function UrlPercentDecode(const AValue: string): string;
+var
+  lSrc, lDst: TBytes;
+  i, lCount, lHi, lLo: Integer;
+begin
+  if not AValue.Contains(cPercent) then
+    Exit(AValue);
+  lSrc := TEncoding.UTF8.GetBytes(AValue);
+  SetLength(lDst, Length(lSrc));
+  lCount := 0;
+  i := 0;
+  while i < Length(lSrc) do
+  begin
+    lHi := -1;
+    lLo := -1;
+    if (lSrc[i] = Ord(cPercent)) and (i + cPercentEscapeLen - 1 < Length(lSrc)) then
+    begin
+      lHi := HexDigitValue(lSrc[i + 1]);
+      lLo := HexDigitValue(lSrc[i + 2]);
+    end;
+    if (lHi >= 0) and (lLo >= 0) then
+    begin
+      lDst[lCount] := Byte(lHi * cHexBase + lLo);
+      Inc(i, cPercentEscapeLen);
+    end
+    else
+    begin
+      lDst[lCount] := lSrc[i];
+      Inc(i);
+    end;
+    Inc(lCount);
+  end;
+  SetLength(lDst, lCount);
+  try
+    Result := TEncoding.UTF8.GetString(lDst);
+  except
+    Exit(AValue);
+  end;
+  if Result.Contains(cReplacementChar) and not AValue.Contains(cReplacementChar) then
+    Result := AValue;
+end;
+
 function UrlQueryParam(const AUrl, AName: string): string;
+begin
+  Result := UrlPercentDecode(UrlQueryParamRaw(AUrl, AName));
+end;
+
+function UrlQueryParamRaw(const AUrl, AName: string): string;
 var
   lQuery, lPair: string;
   lQueryPos, lEqPos, lHashPos: Integer;
@@ -500,6 +579,38 @@ begin
     Blank(AUser);
     Blank(APass);
   end;
+  Result := THashSHA2.GetHashString(lUrl);
+end;
+
+function M3uStreamId(const AUrl: string; const ACreds: array of string): string;
+const
+  CRED = '~'; // same placeholder as the overload above
+var
+  lUrl, lSwap: string;
+  lSorted: TArray<string>;
+  i, j: Integer;
+begin
+  // distinct non-empty spellings, longest first (so one can't partially mask
+  // another); a stable sort, so ties keep the caller's order
+  lSorted := nil;
+  for i := Low(ACreds) to High(ACreds) do
+    if (ACreds[i] <> '') and (IndexStr(ACreds[i], lSorted) < 0) then
+      lSorted := lSorted + [ACreds[i]];
+  for i := 1 to High(lSorted) do
+  begin
+    j := i;
+    while (j > 0) and (lSorted[j].Length > lSorted[j - 1].Length) do
+    begin
+      lSwap := lSorted[j];
+      lSorted[j] := lSorted[j - 1];
+      lSorted[j - 1] := lSwap;
+      Dec(j);
+    end;
+  end;
+  lUrl := AUrl;
+  for i := 0 to High(lSorted) do
+    if lSorted[i].Length >= cMinCredLength then
+      lUrl := StringReplace(lUrl, lSorted[i], CRED, [rfReplaceAll]); // case-sensitive (URLs are)
   Result := THashSHA2.GetHashString(lUrl);
 end;
 

@@ -36,6 +36,12 @@ type
     [Test] procedure DropsExtinfWithoutUrlLine;
     /// <summary>The URL path decides the content type, then whole-word group names.</summary>
     [Test] procedure GuessesContentTypeFromUrlThenWholeWords;
+    /// <summary>A credential recovered from get.php is percent-decoded; '+' and bad escapes stay.</summary>
+    [Test] procedure UrlQueryParam_PercentDecodes;
+    /// <summary>An escaped password (a%40b in get.php, a@b in the stream path) keeps the id swap-stable.</summary>
+    [Test] procedure IdSurvivesCredentialSwapWithEscapedPassword;
+    /// <summary>For a login without escapes the multi-spelling id equals the old id.</summary>
+    [Test] procedure MultiCredIdEqualsLegacyIdForNormalLogins;
   end;
 
 implementation
@@ -46,6 +52,7 @@ uses
   // own units
   IPTV.Model.Types,
   IPTV.Model.Catalog,
+  IPTV.Core.Utils,
   IPTV.Source.M3U;
 
 function Parse(const AContent: string): TSourceSnapshot;
@@ -305,6 +312,68 @@ begin
   finally
     FreeAndNil(lSnapshot);
   end;
+end;
+
+procedure TM3UTests.UrlQueryParam_PercentDecodes;
+const
+  cUrl = 'http://p/get.php?username=bob&password=a%40b%2Bc&type=m3u_plus';
+begin
+  Assert.AreEqual('a@b+c', UrlQueryParam(cUrl, 'password'), 'decoded');
+  Assert.AreEqual('a%40b%2Bc', UrlQueryParamRaw(cUrl, 'password'), 'raw as written');
+  Assert.AreEqual('bob', UrlQueryParam(cUrl, 'username'), 'nothing to decode');
+  Assert.AreEqual('x+y', UrlQueryParam('http://p/get.php?password=x+y', 'password'), 'a raw + stays');
+  Assert.AreEqual('a%zz', UrlQueryParam('http://p/get.php?password=a%zz', 'password'), 'bad escape stays');
+  Assert.AreEqual('caf%E9', UrlQueryParam('http://p/get.php?password=caf%E9', 'password'),
+    'escapes that are no UTF-8 stay undecoded');
+end;
+
+function ParseFromGetPhp(const AContent, AGetPhpUrl: string): TSourceSnapshot;
+var
+  lReader: TM3UReader;
+begin
+  // the credentials as TM3UReader.Read recovers them from a get.php URL
+  lReader := TM3UReader.Create;
+  try
+    Result := TSourceSnapshot.Create(1);
+    lReader.ParseContentWithCreds(AContent, Result,
+      [UrlQueryParamRaw(AGetPhpUrl, 'password'), UrlQueryParam(AGetPhpUrl, 'password'),
+       UrlQueryParamRaw(AGetPhpUrl, 'username'), UrlQueryParam(AGetPhpUrl, 'username')]);
+  finally
+    FreeAndNil(lReader);
+  end;
+end;
+
+procedure TM3UTests.IdSurvivesCredentialSwapWithEscapedPassword;
+var
+  lFirst: TSourceSnapshot;
+  lSecond: TSourceSnapshot;
+begin
+  lFirst := nil;
+  lSecond := nil;
+  try
+    lFirst := ParseFromGetPhp('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/live/olduser/a@bc/101.ts'#10,
+      'http://p/get.php?username=olduser&password=a%40bc&type=m3u_plus');
+    lSecond := ParseFromGetPhp('#EXTM3U'#10'#EXTINF:-1,X'#10'http://p/live/newuser/x+yz/101.ts'#10,
+      'http://p/get.php?username=newuser&password=x%2Byz&type=m3u_plus');
+    Assert.AreEqual(lFirst.Streams[0].UpstreamId, lSecond.Streams[0].UpstreamId,
+      'the decoded password is blanked in the stream path');
+  finally
+    FreeAndNil(lFirst);
+    FreeAndNil(lSecond);
+  end;
+end;
+
+procedure TM3UTests.MultiCredIdEqualsLegacyIdForNormalLogins;
+const
+  cPathUrl = 'http://p/live/bob/secret/101.ts';
+  cQueryUrl = 'http://p/play?username=bob&password=bobby&id=7';
+begin
+  // stored upstream_ids must not change for logins without escapes
+  Assert.AreEqual(M3uStreamId(cPathUrl, 'bob', 'secret'),
+    M3uStreamId(cPathUrl, ['secret', 'secret', 'bob', 'bob']));
+  Assert.AreEqual(M3uStreamId(cQueryUrl, 'bob', 'bobby'),
+    M3uStreamId(cQueryUrl, ['bobby', 'bobby', 'bob', 'bob']), 'longer first, as before');
+  Assert.AreEqual(M3uStreamId(cPathUrl, '', ''), M3uStreamId(cPathUrl, ['', '', '', '']), 'no creds');
 end;
 
 initialization

@@ -71,6 +71,8 @@ const
   cLogDirName = 'Logs';
   cLogFileName = 'iptvgateway-svc.log';
   cSvcDataDirName = 'Data';       // the service's DB folder (the exe default is cDataDirName)
+  // TAppConfig.Save writes <config>.tmp first, then swaps it in (see IPTV.App.Config)
+  cConfigTempSuffix = '.tmp';
 
   // below the SCM's default 30 s start timeout
   cStartWaitMs = 25000;
@@ -189,7 +191,9 @@ begin
     // doesn't exist yet — seed from a config.json next to the exe (an installer
     // template) if present, else fall back to built-in defaults. Either way the
     // app persists future changes to the ProgramData copy (passed to the runner).
-    if FileExists(SvcConfigPath) then
+    // An interrupted save may have left only config.json.tmp: that one is the
+    // operator's settings too (Load recovers it) - seeding over it would lose them.
+    if FileExists(SvcConfigPath) or FileExists(SvcConfigPath + cConfigTempSuffix) then
       lConfig := TAppConfig.Load(SvcConfigPath)
     else
       lConfig := TAppConfig.Load(ExeDir + cConfigFileName); // template or defaults

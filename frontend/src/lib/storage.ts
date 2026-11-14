@@ -21,6 +21,15 @@ export function safeSetItem(key: string, value: string): void {
   }
 }
 
+/** Remove a value; silently does nothing when storage is unavailable. */
+export function safeRemoveItem(key: string): void {
+  try {
+    localStorage.removeItem(key)
+  } catch {
+    /* nothing stored that we could remove - harmless */
+  }
+}
+
 /** Fired on window when the bouquet panel's sort mode changes (same tab). */
 export const SORT_MODE_EVENT = 'iptv:sortmode'
 

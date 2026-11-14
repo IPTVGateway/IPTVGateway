@@ -48,7 +48,7 @@ const UPSTREAM_GROUP_ID = 0
 
 // Quality tiers offered when duplicating a group as another variant. Mirrors the
 // backend's CanonicalQuality vocabulary (IPTV.Core.Utils). Keep the two in sync.
-const QUALITIES = ['SD', 'HD', 'FHD', 'UHD', '4K', '4K+', '8K', '8K+', 'RAW'] as const
+const QUALITIES = ['SD', 'HD', 'FHD', '2K', 'QHD', 'UHD', '4K', '4K+', '8K', '8K+', 'RAW'] as const
 
 // The id from the nearest ancestor carrying data-<attr> at a screen point — used to
 // hit-test which row/group is under the finger during a pointer (touch/mouse) drag.
@@ -466,6 +466,17 @@ export function ListPanel({
   const [variantAccepted, setVariantAccepted] = useState<Set<number>>(new Set())
   const [variantBusy, setVariantBusy] = useState(false)
   const [variantMsg, setVariantMsg] = useState<string | null>(null)
+
+  // per-list state must not carry over to another list: a pending "Confirm empty"
+  // would otherwise empty the NEXT list's upstream group with one click
+  useEffect(() => {
+    setConfirmEmptyUpstream(false)
+    setLocalError(null)
+    setDedupeMsg(null)
+    setRenumberMsg(null)
+    setEpgMsg(null)
+    setVariantMsg(null)
+  }, [activeListId])
 
   const variantSourceName = (id: number) => sources.find((s) => s.id === id)?.name ?? ''
   // provider of a channel on the list ('' when its upstream stream is gone)

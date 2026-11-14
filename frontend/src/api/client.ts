@@ -21,6 +21,7 @@ import type {
   MediaStatus,
 } from '../types'
 import { DEFAULT_PROBE_SECONDS } from '../lib/constants'
+import { safeGetItem, safeRemoveItem, safeSetItem } from '../lib/storage'
 
 // ── admin password (optional) ───────────────────────────────────────────────
 // When the backend has an admin password set, every /api/* call must carry it.
@@ -33,9 +34,11 @@ const ADMIN_PASSWORD_HEADER = 'X-Admin-Password'
 // longest backend error detail we put into an Error message
 const MAX_ERROR_DETAIL = 300
 export const adminAuth = {
-  get: () => localStorage.getItem(PW_KEY) ?? '',
-  set: (v: string) => localStorage.setItem(PW_KEY, v),
-  clear: () => localStorage.removeItem(PW_KEY),
+  // safe helpers: blocked storage (private window, site data off) must not make
+  // every API call throw - the password is then simply not remembered
+  get: () => safeGetItem(PW_KEY) ?? '',
+  set: (v: string) => safeSetItem(PW_KEY, v),
+  clear: () => safeRemoveItem(PW_KEY),
 }
 
 let onUnauthorized: (() => void) | null = null
@@ -52,6 +55,36 @@ export class UnauthorizedError extends Error {
 }
 
 const HTTP_UNAUTHORIZED = 401
+const HTTP_TOO_MANY_REQUESTS = 429
+// the backend's lockout window, used when a 429 carries no usable Retry-After
+export const DEFAULT_LOCKOUT_SEC = 300
+const RETRY_AFTER_HEADER = 'Retry-After'
+const MS_PER_SECOND = 1000
+
+/** Seconds from a Retry-After header value (delta-seconds or an HTTP date). */
+export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number {
+  const v = (value ?? '').trim()
+  if (!v) return DEFAULT_LOCKOUT_SEC
+  if (/^\d+$/.test(v)) return Number(v)
+  const at = Date.parse(v)
+  if (Number.isNaN(at)) return DEFAULT_LOCKOUT_SEC
+  return Math.max(0, Math.ceil((at - now) / MS_PER_SECOND))
+}
+
+/**
+ * The backend locked this client out after too many failed logins (HTTP 429);
+ * every request is refused until `retryAfterSec` (from Retry-After) has passed.
+ */
+export class TooManyRequestsError extends Error {
+  readonly status = HTTP_TOO_MANY_REQUESTS
+  readonly retryAfterSec: number
+  constructor(retryAfterSec: number) {
+    super('429 Too Many Requests')
+    this.name = 'TooManyRequestsError'
+    this.retryAfterSec = retryAfterSec
+  }
+}
+
 const CLIENT_HEADER = 'X-IPTV-Client'
 const CLIENT_HEADER_VALUE = 'web'
 
@@ -70,9 +103,14 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   // non-JSON error pages (e.g. a 500 HTML page) without throwing a parse error.
   const text = await res.text()
   if (res.status === HTTP_UNAUTHORIZED) {
+    // drop the rejected password FIRST: background polls would otherwise keep
+    // sending it, and every such request counts as a failed login (-> lockout)
+    adminAuth.clear()
     onUnauthorized?.()
     throw new UnauthorizedError()
   }
+  if (res.status === HTTP_TOO_MANY_REQUESTS)
+    throw new TooManyRequestsError(parseRetryAfter(res.headers?.get(RETRY_AFTER_HEADER)))
   if (!res.ok) {
     const detail = text.trim().replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_ERROR_DETAIL)
     throw new Error(`${res.status} ${detail || res.statusText}`)

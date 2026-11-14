@@ -43,6 +43,7 @@ export const nl: Record<string, string> = {
   'Admin access is password-protected.': 'Beheertoegang is met een wachtwoord beveiligd.',
   'Password': 'Wachtwoord',
   'Incorrect password': 'Onjuist wachtwoord',
+  'Too many failed logins. Try again in {n} s.': 'Te veel mislukte aanmeldpogingen. Probeer het over {n} s opnieuw.',
   'Checking…': 'Bezig met controleren…',
   'Log in': 'Inloggen',
 

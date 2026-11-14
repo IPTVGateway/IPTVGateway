@@ -224,7 +224,7 @@ $BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
 $DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (178 tests as of 1.2.37)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (200 tests, unreleased after 1.2.37)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -236,7 +236,7 @@ small scratch console program that uses `TSQLiteStore` on a COPY of it.
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
-npx vitest run     # 123 tests as of 1.2.37
+npx vitest run     # 134 tests (unreleased after 1.2.37)
 npm run build      # tsc -b && vite build
 ```
 
@@ -437,7 +437,10 @@ compose therefore only need the data volume.
 - **Non-root container:** `deploy/docker/entrypoint.sh` chowns `data`/`lang` to
   `PUID:PGID` (default 99:100) and `setpriv`s to it; the service stays PID 1.
 - **Failed-login lockout:** `IPTV.Api.AuthThrottle` (`GAuthThrottle`): 10 failures /
-  5 min per IP → 429 for 5 min. Counted in `AfterHandleRequest` (401s; on `/api` only
+  5 min per key → 429 for 5 min (monotonic clock). Key = `ClientKey(surface, ip, XFF)`:
+  surface `admin` (/api) or `box` (everything else + relay); the X-Forwarded-For client
+  only when the peer is in `config.json` `trustedProxies`. A good login
+  `RegisterSuccess`es; warm-up requests (header + per-start token) never count. Counted in `AfterHandleRequest` (401s; on `/api` only
   when a password was sent), in `player_api` (auth:0 is a 200) and in the relay.
   Checked first in `BeforeHandleRequest` and in the relay.
 - **Flood limit:** MARS's own `RateLimit.Requests`/`RateLimit.Window` engine

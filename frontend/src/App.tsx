@@ -1,6 +1,6 @@
 import { LogView } from './components/LogView'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, adminAuth, setUnauthorizedHandler, UnauthorizedError } from './api/client'
+import { api, adminAuth, setUnauthorizedHandler, TooManyRequestsError, UnauthorizedError } from './api/client'
 import { LoginGate } from './components/LoginGate'
 import type { CustomGroup, CustomItem, CustomList, Source } from './types'
 import { SourcesPanel } from './components/SourcesPanel'
@@ -58,6 +58,8 @@ export function App() {
   const [version, setVersion] = useState('')
   // null = still checking; false = locked (show login); true = in
   const [authed, setAuthed] = useState<boolean | null>(null)
+  // seconds of a failed-login lockout (429) the initial probe ran into (0 = none)
+  const [lockedForSec, setLockedForSec] = useState(0)
   const [view, setView] = useState<View>('workbench')
   // Which workbench panel is shown on phone/tablet (a single-panel switcher); on
   // wide screens all three show at once and this is ignored.
@@ -110,7 +112,7 @@ export function App() {
         if (h.version) setVersion(h.version)
       })
       .catch((e) => {
-        if (!cancelled && !(e instanceof UnauthorizedError))
+        if (!cancelled && !(e instanceof UnauthorizedError) && !(e instanceof TooManyRequestsError))
           setHealth(`unreachable: ${(e as Error).message}`)
       })
     api
@@ -120,6 +122,12 @@ export function App() {
       })
       .catch((e) => {
         if (cancelled) return
+        // locked out after too many failed logins: the login gate, in its locked state
+        if (e instanceof TooManyRequestsError) {
+          setLockedForSec(e.retryAfterSec)
+          setAuthed(false)
+          return
+        }
         // backend down / service not started is not "locked" — let the app load
         setAuthed(!(e instanceof UnauthorizedError))
       })
@@ -240,7 +248,14 @@ export function App() {
     }
     const seq = ++loadSeqRef.current
     const isStale = () => seq !== loadSeqRef.current
-    if (loadedListIdRef.current !== activeListId) setListLoading(true)
+    if (loadedListIdRef.current !== activeListId) {
+      // switching lists: drop the previous list's data up front, so a failed load
+      // can't leave list A's groups/items acting as list B's
+      loadedListIdRef.current = null
+      setGroups([])
+      setItems([])
+      setListLoading(true)
+    }
     setListError(null)
     Promise.all([api.listGroups(activeListId), api.listItems(activeListId)])
       .then(([g, i]) => {
@@ -265,7 +280,15 @@ export function App() {
     return <div className="app-checking muted">{t('Connecting…')}</div>
   }
   if (authed === false) {
-    return <LoginGate onAuthed={() => setAuthed(true)} />
+    return (
+      <LoginGate
+        lockedForSec={lockedForSec}
+        onAuthed={() => {
+          setLockedForSec(0)
+          setAuthed(true)
+        }}
+      />
+    )
   }
 
   return (

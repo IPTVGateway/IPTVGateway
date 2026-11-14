@@ -54,6 +54,17 @@ type
     procedure RecomputeHidden(ASourceId: Integer; AForce: Boolean);
     /// Undo old quote-doubling in the stored filter/strip tokens; VACUUM when worthwhile.
     procedure RepairSourceTokens;
+    /// Roll back the current (nested) transaction without masking the error being
+    /// handled: no-op when SQLite already aborted it, a rollback failure is swallowed.
+    procedure SafeRollback;
+    /// True when ASourceId (> 0) was issued once but its sources row is gone
+    /// (deleted, or replaced by a settings import) - writes for it would be orphans.
+    function SourceWasDeleted(ASourceId: Integer): Boolean;
+    /// Delete every row that belongs to source ASourceId except the sources row
+    /// itself (list items of its streams first). Runs in the caller's transaction.
+    procedure DeleteSourceRows(ASourceId: Integer);
+    /// One-time-style cleanup at Init: rows left behind under a deleted source id.
+    procedure PurgeOrphanedSourceRows;
     /// Content hash of a stream's metadata (change detection).
     function StreamHash(const AItem: TStreamItem): string;
     /// Match the channels to the extra (third-party) guides; sets ExtraGuideId.
@@ -242,6 +253,11 @@ const
 
   // channel numbering of a group without numbers starts here
   cDefaultGroupNumberBase = 1;
+
+  // sqlite_sequence row of the AUTOINCREMENT sources table (highest id ever issued)
+  cSeqNameSources = 'sources';
+  // provider source ids are > 0 (the extra-EPG slots use negative ids, no sources row)
+  cMinProviderSourceId = 1;
 
 // Strong IPTV group/name delimiters. We deliberately exclude '-' and '.' since
 // VOD titles use them freely, which would explode the discovered-prefix list.
@@ -526,6 +542,7 @@ begin
 
   MigrateM3uStreamIds;
   RepairSourceTokens;
+  PurgeOrphanedSourceRows;
 
   // bring every source's hidden flags up to date (no-op when unchanged)
   lQuery := NewQuery;
@@ -721,7 +738,7 @@ begin
         end;
         FConn.Commit;
       except
-        FConn.Rollback;
+        SafeRollback;
         raise;
       end;
     finally
@@ -943,36 +960,124 @@ begin
   RecomputeHidden(Result, cRecomputeIfChanged); // filters may have changed (no-op otherwise)
 end;
 
-procedure TSQLiteStore.DeleteSource(AId: Integer);
+procedure TSQLiteStore.DeleteSourceRows(ASourceId: Integer);
 begin
   // there are no FK cascades, so clean dependents by hand. Remove list_items that
   // point at this source's streams FIRST, else they dangle (orphaned rows that
   // LoadOutputChannels silently drops and the UI can never repair).
+  FConn.ExecSQL(
+    '''
+    DELETE FROM list_items WHERE stream_item_id IN
+    (SELECT id FROM streams WHERE source_id=:id)
+    ''', [ASourceId]);
+  FConn.ExecSQL(
+    '''
+    DELETE FROM series_episodes WHERE stream_id IN
+    (SELECT id FROM streams WHERE source_id=:id)
+    ''', [ASourceId]);
+  FConn.ExecSQL('DELETE FROM streams WHERE source_id=:id', [ASourceId]);
+  FConn.ExecSQL('DELETE FROM categories WHERE source_id=:id', [ASourceId]);
+  FConn.ExecSQL('DELETE FROM epg WHERE source_id=:id', [ASourceId]);
+  FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id=:id', [ASourceId]);
+end;
+
+procedure TSQLiteStore.DeleteSource(AId: Integer);
+begin
   // one transaction: a failure half-way must not leave a source without streams
   // (or list items pointing nowhere)
   FConn.StartTransaction;
   try
-    FConn.ExecSQL(
-      '''
-      DELETE FROM list_items WHERE stream_item_id IN
-      (SELECT id FROM streams WHERE source_id=:id)
-      ''', [AId]);
-    FConn.ExecSQL(
-      '''
-      DELETE FROM series_episodes WHERE stream_id IN
-      (SELECT id FROM streams WHERE source_id=:id)
-      ''', [AId]);
-    FConn.ExecSQL('DELETE FROM streams WHERE source_id=:id', [AId]);
-    FConn.ExecSQL('DELETE FROM categories WHERE source_id=:id', [AId]);
-    FConn.ExecSQL('DELETE FROM epg WHERE source_id=:id', [AId]);
-    FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id=:id', [AId]);
+    DeleteSourceRows(AId);
     FConn.ExecSQL('DELETE FROM sources WHERE id=:id', [AId]);
     FConn.Commit;
   except
-    FConn.Rollback;
+    SafeRollback;
     raise;
   end;
   TouchLineup;
+end;
+
+procedure TSQLiteStore.SafeRollback;
+begin
+  // SQLITE_FULL / IOERR / NOMEM make SQLite abort the WHOLE transaction itself; a
+  // nested FireDAC rollback then targets a savepoint that no longer exists and
+  // raises - from inside the caller's except, hiding the real error.
+  if not FConn.InTransaction then
+    Exit;
+  try
+    FConn.Rollback;
+  except
+    // deliberately swallowed: the caller re-raises the original exception, which
+    // is the one worth reporting; the transaction is gone either way
+  end;
+end;
+
+function TSQLiteStore.SourceWasDeleted(ASourceId: Integer): Boolean;
+var
+  lQuery: TFDQuery;
+begin
+  if ASourceId < cMinProviderSourceId then
+    Exit(False); // extra-EPG slot (negative id): never has a sources row
+  lQuery := NewQuery;
+  try
+    lQuery.Open('SELECT 1 FROM sources WHERE id = :s', [ASourceId]);
+    if not lQuery.IsEmpty then
+      Exit(False);
+    lQuery.Close;
+    // the row is missing: only an id that was ISSUED once (<= the AUTOINCREMENT
+    // high-water mark) was deleted; an id never issued (ad-hoc tooling/tests that
+    // merge without a sources row) is left alone
+    lQuery.Open('SELECT seq FROM sqlite_sequence WHERE name = :n', [cSeqNameSources]);
+    Result := (not lQuery.IsEmpty) and (ASourceId <= lQuery.Fields[0].AsInteger);
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
+procedure TSQLiteStore.PurgeOrphanedSourceRows;
+var
+  lQuery: TFDQuery;
+  lIds: TArray<Integer>;
+  lId: Integer;
+begin
+  // rows written under a source id whose sources row is gone (a refresh that
+  // finished after the source was deleted, before MergeSnapshot/ReplaceEpg
+  // checked for it); cSqlSourceActive lets them through, so they would surface
+  // in the catalog, failover, variants and EPG forever
+  lIds := [];
+  lQuery := NewQuery;
+  try
+    lQuery.Open(
+      '''
+      SELECT o.sid FROM (
+        SELECT DISTINCT source_id AS sid FROM streams
+        UNION SELECT DISTINCT source_id FROM categories
+        UNION SELECT DISTINCT source_id FROM epg
+        UNION SELECT DISTINCT source_id FROM epg_channels) o
+      WHERE o.sid >= :m
+        AND NOT EXISTS (SELECT 1 FROM sources src WHERE src.id = o.sid)
+        AND o.sid <= COALESCE((SELECT seq FROM sqlite_sequence WHERE name = :n), 0)
+      ''', [cMinProviderSourceId, cSeqNameSources]);
+    while not lQuery.Eof do
+    begin
+      lIds := lIds + [lQuery.Fields[0].AsInteger];
+      lQuery.Next;
+    end;
+  finally
+    FreeAndNil(lQuery);
+  end;
+  if Length(lIds) = 0 then
+    Exit;
+  FConn.StartTransaction;
+  try
+    for lId in lIds do
+      DeleteSourceRows(lId);
+    FConn.Commit;
+  except
+    SafeRollback;
+    raise;
+  end;
+  TouchLineup; // list items of those streams may have gone
 end;
 
 // ── Catalog ────────────────────────────────────────────────────────────────
@@ -981,11 +1086,15 @@ procedure TSQLiteStore.MergeSnapshot(const ASnapshot: TSourceSnapshot);
 var
   lCat: TCategory;
   lStream: TStreamItem;
-  lNow, lKey, lOldCt: string;
+  lNow, lKey, lOldCt, lNewCt, lUid: string;
   lCatKeys, lStrKeys, lSnapKeys: TDictionary<string, Boolean>;
-  lTypeByUid: TDictionary<string, string>; // upstream id -> stored content type
+  // upstream id -> ALL stored content types (Xtream: live 500 and series 500 are
+  // separate id spaces, so one upstream id can be stored under several types)
+  lTypesByUid: TDictionary<string, TArray<string>>;
+  lTypes: TArray<string>;
   lLoadQuery, lCatIns, lCatUpd, lStrIns, lStrUpd, lReKey: TFDQuery;
   lIsM3U: Boolean;
+  i, lOldIdx: Integer;
 
   function LoadKeys(const ATable: string): TDictionary<string, Boolean>;
   begin
@@ -1020,15 +1129,20 @@ begin
   lCatKeys := nil;
   lStrKeys := nil;
   lSnapKeys := nil;
-  lTypeByUid := nil;
+  lTypesByUid := nil;
   try
     // one read each instead of a SELECT per row; lets us decide insert vs update
     // (and so flag is_new) in memory.
     lCatKeys := LoadKeys(cTableCategories);
     lStrKeys := LoadKeys(cTableStreams);
-    lTypeByUid := TDictionary<string, string>.Create;
+    lTypesByUid := TDictionary<string, TArray<string>>.Create;
     for lKey in lStrKeys.Keys do
-      lTypeByUid.AddOrSetValue(lKey.Substring(lKey.IndexOf(cKeySep) + 1), lKey.Substring(0, lKey.IndexOf(cKeySep)));
+    begin
+      lUid := lKey.Substring(lKey.IndexOf(cKeySep) + 1);
+      if not lTypesByUid.TryGetValue(lUid, lTypes) then
+        lTypes := [];
+      lTypesByUid.AddOrSetValue(lUid, lTypes + [lKey.Substring(0, lKey.IndexOf(cKeySep))]);
+    end;
     lSnapKeys := TDictionary<string, Boolean>.Create;
     for lStream in ASnapshot.Streams do
       lSnapKeys.AddOrSetValue(ContentTypeNames[lStream.ContentType] + cKeySep + lStream.UpstreamId, True);
@@ -1051,6 +1165,14 @@ begin
 
     FConn.StartTransaction;
     try
+      // the read behind this snapshot can take minutes: when the source was deleted
+      // (or replaced by a settings import) meanwhile, writing would leave thousands
+      // of orphaned rows under a dead id - skip the merge silently
+      if SourceWasDeleted(ASnapshot.SourceId) then
+      begin
+        FConn.Commit;
+        Exit;
+      end;
       for lCat in ASnapshot.Categories do
       begin
         lKey := ContentTypeNames[lCat.ContentType] + cKeySep + lCat.UpstreamId;
@@ -1083,27 +1205,38 @@ begin
         // type is gone from this snapshot, and only where the upstream id names the
         // same thing across types (M3U: URL-derived; Xtream: live <-> radio share
         // the live stream ids - a VOD id 123 is not live channel 123).
-        if (not lStrKeys.ContainsKey(lKey)) and lTypeByUid.TryGetValue(lStream.UpstreamId, lOldCt) and
-           (lOldCt <> ContentTypeNames[lStream.ContentType]) and
-           not lSnapKeys.ContainsKey(lOldCt + cKeySep + lStream.UpstreamId) and
-           (lIsM3U or (MatchText(lOldCt, [ContentTypeNames[ctLive], ContentTypeNames[ctRadio]]) and
-             (lStream.ContentType in [ctLive, ctRadio]))) then
+        lNewCt := ContentTypeNames[lStream.ContentType];
+        lOldIdx := -1;
+        if (not lStrKeys.ContainsKey(lKey)) and lTypesByUid.TryGetValue(lStream.UpstreamId, lTypes) then
+          for i := 0 to High(lTypes) do
+            if (lTypes[i] <> lNewCt) and
+               lStrKeys.ContainsKey(lTypes[i] + cKeySep + lStream.UpstreamId) and
+               not lSnapKeys.ContainsKey(lTypes[i] + cKeySep + lStream.UpstreamId) and
+               (lIsM3U or (MatchText(lTypes[i], [ContentTypeNames[ctLive], ContentTypeNames[ctRadio]]) and
+                 (lStream.ContentType in [ctLive, ctRadio]))) then
+            begin
+              lOldIdx := i;
+              Break;
+            end;
+        if lOldIdx >= 0 then
         begin
+          lOldCt := lTypes[lOldIdx];
           lReKey.SQL.Text := '''
             UPDATE list_items SET content_type = :n
             WHERE stream_item_id IN (SELECT id FROM streams WHERE source_id = :s AND content_type = :o AND upstream_id = :u)
             ''';
-          BindReKey(ContentTypeNames[lStream.ContentType], lOldCt, lStream.UpstreamId);
+          BindReKey(lNewCt, lOldCt, lStream.UpstreamId);
           lReKey.ExecSQL;
           lReKey.SQL.Text := '''
             UPDATE streams SET content_type = :n
             WHERE source_id = :s AND content_type = :o AND upstream_id = :u
             ''';
-          BindReKey(ContentTypeNames[lStream.ContentType], lOldCt, lStream.UpstreamId);
+          BindReKey(lNewCt, lOldCt, lStream.UpstreamId);
           lReKey.ExecSQL;
           lStrKeys.Remove(lOldCt + cKeySep + lStream.UpstreamId);
           lStrKeys.AddOrSetValue(lKey, True);
-          lTypeByUid.AddOrSetValue(lStream.UpstreamId, ContentTypeNames[lStream.ContentType]);
+          lTypes[lOldIdx] := lNewCt; // the stored row now carries the new type
+          lTypesByUid.AddOrSetValue(lStream.UpstreamId, lTypes);
         end;
         if lStrKeys.ContainsKey(lKey) then
         begin
@@ -1143,14 +1276,14 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
     FreeAndNil(lCatKeys);
     FreeAndNil(lStrKeys);
     FreeAndNil(lSnapKeys);
-    FreeAndNil(lTypeByUid);
+    FreeAndNil(lTypesByUid);
     FreeAndNil(lReKey);
     FreeAndNil(lStrUpd);
     FreeAndNil(lStrIns);
@@ -1711,7 +1844,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
@@ -2397,6 +2530,13 @@ begin
   try
     FConn.StartTransaction;
     try
+      // a source deleted while its guide was downloading: don't write orphans
+      // (extra-EPG slots have negative ids and are never treated as deleted)
+      if SourceWasDeleted(ASourceId) then
+      begin
+        FConn.Commit;
+        Exit;
+      end;
       FConn.ExecSQL('DELETE FROM epg WHERE source_id=:s', [ASourceId]);
       // prepared once, reused per row (was re-parsing per programme = very slow)
       lQuery.SQL.Text :=
@@ -2417,7 +2557,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
@@ -2449,7 +2589,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
@@ -2805,7 +2945,7 @@ begin
     AProc(Self);
     FConn.Commit;
   except
-    FConn.Rollback;
+    SafeRollback;
     raise;
   end;
 end;
@@ -2819,7 +2959,7 @@ begin
     FConn.ExecSQL('DELETE FROM lists WHERE id=:id', [AId]);
     FConn.Commit;
   except
-    FConn.Rollback;
+    SafeRollback;
     raise;
   end;
   TouchLineup; // Plex may serve this bouquet
@@ -2945,7 +3085,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
@@ -2963,7 +3103,7 @@ begin
     FConn.ExecSQL('DELETE FROM list_groups WHERE id=:id', [AId]);
     FConn.Commit;
   except
-    FConn.Rollback;
+    SafeRollback;
     raise;
   end;
   TouchLineup;
@@ -3192,7 +3332,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
@@ -3272,7 +3412,7 @@ begin
         end;
         FConn.Commit;
       except
-        FConn.Rollback;
+        SafeRollback;
         raise;
       end;
     finally
@@ -3354,7 +3494,7 @@ begin
         end;
         FConn.Commit;
       except
-        FConn.Rollback;
+        SafeRollback;
         raise;
       end;
     finally
@@ -3454,7 +3594,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
@@ -3536,7 +3676,7 @@ begin
         end;
         FConn.Commit;
       except
-        FConn.Rollback;
+        SafeRollback;
         raise;
       end;
     finally
@@ -3643,7 +3783,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
     Result := lIds.Count;
@@ -3687,7 +3827,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally
@@ -3738,7 +3878,7 @@ begin
       end;
       FConn.Commit;
     except
-      FConn.Rollback;
+      SafeRollback;
       raise;
     end;
   finally

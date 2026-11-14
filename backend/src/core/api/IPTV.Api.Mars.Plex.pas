@@ -162,14 +162,15 @@ begin
     Result := cHdhrFallbackDeviceId;
 end;
 
-// base URL Plex uses to reach us (the admin/portal port). That port serves TLS
-// when UseHttps is on, so the scheme must follow — otherwise Plex fetches
-// discover.json/lineup.json over http:// against a TLS-only listener and fails.
+// base URL Plex uses to reach us (the admin/portal port). Scheme and port come
+// from publicBaseUrl when it has them (a Docker port mapping publishes container
+// 7777 as e.g. 9000 - Plex must get the outside port, like the boxes do), else
+// UseHttps / HttpPort: that port serves TLS when UseHttps is on, so the scheme
+// must follow - otherwise Plex fetches discover.json/lineup.json over http://
+// against a TLS-only listener and fails.
 function BaseUrl: string;
-const
-  cSchemes: array[Boolean] of string = ('http', 'https');
 begin
-  Result := Format('%s://%s:%d', [cSchemes[App.Config.UseHttps], PlexHost, App.Config.HttpPort]);
+  Result := MediaServerBaseUrl(App.Config.PublicBaseUrl, App.Config.UseHttps, App.Config.HttpPort);
 end;
 
 // prefix for M3U stream URLs when the M3U surface relays through the proxy

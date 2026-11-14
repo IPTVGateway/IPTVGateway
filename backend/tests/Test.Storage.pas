@@ -96,6 +96,12 @@ type
     [Test] procedure EpgMaxDaysCapsFutureProgrammes;
     [Test] procedure IngestStatusRecordsUnknownSource;
     [Test] procedure ZapCacheServesAndInvalidates;
+    /// <summary>A refresh finishing after its source was deleted writes no orphans.</summary>
+    [Test] procedure MergeForDeletedSourceWritesNothing;
+    /// <summary>Re-key picks the right old type when one upstream id has two types.</summary>
+    [Test] procedure ReKeyWithUpstreamIdUnderTwoTypes;
+    /// <summary>Init removes rows (and list items) left under a deleted source id.</summary>
+    [Test] procedure InitPurgesOrphanedSourceRows;
   end;
 
 implementation
@@ -106,6 +112,8 @@ uses
   System.IOUtils,
   System.DateUtils,
   System.Generics.Collections,
+  // third-party
+  FireDAC.Comp.Client,
   // own units
   IPTV.Model.Types,
   IPTV.Model.Source,
@@ -4244,6 +4252,261 @@ begin
     Assert.AreEqual('Keep', lLists[0].Name);
   finally
     FreeAndNil(lLists);
+  end;
+end;
+
+function OneProgrammeList(const ATvgId: string): TEpgProgrammeList;
+var
+  lP: TEpgProgramme;
+begin
+  Result := TEpgProgrammeList.Create(True);
+  lP := TEpgProgramme.Create;
+  lP.ChannelTvgId := ATvgId;
+  lP.Title := 'Show';
+  lP.StartUtc := EncodeDateTime(2026, 6, 14, 18, 0, 0, 0);
+  lP.StopUtc := EncodeDateTime(2026, 6, 14, 19, 0, 0, 0);
+  Result.Add(lP);
+end;
+
+function CountAllStreams(const AStore: IStore): Integer;
+var
+  lL: TStreamItemList;
+begin
+  lL := AStore.LoadStreams(Default(TCatalogFilter));
+  try
+    Result := lL.Count;
+  finally
+    FreeAndNil(lL);
+  end;
+end;
+
+function CountCategories(const AStore: IStore): Integer;
+var
+  lL: TCategoryList;
+begin
+  lL := AStore.LoadCategories(Default(TCatalogFilter));
+  try
+    Result := lL.Count;
+  finally
+    FreeAndNil(lL);
+  end;
+end;
+
+function CountEpg(const AStore: IStore; const ATvgId: string): Integer;
+var
+  lL: TEpgProgrammeList;
+begin
+  lL := AStore.LoadEpgForTvgIds([ATvgId]);
+  try
+    Result := lL.Count;
+  finally
+    FreeAndNil(lL);
+  end;
+end;
+
+function SnapshotWithStreamAndCategory(ASourceId: Integer; const AUpstreamId, ATvgId: string): TSourceSnapshot;
+var
+  lCat: TCategory;
+begin
+  Result := TSourceSnapshot.Create(ASourceId);
+  Result.Streams.Add(MakeStream(ASourceId, ctLive, AUpstreamId, 'Chan ' + AUpstreamId, '', ATvgId,
+    'http://p/' + AUpstreamId + '.ts'));
+  lCat := TCategory.Create;
+  lCat.ContentType := ctLive;
+  lCat.UpstreamId := 'c' + AUpstreamId;
+  lCat.Name := 'Cat ' + AUpstreamId;
+  Result.Categories.Add(lCat);
+end;
+
+// RefreshSource reads for minutes, then merges under the id it started with: when
+// the source was deleted meanwhile, nothing may be written under the dead id
+procedure TStorageTests.MergeForDeletedSourceWritesNothing;
+var
+  lStore: IStore;
+  lSrcId: Integer;
+  lSnap: TSourceSnapshot;
+  lProgs: TEpgProgrammeList;
+begin
+  lStore := NewStore(FDbPath);
+  lSrcId := SaveTestSource(lStore, [ctLive], True);
+  lStore.DeleteSource(lSrcId);
+
+  lSnap := SnapshotWithStreamAndCategory(lSrcId, 'a', 'tv1');
+  try
+    lStore.MergeSnapshot(lSnap); // no exception, just skipped
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lProgs := OneProgrammeList('tv1');
+  try
+    lStore.ReplaceEpg(lSrcId, lProgs);
+  finally
+    FreeAndNil(lProgs);
+  end;
+
+  Assert.AreEqual<Integer>(0, CountAllStreams(lStore), 'no orphaned streams');
+  Assert.AreEqual<Integer>(0, CountCategories(lStore), 'no orphaned categories');
+  Assert.AreEqual<Integer>(0, CountEpg(lStore, 'tv1'), 'no orphaned EPG');
+
+  // a live source still merges normally
+  lSrcId := SaveTestSource(lStore, [ctLive], True);
+  lSnap := SnapshotWithStreamAndCategory(lSrcId, 'b', 'tv2');
+  try
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lProgs := OneProgrammeList('tv2');
+  try
+    lStore.ReplaceEpg(lSrcId, lProgs);
+  finally
+    FreeAndNil(lProgs);
+  end;
+  Assert.AreEqual<Integer>(1, CountAllStreams(lStore), 'existing source merged');
+  Assert.AreEqual<Integer>(1, CountEpg(lStore, 'tv2'), 'existing source EPG stored');
+end;
+
+// Xtream: live 500 and series 500 are separate id spaces. When live 500 becomes
+// radio 500 (and series 500 stays), the live row must be re-keyed - whatever the
+// dictionary order - instead of a duplicate radio row next to a frozen live one.
+procedure TStorageTests.ReKeyWithUpstreamIdUnderTwoTypes;
+const
+  cUid = '500';
+var
+  lStore: IStore;
+  lSrcId, lLiveId, lSeriesId: Integer;
+  lSnap: TSourceSnapshot;
+  lAll: TStreamItemList;
+  lS: TStreamItem;
+  lRadioId, lRadioCount, lSeriesCount: Integer;
+begin
+  lStore := NewStore(FDbPath);
+  lSrcId := SaveTestSource(lStore, [ctLive, ctSeries, ctRadio], True);
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  try
+    lSnap.Streams.Add(MakeStream(lSrcId, ctLive, cUid, 'Radio One', '', '', 'http://p/live/500.ts'));
+    lSnap.Streams.Add(MakeStream(lSrcId, ctSeries, cUid, 'Some Series', '', '', 'http://p/series/500'));
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lLiveId := 0;
+  lSeriesId := 0;
+  lAll := lStore.LoadStreams(Default(TCatalogFilter));
+  try
+    for lS in lAll do
+      if lS.ContentType = ctLive then
+        lLiveId := lS.Id
+      else if lS.ContentType = ctSeries then
+        lSeriesId := lS.Id;
+  finally
+    FreeAndNil(lAll);
+  end;
+  Assert.IsTrue((lLiveId > 0) and (lSeriesId > 0), 'both stored');
+
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  try
+    lSnap.Streams.Add(MakeStream(lSrcId, ctRadio, cUid, 'Radio One', '', '', 'http://p/live/500.ts'));
+    lSnap.Streams.Add(MakeStream(lSrcId, ctSeries, cUid, 'Some Series', '', '', 'http://p/series/500'));
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+
+  lRadioId := 0;
+  lRadioCount := 0;
+  lSeriesCount := 0;
+  lAll := lStore.LoadStreams(Default(TCatalogFilter));
+  try
+    Assert.AreEqual<Integer>(2, lAll.Count, 'no duplicate row');
+    for lS in lAll do
+      if lS.ContentType = ctRadio then
+      begin
+        Inc(lRadioCount);
+        lRadioId := lS.Id;
+      end
+      else if lS.ContentType = ctSeries then
+      begin
+        Inc(lSeriesCount);
+        Assert.AreEqual(lSeriesId, lS.Id, 'series row untouched');
+      end;
+  finally
+    FreeAndNil(lAll);
+  end;
+  Assert.AreEqual<Integer>(1, lRadioCount, 'one radio row');
+  Assert.AreEqual<Integer>(1, lSeriesCount, 'one series row');
+  Assert.AreEqual(lLiveId, lRadioId, 'the live row was re-keyed to radio (same id)');
+end;
+
+// rows written under a source id before the merge/EPG guard existed: Init removes
+// them (and the list items of those streams); a never-issued id is left alone
+procedure TStorageTests.InitPurgesOrphanedSourceRows;
+const
+  cDriverSQLite = 'SQLite';
+  cNeverIssuedId = 99;
+var
+  lStore: IStore;
+  lSrcId, lKeepId, lListId: Integer;
+  lSnap: TSourceSnapshot;
+  lProgs: TEpgProgrammeList;
+  lConn: TFDConnection;
+  lItems: TCustomItemList;
+begin
+  lStore := NewStore(FDbPath);
+  lSrcId := SaveTestSource(lStore, [ctLive], True);
+  lKeepId := SaveTestSource(lStore, [ctLive], True);
+  lSnap := SnapshotWithStreamAndCategory(lSrcId, 'gone', 'tvgone');
+  try
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lSnap := SnapshotWithStreamAndCategory(lKeepId, 'kept', 'tvkept');
+  try
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lSnap := SnapshotWithStreamAndCategory(cNeverIssuedId, 'adhoc', 'tvadhoc');
+  try
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lProgs := OneProgrammeList('tvgone');
+  try
+    lStore.ReplaceEpg(lSrcId, lProgs);
+  finally
+    FreeAndNil(lProgs);
+  end;
+  lListId := NewTestList(lStore, 'L');
+  AddTestItem(lStore, lListId, StreamIdByUpstream(lStore, 'gone'), ctLive);
+  AddTestItem(lStore, lListId, StreamIdByUpstream(lStore, 'kept'), ctLive);
+  lStore := nil; // close the connection
+
+  // simulate the old bug: the sources row vanished, its rows stayed
+  lConn := TFDConnection.Create(nil);
+  try
+    lConn.DriverName := cDriverSQLite;
+    lConn.Params.Database := FDbPath;
+    lConn.Connected := True;
+    lConn.ExecSQL('DELETE FROM sources WHERE id = :id', [lSrcId]);
+    lConn.Connected := False;
+  finally
+    FreeAndNil(lConn);
+  end;
+
+  lStore := NewStore(FDbPath); // Init purges
+  Assert.AreEqual<Integer>(0, StreamIdByUpstream(lStore, 'gone'), 'orphaned stream removed');
+  Assert.IsTrue(StreamIdByUpstream(lStore, 'kept') > 0, 'live source keeps its stream');
+  Assert.IsTrue(StreamIdByUpstream(lStore, 'adhoc') > 0, 'never-issued id left alone');
+  Assert.AreEqual<Integer>(2, CountCategories(lStore), 'orphaned category removed');
+  Assert.AreEqual<Integer>(0, CountEpg(lStore, 'tvgone'), 'orphaned EPG removed');
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lItems.Count, 'list item of the orphaned stream removed');
+  finally
+    FreeAndNil(lItems);
   end;
 end;
 

@@ -7,7 +7,7 @@ import { useI18n, useT } from '../i18n'
 const PORT_MIN = 1
 const PORT_MAX = 65535
 // EPG retention: input range and the shown default when unset
-const EPG_MAX_DAYS = { min: 0, max: 31, def: 7 }
+const EPG_MAX_DAYS = { min: 0, max: 366, def: 7 } // backend cMaxEpgMaxDays
 
 interface Props {
   lists: CustomList[]

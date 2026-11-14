@@ -56,6 +56,12 @@ type
     [Test] procedure EpgOfOneSourcePerChannel;
     /// <summary>An extra guide wins unless the source prefers its own EPG.</summary>
     [Test] procedure ExtraGuideFirstUnlessSourcePrefersOwn;
+    /// <summary>Two tvg-ids that differ only in case each get their channel and programmes.</summary>
+    [Test] procedure XmltvKeepsCaseDistinctTvgIds;
+    /// <summary>A '+' in a login that MARS decoded to ' ' still finds the list.</summary>
+    [Test] procedure FindListForPathReadsSpaceAsPlus;
+    /// <summary>The media-server base URL follows publicBaseUrl's scheme and port.</summary>
+    [Test] procedure MediaServerBaseUrlFollowsPublicBaseUrl;
   end;
 
 implementation
@@ -1127,6 +1133,96 @@ begin
   finally
     FreeAndNil(lProgs);
   end;
+end;
+
+// 'NPO1.nl' and 'npo1.nl' are two guide ids (the store and its lookups are
+// case-sensitive): the XMLTV must not fold them into one
+procedure TOutputBuilderTests.XmltvKeepsCaseDistinctTvgIds;
+var
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lProgs: TEpgProgrammeList;
+  lListId: Integer;
+  lXml: string;
+
+  procedure Add(const ATvg, ATitle: string);
+  var
+    lProg: TEpgProgramme;
+  begin
+    lProg := TEpgProgramme.Create;
+    lProg.ChannelTvgId := ATvg;
+    lProg.StartUtc := IncHour(NowUtc, 1);
+    lProg.StopUtc := IncHour(lProg.StartUtc, 1);
+    lProg.Title := ATitle;
+    lProgs.Add(lProg);
+  end;
+
+begin
+  lStore := NewStore(FDbPath);
+  lSnap := TSourceSnapshot.Create(1);
+  lSnap.Streams.Add(MakeStream(ctLive, 'u1', 'Upper', 'NPO1.nl', 'http://provider/live/u/p/1.ts'));
+  lSnap.Streams.Add(MakeStream(ctLive, 'u2', 'Lower', 'npo1.nl', 'http://provider/live/u/p/2.ts'));
+  lStore.MergeSnapshot(lSnap);
+  FreeAndNil(lSnap);
+  lProgs := TEpgProgrammeList.Create(True);
+  Add('NPO1.nl', 'Upper show');
+  Add('npo1.nl', 'Lower show');
+  lStore.ReplaceEpg(1, lProgs);
+  FreeAndNil(lProgs);
+  lListId := SeedListAll(lStore);
+
+  lXml := BuildXmltv(lStore, lListId);
+  Assert.IsTrue(lXml.Contains('<channel id="NPO1.nl">'), 'upper-case id has its channel');
+  Assert.IsTrue(lXml.Contains('<channel id="npo1.nl">'), 'lower-case id has its channel');
+  Assert.IsTrue(lXml.Contains('channel="NPO1.nl"><title>Upper show</title>'), 'upper-case id keeps its programme');
+  Assert.IsTrue(lXml.Contains('channel="npo1.nl"><title>Lower show</title>'), 'lower-case id keeps its programme');
+end;
+
+procedure TOutputBuilderTests.FindListForPathReadsSpaceAsPlus;
+var
+  lStore: IStore;
+  lList, lFound: TCustomList;
+begin
+  lStore := NewStore(FDbPath);
+  lList := TCustomList.Create;
+  try
+    lList.Name := 'L';
+    lList.OutputUsername := 'box+1';
+    lList.OutputPassword := 'a+b';
+    lStore.SaveList(lList);
+  finally
+    FreeAndNil(lList);
+  end;
+  lFound := FindListForPath(lStore, 'box+1', 'a+b');
+  try
+    Assert.IsNotNull(lFound, 'login as stored');
+  finally
+    FreeAndNil(lFound);
+  end;
+  // what MARS hands us after form-decoding the path tokens
+  lFound := FindListForPath(lStore, 'box 1', 'a b');
+  try
+    Assert.IsNotNull(lFound, '+ decoded to a space still matches');
+  finally
+    FreeAndNil(lFound);
+  end;
+  lFound := FindListForPath(lStore, 'box 1', 'a c');
+  try
+    Assert.IsNull(lFound, 'a wrong password still fails');
+  finally
+    FreeAndNil(lFound);
+  end;
+end;
+
+procedure TOutputBuilderTests.MediaServerBaseUrlFollowsPublicBaseUrl;
+begin
+  // Docker port mapping: container 7777 published as 9000
+  Assert.AreEqual('http://192.168.1.250:9000', MediaServerBaseUrl('http://192.168.1.250:9000', False, 7777),
+    'port of publicBaseUrl');
+  Assert.AreEqual('https://tv.example:8443', MediaServerBaseUrl('https://tv.example:8443/', False, 7777),
+    'scheme of publicBaseUrl');
+  Assert.AreEqual('https://localhost:7777', MediaServerBaseUrl('', True, 7777), 'no publicBaseUrl: config');
+  Assert.AreEqual('http://localhost:7777', MediaServerBaseUrl('', False, 7777), 'no publicBaseUrl, no TLS');
 end;
 
 initialization

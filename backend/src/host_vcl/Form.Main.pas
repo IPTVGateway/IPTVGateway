@@ -174,7 +174,9 @@ begin
   begin
     // apply live: starts/stops the relay and persists to config.json
     lConfig := FRunner.Context.Config;
-    FRunner.Context.UpdateSettings(lConfig.RefreshHour, lConfig.RefreshMinute, chkProxy.Checked, lConfig.ProxyPort);
+    // pass the current EPG window + failover too: their defaults would overwrite them
+    FRunner.Context.UpdateSettings(lConfig.RefreshHour, lConfig.RefreshMinute, chkProxy.Checked,
+      lConfig.ProxyPort, lConfig.EpgMaxDays, lConfig.StreamFailover);
     Log(Format('Stream proxy %s (port %d).',
       [BoolToStr(chkProxy.Checked, True), lConfig.ProxyPort]));
   end

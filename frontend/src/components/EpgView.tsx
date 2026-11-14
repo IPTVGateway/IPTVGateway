@@ -277,12 +277,14 @@ function OwnEpg({
 
   // Channel logo + display name per (effective) tvg-id, taken from the list items,
   // so the guide grid can show the channel — logo + name — instead of a bare tvg-id.
+  // A list switch drops the previous list's labels/lanes at once (runs before the
+  // fetch below); a reload of the SAME list keeps them until the new rows arrive.
   useEffect(() => {
-    if (listId === '') {
-      setItems([])
-      setGroups([])
-      return
-    }
+    setItems([])
+    setGroups([])
+  }, [listId])
+  useEffect(() => {
+    if (listId === '') return
     let cancelled = false
     api
       .listItems(listId)
@@ -304,7 +306,7 @@ function OwnEpg({
     return () => {
       cancelled = true
     }
-  }, [listId])
+  }, [listId, reloadKey])
 
   const chInfo = useMemo(() => {
     const m = new Map<string, { name: string; logo: string }>()

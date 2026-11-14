@@ -70,3 +70,33 @@ describe('CatalogPanel — only new', () => {
     expect(screen.getByText('New Two')).toBeInTheDocument()
   })
 })
+
+describe('CatalogPanel — paging + prefix', () => {
+  it('clamps the page when marking seen shrinks the total below the current page', async () => {
+    const rows: StreamItem[] = [{ id: 21, sourceId: 2, contentType: 'live', name: 'New A', isNew: true }]
+    vi.mocked(api.streams).mockResolvedValue(rows)
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 250 }) // 3 pages of 100
+    renderPanel()
+    await userEvent.click(screen.getByLabelText('Only new'))
+    await userEvent.type(screen.getByPlaceholderText('Search (contains)…'), 'new')
+    await screen.findByText('Page 1 / 3')
+    await userEvent.click(screen.getByRole('button', { name: 'Next ›' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Next ›' }))
+    await screen.findByText('Page 3 / 3')
+    const row = (await screen.findByText('New A')).closest('tr') as HTMLElement
+    await userEvent.click(within(row).getByRole('checkbox'))
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 150 }) // now only 2 pages
+    await userEvent.click(screen.getByRole('button', { name: 'Mark selected as seen' }))
+    expect(await screen.findByText('Page 2 / 2')).toBeInTheDocument()
+  })
+
+  it('passes the Prefix filter to the groups query (prefix alone filters the groups)', async () => {
+    renderPanel()
+    await userEvent.type(screen.getByPlaceholderText('Prefix (e.g. NL:)'), 'NL|')
+    await waitFor(() =>
+      expect(vi.mocked(api.categories).mock.calls.some((c) => (c[0] as { prefix?: string })?.prefix === 'NL|')).toBe(true),
+    )
+    // a prefix alone keeps the groups view (no flat stream search)
+    expect(api.streams).not.toHaveBeenCalled()
+  })
+})

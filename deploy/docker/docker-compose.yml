@@ -19,7 +19,7 @@ services:
     container_name: iptvplay
     restart: unless-stopped
     # give the clean shutdown room to finish (the service drains an in-flight
-    # refresh, bounded at 30s) before Docker escalates to SIGKILL — the default
+    # refresh, bounded at 25s) before Docker escalates to SIGKILL — the default
     # 10s would kill a stop issued during the daily refresh mid-write.
     stop_grace_period: 35s
     # network_mode: host   # <- enable for Plex SSDP auto-discovery (then remove ports:)
@@ -37,7 +37,11 @@ services:
     environment:
       - TZ=Europe/Amsterdam    # scheduler uses local time for the daily refresh
       # the service runs as this user/group, not root; ./data is handed to it on start
-      # (use your own id, e.g. 1000:1000; 0 = root like older versions)
+      # (use your own id, e.g. 1000:1000; 0 = root like older versions). If that user
+      # still can't write ./data (NFS/SMB root_squash, read-only mount) the container
+      # logs a WARNING and runs as root. Certs / a databasePath outside ./data must be
+      # readable (the database: writable) by this user; httpPort/proxyPort below 1024
+      # (host networking) need PUID=0.
       - PUID=1000
       - PGID=1000
       # admin UI/API password. Empty/unset => the admin surface is open (LAN only!).

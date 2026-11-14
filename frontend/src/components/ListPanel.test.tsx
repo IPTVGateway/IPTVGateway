@@ -370,4 +370,41 @@ describe('ListPanel', () => {
     await userEvent.click(within(row).getByRole('button', { name: 'Save' }))
     expect(api.saveItem).toHaveBeenCalledWith(1, expect.objectContaining({ id: 100, tvgIdOverride: 'npo1.nl' }))
   })
+
+  it('does not carry a pending "Confirm empty" (upstream group) or messages over to another list', async () => {
+    const lists: CustomList[] = [
+      ...LISTS,
+      { id: 2, name: 'L2', outputUsername: 'b', outputPassword: 'b', enabled: true },
+    ]
+    const upstream: CustomItem[] = [{ ...ITEMS[0], customGroupId: 0 }]
+    const { rerender } = renderPanel({ lists, items: upstream })
+    await userEvent.click(screen.getByRole('button', { name: 'Dedupe' }))
+    expect(await screen.findByText(/3 duplicates removed/)).toBeInTheDocument()
+    await userEvent.click(screen.getByTitle('Remove all channels from the upstream group'))
+    expect(screen.getByRole('button', { name: 'Confirm empty' })).toBeInTheDocument()
+    rerender(
+      <ListPanel
+        lists={lists}
+        activeListId={2}
+        onSelectList={() => {}}
+        groups={[]}
+        items={[{ ...upstream[0], id: 200, listId: 2 }]}
+        loading={false}
+        error={null}
+        onRefresh={() => {}}
+      />,
+    )
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Confirm empty' })).toBeNull())
+    expect(screen.queryByText(/3 duplicates removed/)).toBeNull()
+    expect(api.clearGroupItems).not.toHaveBeenCalled()
+  })
+
+  it('offers every backend quality tier (incl. QHD and 2K) as a variant target', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/duplicate this group/))
+    const select = screen.getByLabelText('Target quality') as HTMLSelectElement
+    const values = [...select.options].map((o) => o.value)
+    expect(values).toEqual(['SD', 'HD', 'FHD', '2K', 'QHD', 'UHD', '4K', '4K+', '8K', '8K+', 'RAW'])
+  })
 })
+

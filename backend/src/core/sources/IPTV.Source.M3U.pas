@@ -34,6 +34,10 @@ type
     /// credentials, so it survives a new subscription at the same provider.
     procedure ParseContent(const AContent: string; ASnapshot: TSourceSnapshot;
       const AUser: string = ''; const APass: string = '');
+    /// As ParseContent, with every credential spelling to blank (e.g. a password
+    /// as written in the get.php URL and percent-decoded); see M3uStreamId.
+    procedure ParseContentWithCreds(const AContent: string; ASnapshot: TSourceSnapshot;
+      const ACreds: array of string);
     function Read(const ASource: TSourceConfig): TSourceSnapshot;
   end;
 
@@ -120,6 +124,13 @@ end;
 
 procedure TM3UReader.ParseContent(const AContent: string; ASnapshot: TSourceSnapshot;
   const AUser: string = ''; const APass: string = '');
+begin
+  // [pass, user]: the same blanking order as M3uStreamId(url, user, pass)
+  ParseContentWithCreds(AContent, ASnapshot, [APass, AUser]);
+end;
+
+procedure TM3UReader.ParseContentWithCreds(const AContent: string; ASnapshot: TSourceSnapshot;
+  const ACreds: array of string);
 var
   lLines: TArray<string>;
   i, k, lCommaPos: Integer;
@@ -178,7 +189,7 @@ begin
       lItem.ContentType := TContentType(GuessContentType(lItem.GroupTitle, lTrimmed));
       // M3U has no stable id; derive one from the URL (with the credentials blanked
       // out) so it stays constant across a new subscription at the same provider.
-      lItem.UpstreamId := M3uStreamId(lTrimmed, AUser, APass);
+      lItem.UpstreamId := M3uStreamId(lTrimmed, ACreds);
       lItem := nil;
     end;
   except
@@ -197,7 +208,7 @@ end;
 
 function TM3UReader.Read(const ASource: TSourceConfig): TSourceSnapshot;
 var
-  lContent, lUser, lPass: string;
+  lContent, lUser, lPass, lUserRaw, lPassRaw: string;
 begin
   // trimmed for the check too: a stray leading space used to make an http playlist
   // look like a local file path
@@ -209,16 +220,29 @@ begin
 
   // credentials for the credential-insensitive stream id: prefer the source's own
   // fields, else recover them from the playlist URL (get.php?username=…&password=…)
+  // From the URL both spellings are blanked: as written there ("a%40b" - what was
+  // blanked so far, so ids stored for such logins stay the same when the streams
+  // carry that form) AND percent-decoded ("a@b" - what path-style stream URLs
+  // usually carry). For a login without escapes both are equal: ids unchanged.
   lUser := ASource.Username;
   lPass := ASource.Password;
+  lUserRaw := '';
+  lPassRaw := '';
   if lUser = '' then
+  begin
     lUser := UrlQueryParam(ASource.Url, cQueryUsername);
+    lUserRaw := UrlQueryParamRaw(ASource.Url, cQueryUsername);
+  end;
   if lPass = '' then
+  begin
     lPass := UrlQueryParam(ASource.Url, cQueryPassword);
+    lPassRaw := UrlQueryParamRaw(ASource.Url, cQueryPassword);
+  end;
 
   Result := TSourceSnapshot.Create(ASource.Id);
   try
-    ParseContent(lContent, Result, lUser, lPass);
+    // raw before decoded on equal length; [pass, user] order as in ParseContent
+    ParseContentWithCreds(lContent, Result, [lPassRaw, lPass, lUserRaw, lUser]);
   except
     Result.Free;
     raise;

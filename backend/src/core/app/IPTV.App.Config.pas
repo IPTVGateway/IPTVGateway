@@ -50,6 +50,35 @@ const
   cEnvConfigPath = 'IPTV_CONFIG';        // where the daemon keeps config.json (Docker)
   cEnvAdminPassword = 'ADMIN_PASSWORD';  // overrides adminPassword from config.json
 
+  // valid ranges of the numeric settings: TAppConfig.Load clamps to them and the
+  // admin API (POST /api/config, settings import) rejects values outside them
+  /// <summary>Lowest valid port (httpPort / proxyPort).</summary>
+  cMinPort = 1;
+  /// <summary>Highest valid port (httpPort / proxyPort).</summary>
+  cMaxPort = 65535;
+  /// <summary>Highest refreshHour (lowest is 0).</summary>
+  cMaxRefreshHour = 23;
+  /// <summary>Highest refreshMinute (lowest is 0).</summary>
+  cMaxRefreshMinute = 59;
+  /// <summary>Highest epgMaxDays (lowest is 0 = unlimited).</summary>
+  cMaxEpgMaxDays = 366;
+  /// <summary>Lowest plexTunerCount.</summary>
+  cMinPlexTunerCount = 1;
+  /// <summary>Highest plexTunerCount.</summary>
+  cMaxPlexTunerCount = 100;
+  /// <summary>Shortest dummy-EPG block, minutes.</summary>
+  cMinDummyEpgBlockMinutes = 5;
+  /// <summary>Longest dummy-EPG block, minutes (12 h).</summary>
+  cMaxDummyEpgBlockMinutes = 720;
+  /// <summary>Lowest dummyEpgHoursBack.</summary>
+  cMinDummyEpgHoursBack = 0;
+  /// <summary>Highest dummyEpgHoursBack (1 week).</summary>
+  cMaxDummyEpgHoursBack = 168;
+  /// <summary>Lowest dummyEpgHoursAhead.</summary>
+  cMinDummyEpgHoursAhead = 1;
+  /// <summary>Highest dummyEpgHoursAhead (2 weeks).</summary>
+  cMaxDummyEpgHoursAhead = 336;
+
 type
   /// Runtime settings (config.json); defaults apply to missing or unparseable fields.
   TAppConfig = record
@@ -122,6 +151,9 @@ type
     /// Clients allowed on the Plex/HDHomeRun endpoints (they have no login): exact
     /// IPs ("192.168.1.20") or prefixes ending in a dot ("192.168.1."). Empty = all.
     MediaAllowedClients: TArray<string>;
+    /// Reverse proxies (exact IPs) whose X-Forwarded-For header is believed for the
+    /// failed-login lockout, so clients behind them are not all one key. Empty = none.
+    TrustedProxies: TArray<string>;
     // Dummy EPG: when a channel has NO real guide data, emit filler programmes so
     // Plex/Jellyfin show a proper line-up instead of "Unknown airing". Channels
     // WITH real EPG are untouched. Applied to the tuner + Plex/root XMLTV output.
@@ -208,20 +240,7 @@ const
   cDefaultDummyEpgHoursBack = 12;
   cDefaultDummyEpgHoursAhead = 48;
 
-  // valid ranges TAppConfig.Load clamps numeric fields to
-  cMinPort = 1;
-  cMaxPort = 65535;
-  cMaxRefreshHour = 23;
-  cMaxRefreshMinute = 59;
-  cMaxEpgMaxDays = 366;
-  cMinPlexTunerCount = 1;
-  cMaxPlexTunerCount = 100;
   cMaxRateLimitPerMinute = 100000;
-  cMinDummyEpgBlockMinutes = 5;
-  cMaxDummyEpgBlockMinutes = 720;   // 12 h
-  cMaxDummyEpgHoursBack = 168;      // 1 week
-  cMinDummyEpgHoursAhead = 1;
-  cMaxDummyEpgHoursAhead = 336;     // 2 weeks
 
   // config.json keys (one definition for Save and Load)
   cKeyHttpPort = 'httpPort';
@@ -261,6 +280,7 @@ const
   cKeyVisibleGroups = 'visibleGroups';
   cKeyExtraEpgUrls = 'extraEpgUrls';
   cKeyMediaAllowedClients = 'mediaAllowedClients';
+  cKeyTrustedProxies = 'trustedProxies';
 
 var
   GConfigSaveLock: TCriticalSection;
@@ -327,6 +347,7 @@ begin
   Result.VisibleGroups := [];
   Result.ExtraEpgUrls := [];
   Result.MediaAllowedClients := [];
+  Result.TrustedProxies := [];
   Result.DummyEpgEnabled := True;
   Result.DummyEpgBlockMinutes := cDefaultDummyEpgBlockMinutes;
   Result.DummyEpgHoursBack := cDefaultDummyEpgHoursBack;
@@ -418,6 +439,10 @@ begin
     for lItem in MediaAllowedClients do
       lGroupArr.Add(lItem);
     lJson.AddPair(cKeyMediaAllowedClients, lGroupArr);
+    lGroupArr := TJSONArray.Create;
+    for lItem in TrustedProxies do
+      lGroupArr.Add(lItem);
+    lJson.AddPair(cKeyTrustedProxies, lGroupArr);
     // atomic-ish: write a temp file, then swap it in, so a crash or a concurrent
     // save never leaves a truncated config.json (which would load as defaults:
     // admin open, Plex token gone); one save at a time
@@ -545,7 +570,8 @@ begin
     Result.DummyEpgEnabled := JBool(lJson, cKeyDummyEpgEnabled, Result.DummyEpgEnabled);
     Result.DummyEpgBlockMinutes := Clamp(JInt(lJson, cKeyDummyEpgBlockMinutes, Result.DummyEpgBlockMinutes),
       cMinDummyEpgBlockMinutes, cMaxDummyEpgBlockMinutes);
-    Result.DummyEpgHoursBack := Clamp(JInt(lJson, cKeyDummyEpgHoursBack, Result.DummyEpgHoursBack), 0,
+    Result.DummyEpgHoursBack := Clamp(JInt(lJson, cKeyDummyEpgHoursBack, Result.DummyEpgHoursBack),
+      cMinDummyEpgHoursBack,
       cMaxDummyEpgHoursBack);
     Result.DummyEpgHoursAhead := Clamp(JInt(lJson, cKeyDummyEpgHoursAhead, Result.DummyEpgHoursAhead),
       cMinDummyEpgHoursAhead, cMaxDummyEpgHoursAhead);
@@ -590,6 +616,20 @@ begin
           if (lItem is TJSONString) and (TJSONString(lItem).Value.Trim <> '') then
             lGroups.Add(TJSONString(lItem).Value.Trim);
         Result.MediaAllowedClients := lGroups.ToArray;
+      finally
+        FreeAndNil(lGroups);
+      end;
+    end;
+    // trustedProxies[] — reverse proxies whose X-Forwarded-For is believed
+    lGroupsVal := lJson.GetValue(cKeyTrustedProxies);
+    if lGroupsVal is TJSONArray then
+    begin
+      lGroups := TList<string>.Create;
+      try
+        for lItem in TJSONArray(lGroupsVal) do
+          if (lItem is TJSONString) and (TJSONString(lItem).Value.Trim <> '') then
+            lGroups.Add(TJSONString(lItem).Value.Trim);
+        Result.TrustedProxies := lGroups.ToArray;
       finally
         FreeAndNil(lGroups);
       end;

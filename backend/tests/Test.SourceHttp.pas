@@ -40,6 +40,16 @@ type
     [Test] procedure DecodeBytes_AcceptsPlainUtf8;
     /// <summary>Invalid UTF-8 falls back to CP1251.</summary>
     [Test] procedure DecodeBytes_FallsBackToCp1251;
+    /// <summary>A full CP1251 M3U line (markup + URL) still decodes as Cyrillic.</summary>
+    [Test] procedure DecodeBytes_Cp1251M3uLine;
+    /// <summary>A full Latin-1 M3U line with French/German/Dutch accents decodes as Western.</summary>
+    [Test] procedure DecodeBytes_Latin1M3uLine;
+    /// <summary>One stray byte in a big UTF-8 body keeps the body UTF-8.</summary>
+    [Test] procedure DecodeBytes_MostlyUtf8StaysUtf8;
+    /// <summary>A body whose XML prolog declares UTF-8 stays UTF-8.</summary>
+    [Test] procedure DecodeBytes_DeclaredUtf8StaysUtf8;
+    /// <summary>A redirect loop beyond the cap raises instead of returning the 3xx body.</summary>
+    [Test] procedure RedirectLoop_Raises;
     /// <summary>Emoji survive decoding.</summary>
     [Test] procedure DecodeBytes_KeepsEmoji;
     /// <summary>Per-provider User-Agent and Referer are forwarded.</summary>
@@ -72,6 +82,13 @@ begin
     AResponseInfo.ContentText :=
       '<html><head><title>Just a moment...</title></head>' +
       '<body>__cf_chl_jschl_tk__</body></html>';
+    Exit;
+  end;
+  if ARequestInfo.Document = '/loop' then
+  begin
+    // a redirect to itself: never ends
+    AResponseInfo.Redirect('/loop');
+    AResponseInfo.ContentText := '<html><body>Moved</body></html>';
     Exit;
   end;
   if ARequestInfo.Document = '/flaky' then
@@ -166,6 +183,93 @@ var
 begin
   lBytes := [$C0]; // invalid as standalone UTF-8; in Windows-1251 this is 'А' (U+0410)
   Assert.AreEqual(#$0410, DecodeBytes(lBytes), 'non-UTF-8 bytes decode as CP1251');
+end;
+
+const
+  cCodePageCyrillic = 1251;
+  cCodePageWestern = 1252;
+  cRepeatCount = 100;
+
+function EncodeAs(ACodePage: Integer; const AText: string): TBytes;
+var
+  lEnc: TEncoding;
+begin
+  lEnc := TEncoding.GetEncoding(ACodePage);
+  try
+    Result := lEnc.GetBytes(AText);
+  finally
+    FreeAndNil(lEnc);
+  end;
+end;
+
+procedure TSourceHttpTests.DecodeBytes_Cp1251M3uLine;
+const
+  // "Первый канал HD" / "Общероссийские"
+  cName = #$041F#$0435#$0440#$0432#$044B#$0439' '#$043A#$0430#$043D#$0430#$043B' HD';
+  cGroup = #$041E#$0431#$0449#$0435#$0440#$043E#$0441#$0441#$0438#$0439#$0441#$043A#$0438#$0435;
+var
+  lText: string;
+begin
+  // mostly ASCII markup + URL: the high bytes alone must still win
+  lText := '#EXTINF:-1 tvg-id="perviy.ru" tvg-name="' + cName + '" tvg-logo="http://logo.example/1.png" ' +
+    'group-title="' + cGroup + '",' + cName + #10 + 'http://panel.example:8080/live/user/pass/101.ts' + #10;
+  Assert.AreEqual(lText, DecodeBytes(EncodeAs(cCodePageCyrillic, lText)), 'CP1251 line decodes as Cyrillic');
+end;
+
+procedure TSourceHttpTests.DecodeBytes_Latin1M3uLine;
+const
+  // "TF1 Séries Films", "Français", "Das Erste für Männer - Grüße", "Télé à la carte privé"
+  cNameFr = 'TF1 S'#$00E9'ries Films';
+  cGroupFr = 'Fran'#$00E7'ais';
+  cNameDe = 'Das Erste f'#$00FC'r M'#$00E4'nner - Gr'#$00FC#$00DF'e';
+  cNameNl = 'T'#$00E9'l'#$00E9' '#$00E0' la carte priv'#$00E9;
+var
+  lText: string;
+begin
+  lText := '#EXTINF:-1 tvg-id="tf1.fr" tvg-name="' + cNameFr + '" group-title="' + cGroupFr + '",' + cNameFr +
+    #10 + 'http://panel.example/live/u/p/1.ts' + #10 +
+    '#EXTINF:-1 tvg-id="ard.de" group-title="Deutsch",' + cNameDe + #10 + 'http://panel.example/live/u/p/2.ts' +
+    #10 + '#EXTINF:-1 tvg-id="tele.nl" group-title="Nederland",' + cNameNl + #10 +
+    'http://panel.example/live/u/p/3.ts' + #10;
+  Assert.AreEqual(lText, DecodeBytes(EncodeAs(cCodePageWestern, lText)), 'Latin-1 line decodes as Western');
+end;
+
+procedure TSourceHttpTests.DecodeBytes_MostlyUtf8StaysUtf8;
+var
+  lText: string;
+  lBytes: TBytes;
+  lDecoded: string;
+  i: Integer;
+begin
+  lText := '<tv>';
+  for i := 1 to cRepeatCount do
+    lText := lText + '<title>Caf'#$00E9' Z'#$00FC'rich</title>';
+  // one stray (invalid) byte among hundreds of valid sequences
+  lBytes := TEncoding.UTF8.GetBytes(lText) + TBytes.Create($FF) + TEncoding.UTF8.GetBytes('</tv>');
+  lDecoded := DecodeBytes(lBytes);
+  Assert.IsTrue(lDecoded.StartsWith(lText), 'the valid UTF-8 is kept as UTF-8');
+  Assert.IsTrue(lDecoded.EndsWith('</tv>'), 'the rest after the stray byte decodes too');
+end;
+
+procedure TSourceHttpTests.DecodeBytes_DeclaredUtf8StaysUtf8;
+const
+  cProlog = '<?xml version="1.0" encoding="UTF-8"?><tv>Caf'#$00E9' ';
+var
+  lBytes: TBytes;
+begin
+  // half the non-ASCII is invalid, but the prolog says UTF-8
+  lBytes := TEncoding.UTF8.GetBytes(cProlog) + TBytes.Create($E9) + TEncoding.UTF8.GetBytes('</tv>');
+  Assert.IsTrue(DecodeBytes(lBytes).StartsWith(cProlog), 'declared UTF-8 is decoded as UTF-8');
+end;
+
+procedure TSourceHttpTests.RedirectLoop_Raises;
+begin
+  Assert.WillRaiseAny(
+    procedure
+    begin
+      HttpGetString(Format('http://127.0.0.1:%d/loop', [FPort]));
+    end,
+    'a redirect chain beyond the cap must fail, not return the 302 page');
 end;
 
 procedure TSourceHttpTests.DecodeBytes_KeepsEmoji;

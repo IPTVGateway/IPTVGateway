@@ -74,8 +74,12 @@ LABEL net.unraid.docker.webui="http://[IP]:[PORT:7777]/" \
       org.opencontainers.image.licenses="MIT"
 
 # Not root: the entrypoint drops to PUID:PGID (default 99:100 = Unraid nobody:users)
-# after handing the data volume to that user. All ports are > 1024, so no
-# privilege is needed to listen. PUID=0 keeps the old behaviour (root).
+# after handing the data volume to that user (and falls back to root, with a loud
+# log message, when that user still can't write it - root_squash / read-only share).
+# The default ports are > 1024, so no privilege is needed to listen; a port below
+# 1024 (host networking) needs PUID=0. Files config.json points at outside the
+# volume (TLS cert/key, a databasePath elsewhere) must be readable by PUID:PGID
+# (the database: writable). PUID=0 keeps the old behaviour (root).
 ENV PUID=99 \
     PGID=100
 

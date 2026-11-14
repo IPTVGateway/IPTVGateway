@@ -62,6 +62,8 @@ type
     FHostLog: TLogProc;  // what the host passed in (console / VCL memo / event log)
     FConfigPath: string;
     FBgOps: Integer; // count of detached background ops (admin-triggered refreshes)
+    FStopped: Boolean;   // Stop ran (it is idempotent: Destroy calls it again)
+    FAbandoned: Boolean; // Stop left work running on other threads (see Abandoned)
   public
     /// AConfigPath overrides where settings are loaded from AND persisted to
     /// (empty => config.json next to the executable, as the dev/daemon hosts use).
@@ -71,7 +73,8 @@ type
     destructor Destroy; override;
     /// Opens the store, starts ingest, the HTTP server and the scheduler, then sets App.
     procedure Start;
-    /// Stops scheduler and server, waits for background ops, clears App, releases the store.
+    /// Stops scheduler and server, waits (bounded) for the daily refresh and background
+    /// ops, clears App, releases the store. Idempotent: a second call does nothing.
     procedure Stop;
     /// Route handlers can emit diagnostics.
     procedure Log(const AMsg: string);
@@ -120,6 +123,10 @@ type
     property Store: IStore read FStore;
     /// The ingest service (refreshes).
     property Ingest: TIngestService read FIngest;
+    /// True when Stop gave up waiting while a refresh (daily or background) still ran
+    /// on another thread. That work still uses this context (its ingest, store, log
+    /// and op counter), so the owner must NOT free it: it is left to the process exit.
+    property Abandoned: Boolean read FAbandoned;
   end;
 
 var
@@ -138,6 +145,7 @@ uses
   System.Classes,
   System.SyncObjs,
   System.Generics.Collections,
+  System.Diagnostics,
   // Own units
   IPTV.Storage.SQLite,
   IPTV.Storage.Locking,
@@ -156,9 +164,11 @@ const
   // HDHomeRun DeviceID: the first 8 hex digits of a fresh GUID
   cPlexDeviceIdLength = 8;
 
-  // Stop: how long to wait for detached background ops, polled in slices
-  cBgOpsMaxWaitMs = 30000;
-  cBgOpsPollMs = 50;
+  // Stop: how long to wait in total for the daily refresh (scheduler thread) and the
+  // detached background ops, polled in slices. Below the 35 s stop grace of
+  // docker / systemd / the SCM, leaving room for draining the HTTP server.
+  cStopMaxWaitMs = 25000;
+  cStopPollMs = 50;
 
 { TLogRing }
 
@@ -545,21 +555,38 @@ end;
 
 procedure TAppContext.Stop;
 var
-  lWaited: Integer;
+  lClock: TStopwatch;
+  lSchedulerRunning: Boolean;
 begin
+  // idempotent: the runner calls Stop and Destroy calls it again - a second pass
+  // would wait out the budget once more (past the docker/systemd/SCM grace)
+  if FStopped then
+    Exit;
+  FStopped := True;
+  // One budget for every wait below, so a stuck refresh can't push the whole stop
+  // past the stop grace of docker / systemd / the SCM.
+  lClock := TStopwatch.StartNew;
   // Order matters: stop the scheduler (no refresh fires mid-shutdown), then the
   // HTTP server (stops accepting + drains in-flight requests) BEFORE clearing the
   // global App and releasing the store — otherwise a request that just passed its
   // "if App = nil" check could use App/Store as they're torn down (use-after-check).
   // a running (daily) refresh stops before its next source, so the scheduler
-  // thread that runs it can be joined within the stop budget (docker/systemd/SCM)
+  // thread that runs it can usually be joined within the stop budget
   if Assigned(FIngest) then
     FIngest.Cancel;
+  lSchedulerRunning := False;
   if Assigned(FScheduler) then
   begin
     FScheduler.Terminate;
-    FScheduler.WaitFor;
-    FreeAndNil(FScheduler);
+    // bounded: TThread.WaitFor has no timeout, and one source's refresh (a stuck
+    // network read, a huge XMLTV) isn't interrupted by Cancel
+    while (not FScheduler.Finished) and (lClock.ElapsedMilliseconds < cStopMaxWaitMs) do
+      Sleep(cStopPollMs);
+    lSchedulerRunning := not FScheduler.Finished;
+    if lSchedulerRunning then
+      Log('Stop: the daily refresh is still running - continuing the shutdown without it')
+    else
+      FreeAndNil(FScheduler); // finished: Destroy's join returns at once
   end;
   if Assigned(FServer) then
   begin
@@ -569,26 +596,22 @@ begin
 
   // wait for detached admin refreshes to finish so they don't touch App/FIngest
   // after we free them. Bounded so a stuck network read can't hang shutdown forever.
-  lWaited := 0;
-  while (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) and (lWaited < cBgOpsMaxWaitMs) do
-  begin
-    Sleep(cBgOpsPollMs);
-    Inc(lWaited, cBgOpsPollMs);
-  end;
+  while (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) and
+    (lClock.ElapsedMilliseconds < cStopMaxWaitMs) do
+    Sleep(cStopPollMs);
 
   if App = Self then
     App := nil;
 
-  if TInterlocked.CompareExchange(FBgOps, 0, 0) > 0 then
+  if lSchedulerRunning or (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) then
   begin
-    // a background refresh is still running (stuck network read): freeing the
-    // ingest/store now would pull them from under it. The process is exiting -
-    // leaving them alive is the safe choice.
-    Log('Stop: a background refresh is still running - ingest and store are left to the process exit');
-    FIngest := nil;
-    // one deliberate extra reference: the context's own release must not free it
-    if FStore <> nil then
-      FStore._AddRef;
+    // A refresh is still running (stuck network read): it uses FIngest/FStore, and
+    // when it ends it touches this context too (FBgOps, Log; the scheduler's
+    // callback reads FIngest). So NOTHING it uses is freed - not the scheduler
+    // thread, the ingest, the store, nor this context (the owner checks Abandoned
+    // and leaves it to the process exit). A small leak beats a use-after-free.
+    FAbandoned := True;
+    Log('Stop: a refresh is still running - ingest, store and context are left to the process exit');
     Exit;
   end;
   FreeAndNil(FIngest);

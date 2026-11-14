@@ -334,7 +334,15 @@ the guide for up to a day.
 - Plex has no catch-up of the provider's archive. Use its DVR to record instead.
 - After adding or removing channels, let Plex rescan its guide.
 - The container runs as an ordinary user (`PUID`/`PGID`, default `99:100`), not as
-  root. The data folder is handed to that user on start.
+  root. The data folder is handed to that user on start. If that user still can't
+  write it (an NFS/SMB share with root_squash, a read-only mount), the container logs
+  a clear WARNING and runs as root instead; fix the share's permissions, or set
+  `PUID=0` to run as root on purpose.
+- Files your `config.json` points at **outside** the data folder (the HTTPS
+  certificate and key, a `databasePath` elsewhere) must be readable by that user
+  (the database also writable), or set `PUID=0`.
+- A port below 1024 (e.g. `httpPort` 80/443 with host networking) can't be opened by
+  an ordinary user: use a port above 1024, or set `PUID=0`.
 - The tuner and guide addresses have no login. To keep other devices on your network
   out, list your Plex server's IP under **Settings → Media servers: allowed clients**
   (or a prefix such as `192.168.1.` for the whole network). Movies and series are

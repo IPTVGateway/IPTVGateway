@@ -22,6 +22,7 @@ uses
   System.SysUtils,
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
+  System.SyncObjs,
 {$ENDIF}
 {$IFDEF POSIX}
   Posix.Signal,
@@ -66,6 +67,12 @@ const
   cExitCodeStartFailed = 1;       // non-zero: systemd / Docker restart policies retry
 {$IFDEF MSWINDOWS}
   cAddCtrlHandler = True;         // SetConsoleCtrlHandler: add (not remove) the handler
+  // close / logoff / shutdown: Windows ends the process as soon as the handler
+  // returns (and anyway after ~5 s), so the handler waits this long for a clean stop
+  cCtrlCloseWaitMs = 5000;
+  // TEvent.Create arguments
+  cManualReset = True;            // GStopDone stays set once signalled
+  cInitiallyNonSignaled = False;
 {$ENDIF}
 
 var
@@ -74,12 +81,23 @@ var
   // do async-signal-safe things (a plain store), not take locks like TEvent.SetEvent
   GStopRequested: Integer = 0;
   GLogLock: TObject; // Writeln from many threads (Indy workers, ingest, relay) garbles lines
+{$IFDEF MSWINDOWS}
+  // set by the main thread once the runner has stopped; never freed (a console
+  // handler thread may still be waiting on it while the process exits)
+  GStopDone: TEvent;
+{$ENDIF}
 
 {$IFDEF MSWINDOWS}
 function ConsoleCtrlHandler(ACtrlType: DWORD): BOOL; stdcall;
 begin
-  if Assigned(GRunner) then
-    GRunner.SignalStop;   // CTRL_C / CTRL_CLOSE / shutdown
+  // never touch GRunner here: the main thread creates and frees it; it polls
+  // this flag (also covers a signal that arrives before the runner exists)
+  GStopRequested := 1;
+  // for these Windows terminates the process as soon as we return: wait (bounded)
+  // until the main thread has stopped the runner, so the stop is a clean one
+  if (ACtrlType = CTRL_CLOSE_EVENT) or (ACtrlType = CTRL_LOGOFF_EVENT) or
+    (ACtrlType = CTRL_SHUTDOWN_EVENT) then
+    GStopDone.WaitFor(cCtrlCloseWaitMs);
   Result := True;
 end;
 {$ENDIF}
@@ -123,12 +141,17 @@ begin
   // config.json next to the exe, or in the data folder when IPTV_CONFIG is set
   // (Docker) - created there on first start, see ResolveDaemonConfigPath
   GLogLock := TObject.Create;
+{$IFDEF MSWINDOWS}
+  GStopDone := TEvent.Create(nil, cManualReset, cInitiallyNonSignaled, '');
+{$ENDIF}
+  // BEFORE the runner exists: a SIGTERM in between was ignored (PID 1 in Docker has
+  // no default action); a stop requested this early is acted on by the main loop
+  InstallSignalHandlers;
   CfgPath := ResolveDaemonConfigPath(ExtractFilePath(ParamStr(0)), CfgNote);
   Cfg := TAppConfig.Load(CfgPath);
 
   GRunner := TAppRunner.Create(Cfg, StdLog, CfgPath);  // worker thread starts the app
   try
-    InstallSignalHandlers;
     if CfgNote <> '' then
       StdLog(CfgNote);
     StdLog('config: ' + CfgPath);
@@ -152,5 +175,8 @@ begin
       StdLog('Stopped.');
   finally
     FreeAndNil(GRunner);
+{$IFDEF MSWINDOWS}
+    GStopDone.SetEvent; // releases a waiting close/logoff/shutdown handler
+{$ENDIF}
   end;
 end.

@@ -67,6 +67,8 @@ type
     [Test] procedure EpgIdKey_StripsOnlyCountryCodes;
     /// <summary>Missing stop times use the next start.</summary>
     [Test] procedure FillMissingStops_UsesNextStart;
+    /// <summary>A duplicate start without stop never keeps StopUtc = 0.</summary>
+    [Test] procedure FillMissingStops_DuplicateStartGetsAStop;
     /// <summary>XMLTV attributes are read in both quote styles.</summary>
     [Test] procedure XmltvAttr_BothQuoteStyles;
     /// <summary>FirstEpgUrl takes the first URL of a list.</summary>
@@ -421,6 +423,39 @@ begin
     Assert.AreEqual(EncodeDateTime(2026, 11, 13, 12, 0, 0, 0), lList[0].StopUtc, 'ends at the next start');
     Assert.AreEqual(EncodeDateTime(2026, 11, 13, 11, 0, 0, 0), lList[1].StopUtc, 'a real stop is kept');
     Assert.AreEqual(EncodeDateTime(2026, 11, 13, 13, 0, 0, 0), lList[2].StopUtc, 'the last gets an hour');
+  finally
+    FreeAndNil(lList);
+  end;
+end;
+
+procedure TUtilsTests.FillMissingStops_DuplicateStartGetsAStop;
+var
+  lList: TEpgProgrammeList;
+
+  procedure Add(const ACh: string; AStartH: Integer);
+  var
+    lProg: TEpgProgramme;
+  begin
+    lProg := TEpgProgramme.Create;
+    lProg.ChannelTvgId := ACh;
+    lProg.StartUtc := EncodeDateTime(2026, 11, 13, AStartH, 0, 0, 0);
+    lList.Add(lProg);
+  end;
+
+begin
+  lList := TEpgProgrammeList.Create(True);
+  try
+    Add('a', 10);
+    Add('a', 10); // the guide lists the same programme twice
+    Add('a', 12);
+    Add('a', 14);
+    Add('a', 14); // a duplicate of the last one too
+    FillMissingStops(lList);
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 12, 0, 0, 0), lList[0].StopUtc, 'ends at the next start');
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 12, 0, 0, 0), lList[1].StopUtc, 'so does the duplicate');
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 14, 0, 0, 0), lList[2].StopUtc);
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 15, 0, 0, 0), lList[3].StopUtc, 'the last gets an hour');
+    Assert.AreEqual(EncodeDateTime(2026, 11, 13, 15, 0, 0, 0), lList[4].StopUtc, 'its duplicate too');
   finally
     FreeAndNil(lList);
   end;

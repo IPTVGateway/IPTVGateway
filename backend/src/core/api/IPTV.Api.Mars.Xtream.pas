@@ -130,6 +130,7 @@ uses
   // RTL
   System.SysUtils,
   System.Generics.Collections,
+  System.Generics.Defaults,
   System.StrUtils,
   System.Math,
   System.RegularExpressions,
@@ -177,6 +178,8 @@ const
   cFieldStreamId = 'stream_id';
   cFieldSeriesId = 'series_id';
   cFieldCategoryId = 'category_id';
+  // a panel's full provider URL (with its credentials): never handed to a box
+  cFieldDirectSource = 'direct_source';
 
   // containers
   cExtTs = 'ts';
@@ -217,13 +220,33 @@ const
 
 { ── shared helpers ──────────────────────────────────────────────────────── }
 
-// Resolve the list a box authenticates as (empty creds -> default). Caller frees.
+// The service isn't running (starting / stopping, App = nil): answer 503, so a
+// box with a correct login neither sees "wrong password" nor counts as a failure.
+function ServiceDown(const AResponse: IMARSResponse): Boolean;
+begin
+  Result := App = nil;
+  if Result then
+    AResponse.StatusCode := cHttpServiceUnavailable;
+end;
+
+// Resolve the list a box authenticates as (empty creds -> default). Caller frees;
+// nil = wrong login. Callers check ServiceDown first (App = nil is not a bad login).
 function ResolveList(const AUser, APass: string): TCustomList;
 begin
   if App = nil then
     Exit(nil);
   // also understands the '-' placeholder and percent-encoding of our own URLs
   Result := FindListForPath(App.Store, AUser, APass);
+end;
+
+// a panel's direct_source (the provider URL with its credentials) blanked: in proxy
+// mode a box that prefers it would bypass the relay, and it leaks the provider login
+procedure BlankDirectSource(const AObject: TJSONObject);
+begin
+  if AObject.GetValue(cFieldDirectSource) = nil then
+    Exit;
+  AObject.RemovePair(cFieldDirectSource).Free;
+  AObject.AddPair(cFieldDirectSource, '');
 end;
 
 // host the box reaches us on (publicBaseUrl; 'localhost' when unset/unparseable)
@@ -551,6 +574,7 @@ begin
             TJSONObject(lMovieData).AddPair(cFieldStreamId, TJSONNumber.Create(lStream.Id));
             if TJSONObject(lMovieData).GetValue('container_extension') = nil then
               TJSONObject(lMovieData).AddPair('container_extension', lExt);
+            BlankDirectSource(TJSONObject(lMovieData));
           end;
           Exit(lJson);
         end;
@@ -652,6 +676,7 @@ begin
             begin
               lEpObjs[i].RemovePair('id').Free;
               lEpObjs[i].AddPair('id', lIds[i].ToString);
+              BlankDirectSource(lEpObjs[i]);
             end;
           except
             on E: Exception do
@@ -706,7 +731,7 @@ var
   lNowUtc: TDateTime;
   lCount, lStreamId, lArchiveDays: Integer;
   lArchiveFrom: TDateTime;
-  lTvg: string;
+  lGuideId: string;
   lTvgs: TArray<string>;
 
   function B64(const AText: string): string;
@@ -725,14 +750,15 @@ begin
   // (programmes may be stored under either) so the box's inline now/next matches
   // what xmltv.php shows. Only channels actually on this list get EPG.
   lStreamId := StreamIdFromParam(AStreamId);
-  lTvg := '';
+  lGuideId := '';
   lArchiveDays := 0;
   lChannels := App.Store.LoadOutputChannels(AList.Id);
   try
     for lChannel in lChannels do
       if lChannel.StreamItemId = lStreamId then
       begin
-        lTvg := lChannel.TvgId; // effective (override-or-upstream)
+        // the id xmltv.php / get_live_streams (epg_channel_id) publish it under
+        lGuideId := ChannelGuideId(lChannel);
         lArchiveDays := lChannel.ArchiveDays;
         lTvgs := lChannel.EpgReadIds; // own ids, or the matched extra guide
         Break;
@@ -745,8 +771,15 @@ begin
 
   lNowUtc := NowUtc;
   lArchiveFrom := IncDay(lNowUtc, -lArchiveDays);
-  lProgs := App.Store.LoadEpgForTvgIds(lTvgs, App.Config.EpgMaxDays); // sorted by start
+  lProgs := App.Store.LoadEpgForTvgIds(lTvgs, App.Config.EpgMaxDays);
   try
+    // the store orders by channel id first: with two ids (upstream + override) the
+    // 'next N' must come from both, in time order
+    lProgs.Sort(TComparer<TEpgProgramme>.Construct(
+      function(const ALeft, ARight: TEpgProgramme): Integer
+      begin
+        Result := CompareDateTime(ALeft.StartUtc, ARight.StartUtc);
+      end));
     lCount := 0;
     for lProgramme in lProgs do
     begin
@@ -762,7 +795,7 @@ begin
       lEntry.AddPair('start', FormatDateTime(cEpgDateTimeFormat, lProgramme.StartUtc));
       lEntry.AddPair('end', FormatDateTime(cEpgDateTimeFormat, lProgramme.StopUtc));
       lEntry.AddPair('description', B64(lProgramme.Description));
-      lEntry.AddPair('channel_id', lTvg);
+      lEntry.AddPair('channel_id', lGuideId);
       lEntry.AddPair('start_timestamp', IntToStr(DateTimeToUnix(lProgramme.StartUtc, cTimesAreUtc)));
       lEntry.AddPair('stop_timestamp', IntToStr(DateTimeToUnix(lProgramme.StopUtc, cTimesAreUtc)));
       lEntry.AddPair('now_playing', TJSONNumber.Create(IfThen((lNowUtc >= lProgramme.StartUtc) and
@@ -841,6 +874,8 @@ var
   lTarget, lMasked, lProvider, lExt: string;
   lHls: Boolean;
 begin
+  if ServiceDown(AResponse) then
+    Exit;
   lList := ResolveList(AUser, APass);
   if lList = nil then
   begin
@@ -914,6 +949,8 @@ var
   lDuration: Integer;
   lExt, lTarget, lMasked: string;
 begin
+  if ServiceDown(AResponse) then
+    Exit;
   lDuration := StrToIntDef(ADuration, 0);
   if (lDuration <= 0) or not ParseTimeshiftStart(AStart, lStartUtc) then
   begin
@@ -970,17 +1007,25 @@ function TPlayerApiResource.PlayerApi(AUser, APass, AAction, AStreamId: string; 
   AVodId, ASeriesId, ACategoryId: string): TJSONValue;
 var
   lList: TCustomList;
+  lThrottleKey: string;
 begin
+  if ServiceDown(Response) then
+    Exit(TJSONObject.Create);
+  lThrottleKey := GAuthThrottle.ClientKey(cSurfaceBox, Request.RemoteIP,
+    Request.GetHeaderParamValue(cHeaderForwardedFor));
   lList := ResolveList(AUser, APass);
   if lList = nil then
   begin
-    // counts towards the per-IP lockout like a 401 does
-    GAuthThrottle.RegisterFailure(Request.RemoteIP);
+    // counts towards the lockout like a 401 does - but not the server's own
+    // warm-up request (username=warmup)
+    if Request.GetHeaderParamValue(cWarmupHeader) = '' then
+      GAuthThrottle.RegisterFailure(lThrottleKey);
     // 200 + auth:0, like real panels: some boxes show a 401 as "network error"
     // instead of "wrong username/password"
     Exit(TJSONObject.Create.AddPair('user_info',
       TJSONObject.Create.AddPair('auth', TJSONNumber.Create(0))));
   end;
+  GAuthThrottle.RegisterSuccess(lThrottleKey);
   try
     if AAction = cActGetShortEpg then
       Result := BuildEpgListings(lList, AStreamId,
@@ -1005,6 +1050,8 @@ var
   lList: TCustomList;
   lPrefix: string;
 begin
+  if ServiceDown(Response) then
+    Exit('');
   lList := ResolveList(AUser, APass);
   if lList = nil then
   begin
@@ -1032,6 +1079,8 @@ function TXmltvResource.Xmltv(AUser, APass: string): string;
 var
   lList: TCustomList;
 begin
+  if ServiceDown(Response) then
+    Exit('');
   lList := ResolveList(AUser, APass);
   if lList = nil then
   begin

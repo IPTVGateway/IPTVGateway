@@ -169,8 +169,14 @@ procedure KeepContentTypes(AChannels: TOutputChannelList; const ATypes: TContent
 function PathCred(const AValue: string): string;
 
 /// The list a box logs in as, given credentials taken from a URL path: as-is,
-/// else percent-decoded, else '-'/'-' as the empty login. Caller frees; nil = none.
+/// else percent-decoded, else '-'/'-' as the empty login, else with ' ' read as '+'
+/// (MARS form-decodes path tokens). Caller frees; nil = none.
 function FindListForPath(const AStore: IStore; const AUser, APass: string): TCustomList;
+
+/// The base URL (scheme://host:port, no trailing '/') media servers (Plex / HDHomeRun)
+/// reach our API port on: host, scheme and port of APublicBaseUrl when it has them,
+/// else 'localhost' / AUseHttps / AHttpPort.
+function MediaServerBaseUrl(const APublicBaseUrl: string; AUseHttps: Boolean; AHttpPort: Integer): string;
 
 /// The guide id a channel is published under: its effective tvg-id, or a stable
 /// synthetic id (iptv-<streamItemId>) when it has no tvg-id.
@@ -202,6 +208,15 @@ const
 
   /// how PathCred writes an empty login field into a URL path
   cPathCredEmpty = '-';
+  // FindListForPath: a '+' that MARS form-decoded into a space
+  cFormSpace = ' ';
+  cFormPlus = '+';
+
+  // MediaServerBaseUrl
+  cSchemeHttp = 'http';
+  cSchemeHttps = 'https';
+  cIgnoreCase = True;                  // string.StartsWith IgnoreCase
+  cDefaultMediaHost = 'localhost';     // publicBaseUrl unset / unparseable
   // RFC 3986 unreserved characters: written as-is by PathCred, all else %XX
   cUrlUnreserved = ['A'..'Z', 'a'..'z', '0'..'9', '-', '.', '_', '~'];
   cAsciiLimit = 128;
@@ -423,27 +438,58 @@ var
       Result := AValue;
   end;
 
+  // as given, else with '-' as the empty field: PathCred writes '-' for EACH empty
+  // field (a login with only a username too)
+  function TryLogin(const AU, AP: string): TCustomList;
+  begin
+    Result := AStore.FindListByCredentials(AU, AP);
+    if (Result = nil) and ((AU = cPathCredEmpty) or (AP = cPathCredEmpty)) then
+      Result := AStore.FindListByCredentials(Dash(AU), Dash(AP));
+  end;
+
 begin
-  Result := AStore.FindListByCredentials(AUser, APass);
+  Result := TryLogin(AUser, APass);
   if Result <> nil then
     Exit;
-  lUser := AUser;
-  lPass := APass;
   if AUser.Contains('%') or APass.Contains('%') then
   begin
     try
       lUser := TNetEncoding.URL.URLDecode(AUser);
       lPass := TNetEncoding.URL.URLDecode(APass);
-      Result := AStore.FindListByCredentials(lUser, lPass);
-      if Result <> nil then
-        Exit;
     except
       Exit(nil); // malformed escape
     end;
+    Result := TryLogin(lUser, lPass);
+    if Result <> nil then
+      Exit;
   end;
-  // PathCred writes '-' for EACH empty field (a login with only a username too)
-  if (lUser = cPathCredEmpty) or (lPass = cPathCredEmpty) then
-    Result := AStore.FindListByCredentials(Dash(lUser), Dash(lPass));
+  // MARS form-decodes a path token ('+' -> ' '), so a '+' in a login arrives as a
+  // space on the API port. (A raw '%' that is no valid escape makes MARS raise in its
+  // URL parser before we are called - that can't be handled here; PathCred sends %25.)
+  if AUser.Contains(cFormSpace) or APass.Contains(cFormSpace) then
+    Result := TryLogin(AUser.Replace(cFormSpace, cFormPlus, [rfReplaceAll]),
+      APass.Replace(cFormSpace, cFormPlus, [rfReplaceAll]));
+end;
+
+function MediaServerBaseUrl(const APublicBaseUrl: string; AUseHttps: Boolean; AHttpPort: Integer): string;
+var
+  lScheme: string;
+  lPort: Integer;
+begin
+  // scheme + port of publicBaseUrl when it has them: behind a Docker port mapping
+  // (container 7777 published as 9000) the outside port is the one to hand out
+  if APublicBaseUrl.Trim.StartsWith(cSchemeHttps + ':', cIgnoreCase) then
+    lScheme := cSchemeHttps
+  else if APublicBaseUrl.Trim.StartsWith(cSchemeHttp + ':', cIgnoreCase) then
+    lScheme := cSchemeHttp
+  else if AUseHttps then
+    lScheme := cSchemeHttps
+  else
+    lScheme := cSchemeHttp;
+  lPort := SafeUrlPort(APublicBaseUrl);
+  if lPort <= 0 then
+    lPort := AHttpPort;
+  Result := Format('%s://%s:%d', [lScheme, SafeUrlHost(APublicBaseUrl, cDefaultMediaHost), lPort]);
 end;
 
 function XmltvTime(const ADtUtc: TDateTime): string;
@@ -837,13 +883,19 @@ begin
   lNameById := nil;
   lSB := nil;
   try
+    // case-SENSITIVE like the lookups they feed (the SQL IN of LoadEpgForTvgIds and
+    // the lEffById dictionary): 'NPO1.nl' and 'npo1.nl' on two channels are two ids,
+    // each with its own <channel> and programmes
     lUpstreams := TStringList.Create;
+    lUpstreams.CaseSensitive := True;
     lUpstreams.Sorted := True;
     lUpstreams.Duplicates := dupIgnore;
     lSeenEff := TStringList.Create;
+    lSeenEff.CaseSensitive := True;
     lSeenEff.Sorted := True;
     lSeenEff.Duplicates := dupIgnore;
     lGotEpg := TStringList.Create;
+    lGotEpg.CaseSensitive := True;
     lGotEpg.Sorted := True;
     lGotEpg.Duplicates := dupIgnore;
     lEffById := TDictionary<string, TArray<string>>.Create;

@@ -975,7 +975,7 @@ begin
       begin
         Assert.AreEqual(0, lStream.ArchiveDays, 'archive dropped upstream');
         Assert.AreEqual('http://prov.tv/timeshift/pu/pp/60/2026-11-12:21-00/4711.ts',
-          TimeshiftUpstreamUrl(lStore, lStream, 60, EncodeDateTime(2026, 11, 12, 20, 0, 0, 0), ''));
+          TimeshiftUpstreamUrl(lStore, 0, lStream, 60, EncodeDateTime(2026, 11, 12, 20, 0, 0, 0), ''));
       end;
   finally
     FreeAndNil(lStreams);

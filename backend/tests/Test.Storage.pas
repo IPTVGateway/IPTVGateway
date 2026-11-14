@@ -102,6 +102,14 @@ type
     [Test] procedure ReKeyWithUpstreamIdUnderTwoTypes;
     /// <summary>Init removes rows (and list items) left under a deleted source id.</summary>
     [Test] procedure InitPurgesOrphanedSourceRows;
+    /// <summary>A mirror bouquet outputs the master's channels with its own provider account.</summary>
+    [Test] procedure MirrorOutputChannelsFollowMaster;
+    /// <summary>Box lookups through a mirror are scoped to the master (incl. episodes, failover).</summary>
+    [Test] procedure MirrorListStreamByIdScopedToMaster;
+    /// <summary>Mirror rules: no self / unknown / chained mirror, empty first, master delete blocked.</summary>
+    [Test] procedure MirrorValidationRules;
+    /// <summary>A mirror's credentials go with the list and with the source.</summary>
+    [Test] procedure MirrorCredentialsDeletedWithListAndSource;
   end;
 
 implementation
@@ -4508,6 +4516,303 @@ begin
   finally
     FreeAndNil(lItems);
   end;
+end;
+
+// ── mirror bouquets ─────────────────────────────────────────────────────────
+
+const
+  cMirrorUrl = 'http://alt:9090';
+  cMirrorUser = 'u2';
+  cMirrorPass = 'p2';
+
+function MirrorCred(ASourceId: Integer; const AUrl, AUser, APass: string): TMirrorCredential;
+begin
+  Result.SourceId := ASourceId;
+  Result.Url := AUrl;
+  Result.Username := AUser;
+  Result.Password := APass;
+end;
+
+function NewMirrorList(const AStore: IStore; const AName: string; AMasterId: Integer): Integer;
+var
+  lLst: TCustomList;
+begin
+  lLst := TCustomList.Create;
+  try
+    lLst.Name := AName;
+    lLst.Enabled := True;
+    lLst.OutputUsername := AName;
+    lLst.OutputPassword := AName;
+    lLst.MirrorOfListId := AMasterId;
+    Result := AStore.SaveList(lLst);
+  finally
+    FreeAndNil(lLst);
+  end;
+end;
+
+// set MirrorOfListId of an existing list (keeps its name)
+procedure SetMirrorOf(const AStore: IStore; AListId, AMasterId: Integer);
+var
+  lLists: TObjectList<TCustomList>;
+  lList: TCustomList;
+begin
+  lLists := AStore.LoadLists;
+  try
+    for lList in lLists do
+      if lList.Id = AListId then
+      begin
+        lList.MirrorOfListId := AMasterId;
+        AStore.SaveList(lList);
+      end;
+  finally
+    FreeAndNil(lLists);
+  end;
+end;
+
+// a source (Xtream http://prov:8080/, u/p) with two live channels and a series on
+// list "Master" (one renamed + in a group), plus an empty list "Mirror" mirroring it
+procedure SetupMirror(const AStore: IStore; out ASrcId, AMasterId, AMirrorId, ALiveId, AOffId,
+  ASerId: Integer);
+var
+  lSnap: TSourceSnapshot;
+  lGroup: TCustomGroup;
+  lIt: TCustomItem;
+begin
+  ASrcId := SaveTestSource(AStore, [ctLive, ctSeries], True);
+  lSnap := TSourceSnapshot.Create(ASrcId);
+  try
+    lSnap.Streams.Add(MakeStream(ASrcId, ctLive, 'l1', 'NL| NPO 1', 'NL', 'npo1', 'http://prov:8080/live/u/p/l1.ts'));
+    lSnap.Streams.Add(MakeStream(ASrcId, ctLive, 'l2', 'NL| NPO 1 HD', 'NL', 'npo1',
+      'http://prov:8080/live/u/p/l2.ts'));
+    lSnap.Streams.Add(MakeStream(ASrcId, ctLive, 'off', 'Not on it', 'NL', '', 'http://prov:8080/live/u/p/off.ts'));
+    lSnap.Streams.Add(MakeStream(ASrcId, ctSeries, 'ser1', 'Some Show', 'S', '', 'http://prov:8080/series/u/p/s.mp4'));
+    AStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  ALiveId := StreamIdByUpstream(AStore, 'l1');
+  AOffId := StreamIdByUpstream(AStore, 'off');
+  ASerId := StreamIdByUpstream(AStore, 'ser1');
+  AMasterId := NewTestList(AStore, 'Master');
+  lGroup := TCustomGroup.Create;
+  try
+    lGroup.ListId := AMasterId;
+    lGroup.Name := 'Dutch';
+    lGroup.ContentType := ctLive;
+    AStore.SaveGroup(lGroup);
+    lIt := TCustomItem.Create;
+    try
+      lIt.ListId := AMasterId;
+      lIt.StreamItemId := ALiveId;
+      lIt.ContentType := ctLive;
+      lIt.CustomGroupId := lGroup.Id;
+      lIt.DisplayName := 'NPO 1';
+      lIt.ChannelNumber := 101;
+      AStore.SaveItem(lIt);
+    finally
+      FreeAndNil(lIt);
+    end;
+  finally
+    FreeAndNil(lGroup);
+  end;
+  AddTestItem(AStore, AMasterId, StreamIdByUpstream(AStore, 'l2'), ctLive);
+  AddTestItem(AStore, AMasterId, ASerId, ctSeries);
+  AMirrorId := NewMirrorList(AStore, 'Mirror', AMasterId);
+end;
+
+function CountOutput(const AStore: IStore; AListId: Integer): Integer;
+var
+  lOut: TOutputChannelList;
+begin
+  lOut := AStore.LoadOutputChannels(AListId);
+  try
+    Result := lOut.Count;
+  finally
+    FreeAndNil(lOut);
+  end;
+end;
+
+procedure TStorageTests.MirrorOutputChannelsFollowMaster;
+var
+  lStore: IStore;
+  lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId, i: Integer;
+  lMaster, lMirror: TOutputChannelList;
+  lCreds: TArray<TMirrorCredential>;
+begin
+  lStore := NewStore(FDbPath);
+  SetupMirror(lStore, lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId);
+  lStore.SaveMirrorCredentials(lMirrorId, [MirrorCred(lSrcId, cMirrorUrl, cMirrorUser, cMirrorPass),
+    MirrorCred(lSrcId + 1, '', 'x', 'y'), MirrorCred(0, '', 'x', 'y')]);
+  lCreds := lStore.LoadMirrorCredentials(lMirrorId);
+  Assert.AreEqual<Integer>(1, Length(lCreds), 'unknown sources are not stored');
+  Assert.AreEqual(cMirrorUser, lCreds[0].Username);
+  Assert.AreEqual(cMirrorUrl, lCreds[0].Url);
+
+  lMaster := lStore.LoadOutputChannels(lMasterId);
+  lMirror := lStore.LoadOutputChannels(lMirrorId);
+  try
+    Assert.AreEqual<Integer>(3, lMaster.Count);
+    Assert.AreEqual<Integer>(lMaster.Count, lMirror.Count, 'the master''s channels');
+    for i := 0 to lMaster.Count - 1 do
+    begin
+      Assert.AreEqual(lMaster[i].StreamItemId, lMirror[i].StreamItemId, 'same order');
+      Assert.AreEqual(lMaster[i].Name, lMirror[i].Name, 'same names');
+      Assert.AreEqual(lMaster[i].Number, lMirror[i].Number, 'same numbers');
+      Assert.AreEqual(lMaster[i].GroupName, lMirror[i].GroupName, 'same groups');
+      Assert.AreEqual(lMaster[i].TvgId, lMirror[i].TvgId, 'same guide ids');
+      Assert.IsTrue(lMaster[i].UpstreamUrl.StartsWith('http://prov:8080/'), 'master keeps its account');
+      Assert.AreEqual(lMaster[i].UpstreamUrl.Replace('http://prov:8080/', cMirrorUrl + '/')
+        .Replace('/u/p/', '/u2/p2/'), lMirror[i].UpstreamUrl, 'mirror plays with its own account');
+    end;
+  finally
+    FreeAndNil(lMaster);
+    FreeAndNil(lMirror);
+  end;
+
+  // without credentials the mirror plays with the source's account
+  lStore.SaveMirrorCredentials(lMirrorId, [MirrorCred(lSrcId, '', '', '')]);
+  Assert.AreEqual<Integer>(0, Length(lStore.LoadMirrorCredentials(lMirrorId)), 'empty rows are not stored');
+  lMirror := lStore.LoadOutputChannels(lMirrorId);
+  try
+    Assert.AreEqual('http://prov:8080/live/u/p/l1.ts', lMirror[0].UpstreamUrl);
+  finally
+    FreeAndNil(lMirror);
+  end;
+end;
+
+procedure TStorageTests.MirrorListStreamByIdScopedToMaster;
+var
+  lInner, lStore: IStore;
+  lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId: Integer;
+  lIds: TArray<Integer>;
+  lS: TStreamItem;
+  lSiblings: TArray<string>;
+begin
+  lInner := NewStore(FDbPath);
+  lStore := TLockingStore.Create(lInner, lInner); // the zap cache must follow credential changes
+  SetupMirror(lStore, lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId);
+  lStore.SaveMirrorCredentials(lMirrorId, [MirrorCred(lSrcId, '', cMirrorUser, cMirrorPass)]);
+
+  lS := lStore.LoadListStreamById(lMirrorId, lLiveId);
+  try
+    Assert.IsNotNull(lS, 'a master channel plays through the mirror');
+    Assert.AreEqual('http://prov:8080/live/u2/p2/l1.ts', lS.UpstreamUrl);
+  finally
+    FreeAndNil(lS);
+  end;
+  lS := lStore.LoadListStreamById(lMasterId, lLiveId);
+  try
+    Assert.AreEqual('http://prov:8080/live/u/p/l1.ts', lS.UpstreamUrl, 'the master is untouched');
+  finally
+    FreeAndNil(lS);
+  end;
+  Assert.IsNull(lStore.LoadListStreamById(lMirrorId, lOffId), 'scoped to the master''s channels');
+
+  // series episodes of the master's series
+  lIds := lStore.EnsureEpisodeIds(lSerId, ['901'], ['mkv']);
+  lS := lStore.LoadListStreamById(lMirrorId, lIds[0]);
+  try
+    Assert.IsNotNull(lS, 'an episode of a master series');
+    Assert.AreEqual('http://prov:8080/series/u2/p2/901.mkv', lS.UpstreamUrl);
+  finally
+    FreeAndNil(lS);
+  end;
+
+  // failover candidates are played with the mirror's account too
+  lSiblings := lStore.LoadStreamSiblingsForList(lMirrorId, lLiveId);
+  Assert.AreEqual<Integer>(1, Length(lSiblings));
+  Assert.AreEqual('http://prov:8080/live/u2/p2/l2.ts', lSiblings[0]);
+  lSiblings := lStore.LoadStreamSiblingsForList(lMasterId, lLiveId);
+  Assert.AreEqual('http://prov:8080/live/u/p/l2.ts', lSiblings[0], 'a normal list: as stored');
+
+  // new credentials: the cached zap answer goes
+  lStore.SaveMirrorCredentials(lMirrorId, [MirrorCred(lSrcId, cMirrorUrl, '', '')]);
+  lS := lStore.LoadListStreamById(lMirrorId, lLiveId);
+  try
+    Assert.AreEqual(cMirrorUrl + '/live/u/p/l1.ts', lS.UpstreamUrl, 'zap cache invalidated');
+  finally
+    FreeAndNil(lS);
+  end;
+end;
+
+procedure TStorageTests.MirrorValidationRules;
+var
+  lStore: IStore;
+  lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId, lOther, lOwn: Integer;
+begin
+  lStore := NewStore(FDbPath);
+  SetupMirror(lStore, lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId);
+  lOther := NewTestList(lStore, 'Other');
+  lOwn := NewTestList(lStore, 'Own');
+  AddTestItem(lStore, lOwn, lLiveId, ctLive);
+
+  Assert.WillRaise(
+    procedure
+    begin
+      SetMirrorOf(lStore, lOther, lOther);
+    end, EStoreValidation, 'not itself');
+  Assert.WillRaise(
+    procedure
+    begin
+      NewMirrorList(lStore, 'Ghost', 9999);
+    end, EStoreValidation, 'an existing master');
+  Assert.WillRaise(
+    procedure
+    begin
+      SetMirrorOf(lStore, lOther, lMirrorId);
+    end, EStoreValidation, 'no mirror of a mirror');
+  Assert.WillRaise(
+    procedure
+    begin
+      SetMirrorOf(lStore, lMasterId, lOther);
+    end, EStoreValidation, 'a mirrored list can''t become a mirror');
+  Assert.WillRaise(
+    procedure
+    begin
+      SetMirrorOf(lStore, lOwn, lMasterId);
+    end, EStoreValidation, 'a list with channels can''t become a mirror');
+  Assert.WillRaise(
+    procedure
+    begin
+      lStore.SaveMirrorCredentials(lOther, [MirrorCred(lSrcId, '', 'x', 'y')]);
+    end, EStoreValidation, 'only a mirror has credentials');
+  Assert.WillRaise(
+    procedure
+    begin
+      lStore.DeleteList(lMasterId);
+    end, EStoreValidation, 'a master can''t go while mirrored');
+  Assert.AreEqual<Integer>(3, CountOutput(lStore, lMasterId), 'the master survived');
+
+  // an empty list may become a mirror; and back again (its credentials go)
+  SetMirrorOf(lStore, lOther, lMasterId);
+  Assert.AreEqual<Integer>(3, CountOutput(lStore, lOther), 'now mirrors the master');
+  lStore.SaveMirrorCredentials(lOther, [MirrorCred(lSrcId, '', 'x', 'y')]);
+  SetMirrorOf(lStore, lOther, 0);
+  Assert.AreEqual<Integer>(0, CountOutput(lStore, lOther), 'own channels again (none)');
+  Assert.AreEqual<Integer>(0, Length(lStore.LoadMirrorCredentials(lOther)), 'credentials dropped');
+
+  // without its mirrors the master can go
+  lStore.DeleteList(lMirrorId);
+  lStore.DeleteList(lMasterId);
+end;
+
+procedure TStorageTests.MirrorCredentialsDeletedWithListAndSource;
+var
+  lStore: IStore;
+  lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId, lSecond: Integer;
+begin
+  lStore := NewStore(FDbPath);
+  SetupMirror(lStore, lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId);
+  lSecond := NewMirrorList(lStore, 'Second', lMasterId);
+  lStore.SaveMirrorCredentials(lMirrorId, [MirrorCred(lSrcId, '', 'x', 'y')]);
+  lStore.SaveMirrorCredentials(lSecond, [MirrorCred(lSrcId, '', 'x', 'y')]);
+
+  lStore.DeleteList(lMirrorId);
+  Assert.AreEqual<Integer>(0, Length(lStore.LoadMirrorCredentials(lMirrorId)), 'gone with the list');
+  Assert.AreEqual<Integer>(1, Length(lStore.LoadMirrorCredentials(lSecond)), 'the other mirror keeps its own');
+
+  lStore.DeleteSource(lSrcId);
+  Assert.AreEqual<Integer>(0, Length(lStore.LoadMirrorCredentials(lSecond)), 'gone with the source');
 end;
 
 initialization

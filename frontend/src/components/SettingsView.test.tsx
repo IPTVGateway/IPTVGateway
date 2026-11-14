@@ -13,6 +13,12 @@ vi.mock('../api/client', () => ({
     exportSettings: vi.fn().mockResolvedValue({ version: 1, sources: [], lists: [] }),
     importSettings: vi.fn().mockResolvedValue({ sources: 2, lists: 1, groups: 3 }),
     plexRescan: vi.fn().mockResolvedValue({ dvrs: 1 }),
+    listSources: vi.fn().mockResolvedValue([
+      { id: 7, name: 'ProvA', kind: 'xtream', url: 'http://a', enabled: true, contentTypes: ['live'] },
+      { id: 8, name: 'ProvB', kind: 'm3u', url: 'http://b', enabled: true, contentTypes: ['live'] },
+    ]),
+    getMirrorCredentials: vi.fn().mockResolvedValue([]),
+    saveMirrorCredentials: vi.fn().mockResolvedValue([]),
   },
 }))
 import { api } from '../api/client'
@@ -127,6 +133,110 @@ describe('SettingsView — list management', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await userEvent.click(screen.getByRole('button', { name: 'Confirm delete' }))
     expect(api.deleteList).toHaveBeenCalledWith(1)
+  })
+})
+
+describe('SettingsView — mirror bouquets', () => {
+  const MIRROR: CustomList = {
+    id: 3, name: 'Kids', outputUsername: 'kids', outputPassword: 'k', enabled: true, mirrorOfListId: 1,
+  }
+  beforeEach(() => {
+    // clearAllMocks keeps implementations: restore the defaults per test
+    vi.mocked(api.saveList).mockResolvedValue({} as CustomList)
+    vi.mocked(api.saveMirrorCredentials).mockResolvedValue([])
+    vi.mocked(api.getMirrorCredentials).mockResolvedValue([])
+  })
+
+  it('offers only lists that are no mirror and not the list itself as master', async () => {
+    render(<SettingsView lists={[...LISTS, MIRROR]} onListsChanged={() => {}} />)
+    const mirrorOf = await screen.findByLabelText('Mirror of')
+    const values = [...(mirrorOf as HTMLSelectElement).options].map((o) => o.value)
+    // list 1 is being edited, list 3 is a mirror itself
+    expect(values).toEqual(['0', '2'])
+    // no account table for a normal list
+    expect(screen.queryByLabelText('Username for ProvA')).toBeNull()
+  })
+
+  it('shows a credential table per source once a master is chosen and saves the list first, then the credentials', async () => {
+    const order: string[] = []
+    vi.mocked(api.saveList).mockImplementation(async () => {
+      order.push('list')
+      return {} as CustomList
+    })
+    vi.mocked(api.saveMirrorCredentials).mockImplementation(async () => {
+      order.push('credentials')
+      return []
+    })
+    const onChanged = vi.fn()
+    render(<SettingsView lists={LISTS} onListsChanged={onChanged} />)
+    await screen.findByLabelText('Name')
+    await userEvent.selectOptions(screen.getByLabelText('Select list'), '2')
+    await userEvent.selectOptions(screen.getByLabelText('Mirror of'), '1')
+    const user = await screen.findByLabelText('Username for ProvA')
+    expect(user).toHaveAttribute('placeholder', '(same as the source)')
+    expect(screen.getByLabelText('Server URL for ProvB')).toBeInTheDocument()
+    expect(
+      screen.getByText(/Only for another account at the same provider/),
+    ).toBeInTheDocument()
+    await userEvent.type(user, 'u2')
+    await userEvent.type(screen.getByLabelText('Password for ProvA'), 'p2')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveMirrorCredentials).toHaveBeenCalled())
+    expect(api.saveList).toHaveBeenCalledWith(expect.objectContaining({ id: 2, mirrorOfListId: 1 }))
+    // only sources with a value are sent; ProvB keeps the source's own account
+    expect(api.saveMirrorCredentials).toHaveBeenCalledWith(2, [
+      { sourceId: 7, url: '', username: 'u2', password: 'p2' },
+    ])
+    expect(order).toEqual(['list', 'credentials'])
+    expect(onChanged).toHaveBeenCalled()
+  })
+
+  it('does not store credentials when saving the list fails', async () => {
+    vi.mocked(api.saveList).mockRejectedValueOnce(new Error('400 empty the bouquet first'))
+    render(<SettingsView lists={LISTS} onListsChanged={() => {}} />)
+    await screen.findByLabelText('Name')
+    await userEvent.selectOptions(screen.getByLabelText('Mirror of'), '2')
+    await userEvent.type(await screen.findByLabelText('Username for ProvA'), 'u2')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('400 empty the bouquet first')).toBeInTheDocument()
+    expect(api.saveMirrorCredentials).not.toHaveBeenCalled()
+  })
+
+  it('loads the stored credentials of an existing mirror', async () => {
+    vi.mocked(api.getMirrorCredentials).mockResolvedValue([
+      { sourceId: 8, url: 'http://b2', username: 'x', password: 'y' },
+    ])
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    expect(await screen.findByLabelText('Mirror of')).toHaveValue('1')
+    await waitFor(() => expect(screen.getByLabelText('Server URL for ProvB')).toHaveValue('http://b2'))
+    expect(api.getMirrorCredentials).toHaveBeenCalledWith(3)
+    expect(screen.getByLabelText('Username for ProvB')).toHaveValue('x')
+    expect(screen.getByLabelText('Username for ProvA')).toHaveValue('')
+  })
+
+  it('a new mirror list is created first, then its credentials go to the new id', async () => {
+    vi.mocked(api.saveList).mockResolvedValueOnce({
+      id: 9, name: 'New', outputUsername: '', outputPassword: '', enabled: true, mirrorOfListId: 1,
+    })
+    render(<SettingsView lists={LISTS} onListsChanged={() => {}} />)
+    await screen.findByLabelText('Name')
+    await userEvent.selectOptions(screen.getByLabelText('Select list'), 'new')
+    await userEvent.type(screen.getByLabelText('Name'), 'New')
+    await userEvent.selectOptions(screen.getByLabelText('Mirror of'), '1')
+    await userEvent.type(await screen.findByLabelText('Server URL for ProvB'), 'http://b2')
+    await userEvent.click(screen.getByRole('button', { name: 'Add list' }))
+    await waitFor(() =>
+      expect(api.saveMirrorCredentials).toHaveBeenCalledWith(9, [
+        { sourceId: 8, url: 'http://b2', username: '', password: '' },
+      ]),
+    )
+    expect(api.saveList).toHaveBeenCalledWith(expect.objectContaining({ name: 'New', mirrorOfListId: 1 }))
+  })
+
+  it('a list that others mirror cannot become a mirror itself', async () => {
+    render(<SettingsView lists={[...LISTS, MIRROR]} onListsChanged={() => {}} />)
+    expect(await screen.findByLabelText('Mirror of')).toBeDisabled()
+    expect(screen.getByText(/Mirrored by “Kids”/)).toBeInTheDocument()
   })
 })
 

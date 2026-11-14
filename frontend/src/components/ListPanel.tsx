@@ -19,6 +19,7 @@ import { Modal } from './Modal'
 import { QualityProbeModal } from './QualityProbeModal'
 import { ArchiveBadge } from './ArchiveBadge'
 import { useT } from '../i18n'
+import { isMirror, mirrorMaster } from '../lib/mirror'
 
 const COLLAPSE_KEY = 'iptv.list.collapsed'
 // collapsed-groups are persisted PER LIST — group ids are list-specific, so a
@@ -688,6 +689,9 @@ export function ListPanel({
   // human label for the chosen transform, used in the review "not found" flags
   const variantLabel = variantMode === 'quality' ? variantQuality : variantSourceName(variantSourceId)
 
+  const activeList = lists.find((l) => l.id === activeListId)
+  const mirrorOf = mirrorMaster(activeList, lists)
+
   const hasUpstreamItems = itemsByGroup.has(UPSTREAM_GROUP_ID)
   const isEmpty = sortedGroups.length === 0 && !hasUpstreamItems
 
@@ -742,6 +746,26 @@ export function ListPanel({
       {activeListId == null ? (
         <div className="panel-body">
           <p className="muted">{t('Select a list to curate.')}</p>
+        </div>
+      ) : isMirror(activeList) ? (
+        // a mirror has no channels of its own: they are edited on the master
+        <div className="panel-body mirror-notice">
+          <p>
+            {t('This bouquet mirrors “{name}”: its channels come from there, it only plays them with its own provider account.').replace(
+              '{name}',
+              mirrorOf?.name ?? `#${activeList!.mirrorOfListId}`,
+            )}
+          </p>
+          {mirrorOf && (
+            <div className="form-actions">
+              <button type="button" onClick={() => onSelectList(mirrorOf.id)}>
+                {t('Open “{name}”').replace('{name}', mirrorOf.name)}
+              </button>
+            </div>
+          )}
+          <span className="hint">
+            {t('Its box login, provider accounts and on/off switch are under Settings → Output lists.')}
+          </span>
         </div>
       ) : (
         <>

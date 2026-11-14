@@ -40,6 +40,7 @@ type
     FOutputUsername: string;
     FOutputPassword: string;
     FEnabled: Boolean;
+    FMirrorOfListId: Integer;
   public
     /// Creates an enabled list.
     constructor Create;
@@ -48,6 +49,19 @@ type
     property OutputUsername: string read FOutputUsername write FOutputUsername;
     property OutputPassword: string read FOutputPassword write FOutputPassword;
     property Enabled: Boolean read FEnabled write FEnabled;
+    /// Mirror bouquet: the id of the list (the master) whose channels this list
+    /// always shows, read-only, played with its own provider credentials
+    /// (TMirrorCredential). 0 = a normal list with its own groups and items.
+    property MirrorOfListId: Integer read FMirrorOfListId write FMirrorOfListId;
+  end;
+
+  /// A mirror bouquet's own provider account for one source: used only for
+  /// PLAYBACK (stream, catch-up and failover URLs). Each '' = the source's value.
+  TMirrorCredential = record
+    SourceId: Integer;
+    Url: string;      // server URL (same provider); '' = the source's URL
+    Username: string; // '' = the source's username
+    Password: string; // '' = the source's password
   end;
 
   /// An operator-created group within a list. Favorites sort to the top;

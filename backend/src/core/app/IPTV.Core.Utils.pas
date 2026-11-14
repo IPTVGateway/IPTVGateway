@@ -121,6 +121,17 @@ function NormalizePublicBaseUrl(const AValue: string; out ANormalized: string): 
 /// else stays as typed, so URLs that work today don't change.
 function UrlPathSafe(const AValue: string): string;
 
+/// A provider stream URL rewritten for another account at the same provider (mirror
+/// bouquet playback). ANewUrl <> '': when AUrl starts with the source's base
+/// (scheme://host[:port], case-insensitive) that base becomes ANewUrl's base.
+/// ANewUser / ANewPass (each only when <> ''): the path segment /USER/PASS/ (Xtream
+/// and Xtream-style M3U URLs; escaped or raw) and the query values username= /
+/// password= (M3U URLs, URL-encoded) get the new value. A source without its own
+/// username/password falls back to the ones in ASourceUrl's query (M3U get.php).
+/// Anything not recognised stays as is.
+function RewriteProviderUrl(const AUrl, ASourceUrl, ASourceUser, ASourcePass, ANewUrl, ANewUser,
+  ANewPass: string): string;
+
 /// Password check in constant time (no early exit on the first differing char,
 /// so the response time doesn't reveal how much of a guess was right).
 function IsSamePassword(const AGiven, AExpected: string): Boolean;
@@ -264,6 +275,20 @@ const
 
   // XtreamTimeshiftUrl: container when the caller passes none
   cDefaultStreamExt = 'ts';
+
+  // RewriteProviderUrl: URL parts and the M3U query parameters holding the account
+  cUrlPathSep = '/';
+  cUrlQueryStart = '?';
+  cUrlFragmentStart = '#';
+  cUrlParamSep = '&';
+  cUrlParamAssign = '=';
+  cUrlBaseEndChars: array[0..2] of Char = (cUrlPathSep, cUrlQueryStart, cUrlFragmentStart);
+  cUrlPathEndChars: array[0..1] of Char = (cUrlQueryStart, cUrlFragmentStart);
+  cQueryParamUsername = 'username';
+  cQueryParamPassword = 'password';
+  // characters a query value keeps as-is (RFC 3986 unreserved); the rest is %XX
+  cUrlUnreservedChars: TSysCharSet = ['A'..'Z', 'a'..'z', '0'..'9', '-', '.', '_', '~'];
+  cHexByteDigits = 2;
 
 function ProcessResidentBytes: Int64;
 {$IFDEF LINUX}
@@ -1161,6 +1186,151 @@ begin
   Result := Format('%s/timeshift/%s/%s/%d/%s/%s.%s',
     [ABaseUrl.Trim.TrimRight(['/']), UrlPathSafe(AUser), UrlPathSafe(APass), ADurationMin,
      FormatTimeshiftStart(IncMinute(AStartUtc, ATzOffsetMin)), AUpstreamId, lExt]);
+end;
+
+// scheme://authority of a URL ('' when it has no scheme or no host)
+function UrlBase(const AUrl: string): string;
+var
+  lUrl: string;
+  lStart, lEnd: Integer;
+begin
+  Result := '';
+  lUrl := AUrl.Trim;
+  lStart := lUrl.IndexOf(cSchemeSep);
+  if lStart <= 0 then
+    Exit;
+  Inc(lStart, Length(cSchemeSep));
+  lEnd := lUrl.IndexOfAny(cUrlBaseEndChars, lStart);
+  if lEnd < 0 then
+    lEnd := lUrl.Length;
+  if lEnd > lStart then
+    Result := lUrl.Substring(0, lEnd);
+end;
+
+// does AUrl start with ABase as a whole authority (http://h:80 is no base of http://h:8080)?
+function UrlStartsWithBase(const AUrl, ABase: string): Boolean;
+begin
+  Result := (ABase <> '') and AUrl.StartsWith(ABase, True) and
+    ((AUrl.Length = ABase.Length) or (AUrl.IndexOfAny(cUrlBaseEndChars, ABase.Length) = ABase.Length));
+end;
+
+// a query value percent-encoded as UTF-8 (unreserved characters stay)
+function UrlQueryValueEncode(const AValue: string): string;
+var
+  lBytes: TBytes;
+  lByte: Byte;
+  lBuilder: TStringBuilder;
+begin
+  lBytes := TEncoding.UTF8.GetBytes(AValue);
+  lBuilder := TStringBuilder.Create;
+  try
+    for lByte in lBytes do
+      if CharInSet(Char(lByte), cUrlUnreservedChars) then
+        lBuilder.Append(Char(lByte))
+      else
+        lBuilder.Append(cPercent).Append(IntToHex(lByte, cHexByteDigits));
+    Result := lBuilder.ToString;
+  finally
+    FreeAndNil(lBuilder);
+  end;
+end;
+
+// AUrl with the value of every query parameter AName (case-insensitive) set to AValue
+function ReplaceQueryParam(const AUrl, AName, AValue: string): string;
+var
+  lQueryPos, lHashPos, lEqPos, i: Integer;
+  lHead, lQuery, lTail: string;
+  lPairs: TArray<string>;
+begin
+  Result := AUrl;
+  lQueryPos := AUrl.IndexOf(cUrlQueryStart);
+  if lQueryPos < 0 then
+    Exit;
+  lHead := AUrl.Substring(0, lQueryPos + 1);
+  lQuery := AUrl.Substring(lQueryPos + 1);
+  lTail := '';
+  lHashPos := lQuery.IndexOf(cUrlFragmentStart);
+  if lHashPos >= 0 then
+  begin
+    lTail := lQuery.Substring(lHashPos);
+    lQuery := lQuery.Substring(0, lHashPos);
+  end;
+  lPairs := lQuery.Split([cUrlParamSep]);
+  for i := 0 to High(lPairs) do
+  begin
+    lEqPos := lPairs[i].IndexOf(cUrlParamAssign);
+    if (lEqPos > 0) and SameText(lPairs[i].Substring(0, lEqPos), AName) then
+      lPairs[i] := lPairs[i].Substring(0, lEqPos + 1) + UrlQueryValueEncode(AValue);
+  end;
+  Result := lHead + string.Join(cUrlParamSep, lPairs) + lTail;
+end;
+
+// AUrl with its first path segment pair /AOldUser/AOldPass/ (escaped, else raw)
+// replaced by /ANewUser/ANewPass/ (escaped); searched after the authority only
+function ReplacePathCredentials(const AUrl, AOldUser, AOldPass, ANewUser, ANewPass: string): string;
+var
+  lPathEnd, lFrom, lPos, i: Integer;
+  lPath, lRest, lNew: string;
+  lOld: TArray<string>;
+begin
+  Result := AUrl;
+  if (AOldUser = '') or (AOldPass = '') then
+    Exit;
+  lPathEnd := AUrl.IndexOfAny(cUrlPathEndChars);
+  if lPathEnd < 0 then
+    lPathEnd := AUrl.Length;
+  lPath := AUrl.Substring(0, lPathEnd);
+  lRest := AUrl.Substring(lPathEnd);
+  lFrom := UrlBase(lPath).Length;
+  lNew := cUrlPathSep + UrlPathSafe(ANewUser) + cUrlPathSep + UrlPathSafe(ANewPass) + cUrlPathSep;
+  lOld := [cUrlPathSep + UrlPathSafe(AOldUser) + cUrlPathSep + UrlPathSafe(AOldPass) + cUrlPathSep,
+    cUrlPathSep + AOldUser + cUrlPathSep + AOldPass + cUrlPathSep];
+  for i := 0 to High(lOld) do
+  begin
+    lPos := lPath.IndexOf(lOld[i], lFrom);
+    if lPos >= 0 then
+      Exit(lPath.Substring(0, lPos) + lNew + lPath.Substring(lPos + lOld[i].Length) + lRest);
+  end;
+end;
+
+function RewriteProviderUrl(const AUrl, ASourceUrl, ASourceUser, ASourcePass, ANewUrl, ANewUser,
+  ANewPass: string): string;
+var
+  lUser, lPass, lNewUser, lNewPass, lNewUrl, lSourceBase, lNewBase: string;
+begin
+  Result := AUrl;
+  // the account in use: the source's own fields, else the M3U get.php query
+  lUser := ASourceUser;
+  if lUser = '' then
+    lUser := UrlQueryParam(ASourceUrl, cQueryParamUsername);
+  lPass := ASourcePass;
+  if lPass = '' then
+    lPass := UrlQueryParam(ASourceUrl, cQueryParamPassword);
+
+  if (ANewUser <> '') or (ANewPass <> '') then
+  begin
+    lNewUser := ANewUser;
+    if lNewUser = '' then
+      lNewUser := lUser;
+    lNewPass := ANewPass;
+    if lNewPass = '' then
+      lNewPass := lPass;
+    Result := ReplacePathCredentials(Result, lUser, lPass, lNewUser, lNewPass);
+    if ANewUser <> '' then
+      Result := ReplaceQueryParam(Result, cQueryParamUsername, ANewUser);
+    if ANewPass <> '' then
+      Result := ReplaceQueryParam(Result, cQueryParamPassword, ANewPass);
+  end;
+
+  lNewUrl := ANewUrl.Trim;
+  if lNewUrl = '' then
+    Exit;
+  if not lNewUrl.Contains(cSchemeSep) then
+    lNewUrl := cDefaultScheme + lNewUrl;
+  lSourceBase := UrlBase(ASourceUrl);
+  lNewBase := UrlBase(lNewUrl).TrimRight([cUrlPathSep]);
+  if (lNewBase <> '') and UrlStartsWithBase(Result, lSourceBase) then
+    Result := lNewBase + Result.Substring(lSourceBase.Length);
 end;
 
 end.

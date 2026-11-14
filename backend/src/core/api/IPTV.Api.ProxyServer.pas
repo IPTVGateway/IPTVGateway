@@ -363,6 +363,7 @@ var
   lStream: TStreamItem;
   lUpstream: string;
   lSrcId: Integer;
+  lListId: Integer;
   lUp: TIdHTTP;
   lFwd: TForwardStream;
   lIO: TIdIOHandler;
@@ -462,6 +463,7 @@ begin
     Exit;
   end;
   GAuthThrottle.RegisterSuccess(lThrottleKey);
+  lListId := lList.Id; // failover below plays through this list (a mirror's own account)
   try
     // scope to the authenticated list — don't relay a stream that isn't on it
     lStream := lStore.LoadListStreamById(lList.Id, lStreamId);
@@ -473,7 +475,7 @@ begin
     try
       if lIsTimeshift then
       begin
-        lUpstream := TimeshiftUpstreamUrl(lStore, lStream, lTsDur, lTsStart,
+        lUpstream := TimeshiftUpstreamUrl(lStore, lListId, lStream, lTsDur, lTsStart,
           IfThen(lIdPart.Contains('.'), lIdPart.Substring(lIdPart.LastIndexOf('.') + 1), cExtTs));
         if lUpstream = '' then
         begin
@@ -534,7 +536,7 @@ begin
   // (no failover for an archive: another provider's archive is a different recording;
   // and no HLS sibling: this relay pumps one TS byte stream, a playlist is useless)
   if App.Config.StreamFailover and not lIsTimeshift then
-    for lSibling in lStore.LoadStreamSiblings(lStreamId) do
+    for lSibling in lStore.LoadStreamSiblingsForList(lListId, lStreamId) do
       if not SameText(UrlExt(lSibling), cExtHls) then
         lCandidates := lCandidates + [lSibling];
 

@@ -27,6 +27,8 @@ type
     [Test] procedure ExportImportClonesEverything;
     /// <summary>The manual group order survives export/import.</summary>
     [Test] procedure ImportPreservesManualGroupOrder;
+    /// <summary>A mirror bouquet round-trips: master remapped by name, credentials by source name.</summary>
+    [Test] procedure ExportImportClonesMirror;
     /// <summary>A config.json with bad types/ranges loads with defaults/clamps.</summary>
     [Test] procedure ConfigLoadToleratesBadTypesAndRanges;
   end;
@@ -344,6 +346,160 @@ begin
     Assert.AreEqual<Integer>(0, lCfg.EpgMaxDays, 'epgMaxDays -1 clamped to 0');
   finally
     TFile.Delete(lPath);
+  end;
+end;
+
+function FindListByName(const AStore: IStore; const AName: string): TCustomList;
+var
+  lLists: TObjectList<TCustomList>;
+  i: Integer;
+begin
+  Result := nil;
+  lLists := AStore.LoadLists;
+  try
+    for i := 0 to lLists.Count - 1 do
+      if lLists[i].Name = AName then
+        Exit(lLists.Extract(lLists[i]));
+  finally
+    FreeAndNil(lLists);
+  end;
+end;
+
+// builds Master (one channel) + its mirror in AStore; returns the source id
+function BuildMirrorSetup(const AStore: IStore; const AMirrorName: string; out AMasterId,
+  AMirrorId: Integer): Integer;
+var
+  lCfg: TSourceConfig;
+  lSnap: TSourceSnapshot;
+  lList: TCustomList;
+  lItem: TCustomItem;
+  lStreams: TStreamItemList;
+  lCred: TMirrorCredential;
+begin
+  lCfg := TSourceConfig.Create;
+  try
+    lCfg.Name := 'Prov';
+    lCfg.Kind := skXtream;
+    lCfg.Url := 'http://h';
+    lCfg.Username := 'a';
+    lCfg.Password := 'b';
+    Result := AStore.SaveSource(lCfg);
+  finally
+    FreeAndNil(lCfg);
+  end;
+  lSnap := TSourceSnapshot.Create(Result);
+  try
+    lSnap.Streams.Add(MakeStream(Result, 'u1', 'NPO 1', 'NL', 'tv1', 'http://h/live/a/b/1.ts'));
+    AStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lList := TCustomList.Create;
+  try
+    lList.Name := 'Master';
+    AMasterId := AStore.SaveList(lList);
+  finally
+    FreeAndNil(lList);
+  end;
+  lStreams := AStore.LoadStreams(Default(TCatalogFilter));
+  lItem := TCustomItem.Create;
+  try
+    lItem.ListId := AMasterId;
+    lItem.StreamItemId := lStreams[0].Id;
+    lItem.ContentType := ctLive;
+    AStore.SaveItem(lItem);
+  finally
+    FreeAndNil(lItem);
+    FreeAndNil(lStreams);
+  end;
+  lList := TCustomList.Create;
+  try
+    lList.Name := AMirrorName;
+    lList.OutputUsername := 'mirror';
+    lList.OutputPassword := 'pw';
+    lList.MirrorOfListId := AMasterId;
+    AMirrorId := AStore.SaveList(lList);
+  finally
+    FreeAndNil(lList);
+  end;
+  lCred.SourceId := Result;
+  lCred.Url := '';
+  lCred.Username := 'a2';
+  lCred.Password := 'b2';
+  AStore.SaveMirrorCredentials(AMirrorId, [lCred]);
+end;
+
+procedure TSettingsIOTests.ExportImportClonesMirror;
+var
+  lSrc, lDst: IStore;
+  lList: TCustomList;
+  lBundle, lMirrorJson: TJSONObject;
+  lValue: TJSONValue;
+  lMasterId, lMirrorId, lDstSrcId, lOldMaster, lOldMirror: Integer;
+  lMaster, lMirror: TCustomList;
+  lCreds: TArray<TMirrorCredential>;
+  lChannels: TOutputChannelList;
+  lCounts: TImportCounts;
+begin
+  lSrc := NewStore(FDb1);
+  // a throwaway list first, so the bundle's ids differ from the clone's
+  lList := TCustomList.Create;
+  try
+    lList.Name := 'Gone';
+    lSrc.SaveList(lList);
+    lSrc.DeleteList(lList.Id);
+  finally
+    FreeAndNil(lList);
+  end;
+  // 'A Mirror' sorts before 'Master': the bundle lists the mirror first
+  BuildMirrorSetup(lSrc, 'A Mirror', lMasterId, lMirrorId);
+
+  // the target already has a master + mirror: the wipe must remove the mirror first
+  lDst := NewStore(FDb2);
+  BuildMirrorSetup(lDst, 'Old Mirror', lOldMaster, lOldMirror);
+
+  lBundle := ExportStoreSettings(lSrc);
+  try
+    lMirrorJson := nil;
+    for lValue in TJSONArray(lBundle.GetValue('lists')) do
+      if TJSONObject(lValue).GetValue<string>('name') = 'A Mirror' then
+        lMirrorJson := TJSONObject(lValue);
+    Assert.IsNotNull(lMirrorJson);
+    Assert.AreEqual(lMasterId, lMirrorJson.GetValue<Integer>('mirrorOfListId'), 'exported with the master id');
+    // a credential for a source the bundle doesn't have is dropped on import
+    TJSONArray(lMirrorJson.GetValue('mirrorCredentials')).AddElement(TJSONObject.Create
+      .AddPair('sourceName', 'Nope').AddPair('url', '').AddPair('username', 'x').AddPair('password', 'y'));
+    lCounts := ImportStoreSettings(lDst, lBundle);
+  finally
+    FreeAndNil(lBundle);
+  end;
+  Assert.AreEqual<Integer>(2, lCounts.Lists);
+
+  lMaster := FindListByName(lDst, 'Master');
+  lMirror := FindListByName(lDst, 'A Mirror');
+  try
+    Assert.IsNotNull(lMaster);
+    Assert.IsNotNull(lMirror);
+    Assert.IsNull(FindListByName(lDst, 'Old Mirror'), 'the old setup is gone');
+    Assert.AreNotEqual(lMasterId, lMaster.Id, 'ids differ between the installs');
+    Assert.AreEqual(lMaster.Id, lMirror.MirrorOfListId, 'remapped to the new master');
+    Assert.AreEqual('mirror', lMirror.OutputUsername);
+    lCreds := lDst.LoadMirrorCredentials(lMirror.Id);
+    Assert.AreEqual<Integer>(1, Length(lCreds), 'unknown source dropped');
+    lDstSrcId := lCreds[0].SourceId;
+    Assert.AreEqual('a2', lCreds[0].Username);
+    Assert.AreEqual('b2', lCreds[0].Password);
+    lChannels := lDst.LoadOutputChannels(lMirror.Id);
+    try
+      Assert.AreEqual<Integer>(1, lChannels.Count, 'the master''s channel');
+      Assert.AreEqual(lDstSrcId, lChannels[0].SourceId);
+      Assert.AreEqual('http://h/live/a2/b2/1.ts', lChannels[0].UpstreamUrl, 'played with the mirror''s account');
+    finally
+      FreeAndNil(lChannels);
+    end;
+  finally
+    FreeAndNil(lMaster);
+    FreeAndNil(lMirror);
   end;
 end;
 

@@ -1061,6 +1061,37 @@ label.inline {
   width: 100%;
 }
 
+/* mirror bouquet: master picker + per-source provider accounts */
+.list-mirror-of select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mirror-creds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mirror-creds .table-wrap {
+  overflow-x: auto;
+}
+
+.mirror-creds-table input {
+  width: 100%;
+  min-width: 110px;
+}
+
+.mirror-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mirror-notice p {
+  margin: 0;
+}
+
 /* Catalog */
 .filter-bar {
   display: flex;

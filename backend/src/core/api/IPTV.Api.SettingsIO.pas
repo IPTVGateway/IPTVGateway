@@ -3,7 +3,11 @@ unit IPTV.Api.SettingsIO;
 (* Portable settings bundle (export / import) as plain store operations, with NO
    MARS/web dependency so it is unit-testable against a temp store.
 
-   The bundle is { version, sources[], lists[ {..., groups[], items[]} ] }. Each
+   The bundle is { version, sources[], lists[ {..., groups[], items[]} ] }. A mirror
+   bouquet carries mirrorOfListId (the master's id IN THE BUNDLE; an import maps it
+   to the new id via the master's name, masters are created first) and
+   mirrorCredentials[ {sourceName, url, username, password} ] (mapped to the new
+   source ids by name; unknown sources are dropped). Each
    item carries its upstream stream (sourceName + upstreamId + url + metadata) so
    importing onto a fresh instance recreates the catalog rows for the chosen
    channels and re-links the items by upstream URL - a 1:1 clone without needing a
@@ -49,6 +53,49 @@ uses
 const
   cBundleVersion = 1;   // the 'version' an export writes
   cStreamKeySep = '|';  // joins sourceName|contentType|upstreamId|upstreamUrl into a dedupe key
+  cNoMirror = 0;        // TCustomList.MirrorOfListId of a normal list
+  // bundle fields of a mirror bouquet
+  cFieldMirrorOf = 'mirrorOfListId';
+  cFieldMirrorCredentials = 'mirrorCredentials';
+  cFieldSourceName = 'sourceName';
+
+// a mirror's credentials for the bundle: keyed by source NAME (ids differ per install)
+function MirrorCredentialsExportJson(const ACredentials: TArray<TMirrorCredential>;
+  const ASrcNames: TDictionary<Integer, string>): TJSONArray;
+var
+  lCredential: TMirrorCredential;
+  lName: string;
+begin
+  Result := TJSONArray.Create;
+  for lCredential in ACredentials do
+    if ASrcNames.TryGetValue(lCredential.SourceId, lName) then
+      Result.AddElement(TJSONObject.Create
+        .AddPair(cFieldSourceName, lName)
+        .AddPair('url', lCredential.Url)
+        .AddPair('username', lCredential.Username)
+        .AddPair('password', lCredential.Password));
+end;
+
+// the bundle's mirror credentials on the new source ids (unknown source names dropped)
+function MirrorCredentialsImport(const AListJson: TJSONObject;
+  const ASrcIdByName: TDictionary<string, Integer>): TArray<TMirrorCredential>;
+var
+  lValue: TJSONValue;
+  lCredential: TMirrorCredential;
+begin
+  Result := nil;
+  if not (AListJson.GetValue(cFieldMirrorCredentials) is TJSONArray) then
+    Exit;
+  for lValue in TJSONArray(AListJson.GetValue(cFieldMirrorCredentials)) do
+    if (lValue is TJSONObject) and
+      ASrcIdByName.TryGetValue(TJSONObject(lValue).GetValue<string>(cFieldSourceName, ''), lCredential.SourceId) then
+    begin
+      lCredential.Url := TJSONObject(lValue).GetValue<string>('url', '');
+      lCredential.Username := TJSONObject(lValue).GetValue<string>('username', '');
+      lCredential.Password := TJSONObject(lValue).GetValue<string>('password', '');
+      Result := Result + [lCredential];
+    end;
+end;
 
 function StreamExportJson(const ASourceName: string; const AStream: TStreamItem): TJSONObject;
 begin
@@ -165,6 +212,9 @@ begin
             FreeAndNil(lItems);
           end;
           lListObj.AddPair('items', lItemArr);
+          if lList.MirrorOfListId <> cNoMirror then
+            lListObj.AddPair(cFieldMirrorCredentials,
+              MirrorCredentialsExportJson(AStore.LoadMirrorCredentials(lList.Id), lSrcNames));
         finally
           FreeAndNil(lGrpNames);
         end;
@@ -199,6 +249,12 @@ var
   lSrcName, lUrl, lGName, lKey: string;
   lSnap: TSourceSnapshot;
   lFilter: TCatalogFilter;
+  lListValues: TList<TJSONValue>;
+  lListNameById: TDictionary<Integer, string>;
+  lListIdByName: TDictionary<string, Integer>;
+  lPass, lMasterId: Integer;
+  lMasterName: string;
+  lIsMirror: Boolean;
 begin
   Result := Default(TImportCounts);
 
@@ -206,16 +262,27 @@ begin
   lStreamIdByUrl := nil;
   lSnaps := nil;
   lSeenStream := nil;
+  lListValues := nil;
+  lListNameById := nil;
+  lListIdByName := nil;
   try
     lSrcIdByName := TDictionary<string, Integer>.Create;
     lStreamIdByUrl := TDictionary<string, Integer>.Create;
     lSnaps := TObjectDictionary<string, TSourceSnapshot>.Create([doOwnsValues]);
     lSeenStream := TDictionary<string, Boolean>.Create;
-    // wipe: lists first (drops items + groups), then sources (drops catalog/EPG)
+    lListValues := TList<TJSONValue>.Create;
+    lListNameById := TDictionary<Integer, string>.Create;
+    lListIdByName := TDictionary<string, Integer>.Create;
+    // wipe: lists first (drops items + groups), then sources (drops catalog/EPG);
+    // mirrors before the rest - a master can't go while it is mirrored
     lExistingLists := AStore.LoadLists;
     try
       for lList in lExistingLists do
-        AStore.DeleteList(lList.Id);
+        if lList.MirrorOfListId <> cNoMirror then
+          AStore.DeleteList(lList.Id);
+      for lList in lExistingLists do
+        if lList.MirrorOfListId = cNoMirror then
+          AStore.DeleteList(lList.Id);
     finally
       FreeAndNil(lExistingLists);
     end;
@@ -281,19 +348,43 @@ begin
       FreeAndNil(lAllStreams);
     end;
 
-    // 4) recreate lists + groups + items
+    // 4) recreate lists + groups + items: the bundle's lists by their bundle id
+    // (a mirror names its master by it), then masters/normal lists before mirrors
     if ABody.GetValue('lists') is TJSONArray then
       for lValue in TJSONArray(ABody.GetValue('lists')) do
         if lValue is TJSONObject then
         begin
+          lListValues.Add(lValue);
+          lListNameById.AddOrSetValue(TJSONObject(lValue).GetValue<Integer>('id', 0),
+            TJSONObject(lValue).GetValue<string>('name', ''));
+        end;
+    for lPass := 0 to 1 do
+      for lValue in lListValues do
+        begin
+          lIsMirror := TJSONObject(lValue).GetValue<Integer>(cFieldMirrorOf, cNoMirror) <> cNoMirror;
+          if lIsMirror <> (lPass = 1) then
+            Continue;
           lList := TCustomList.Create;
           try
             ListFromJson(TJSONObject(lValue), lList);
             lList.Id := 0;
+            // the master by name among the lists created in the first pass; unknown -> 0
+            lMasterId := cNoMirror;
+            if lIsMirror and lListNameById.TryGetValue(lList.MirrorOfListId, lMasterName) then
+              lListIdByName.TryGetValue(lMasterName, lMasterId);
+            lList.MirrorOfListId := lMasterId;
             lNewListId := AStore.SaveList(lList);
+            if not lIsMirror then
+              lListIdByName.AddOrSetValue(lList.Name, lNewListId);
             Inc(Result.Lists);
           finally
             FreeAndNil(lList);
+          end;
+          if lMasterId <> cNoMirror then
+          begin
+            // a mirror has no groups/items of its own, only its provider account
+            AStore.SaveMirrorCredentials(lNewListId, MirrorCredentialsImport(TJSONObject(lValue), lSrcIdByName));
+            Continue;
           end;
 
           lGrpIdByName := nil;
@@ -365,6 +456,9 @@ begin
     FreeAndNil(lStreamIdByUrl);
     FreeAndNil(lSnaps);
     FreeAndNil(lSeenStream);
+    FreeAndNil(lListValues);
+    FreeAndNil(lListNameById);
+    FreeAndNil(lListIdByName);
   end;
 end;
 

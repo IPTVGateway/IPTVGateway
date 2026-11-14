@@ -224,7 +224,7 @@ $BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
 $DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (200 tests as of 1.2.38)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (210 tests as of 1.2.38+mirror)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -236,7 +236,7 @@ small scratch console program that uses `TSQLiteStore` on a COPY of it.
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
-npx vitest run     # 134 tests as of 1.2.38
+npx vitest run     # 147 tests as of 1.2.38+mirror
 npm run build      # tsc -b && vite build
 ```
 
@@ -361,6 +361,23 @@ toggle in `TAppConfig` (with `proxyPort`, default 7778):
 - From the bouquet, "Use this" swaps the item via the existing `items/replace`.
   UI hints (`probeHints`) are rules of thumb: 2160p below 10 (HEVC) / 16 (H.264)
   Mbps = "possibly upscaled".
+
+## Mirror bouquets (after 1.2.38)
+
+- `lists.mirror_of_list_id` (`TCustomList.MirrorOfListId`, 0 = normal list): the mirror's
+  output is ALWAYS the master's channels (read-only, live); it has its own name, box login and
+  enabled flag. One level only (no mirror of a mirror, not self); a list with groups/items can't
+  become a mirror; a master with mirrors can't be deleted; group/item writes on a mirror → 400.
+- `list_source_credentials(list_id, source_id, url, username, password)` (`TMirrorCredential`,
+  `IStore.Load/SaveMirrorCredentials`, `GET/POST /api/lists/{id}/mirror-credentials`): per
+  source an optional server URL / username / password override ('' = the source's own value).
+- Only PLAYBACK uses them: `LoadOutputChannels` / `LoadListStreamById` of a mirror resolve via
+  the master (scoping against the master's items) and rewrite the URL with `RewriteProviderUrl`
+  (`IPTV.Core.Utils`: base swap + path `/user/pass/` or query `username=&password=`); failover
+  via `LoadStreamSiblingsForList`, catch-up via `TimeshiftUpstreamUrl(AStore, AListId, …)`.
+  Ingest, EPG and get_vod_info/get_series_info keep the source's own account.
+- Settings export/import carry `mirrorOfListId` (remapped by master name) and
+  `mirrorCredentials` (remapped by source name); masters are imported first.
 
 ## Bouquet-wide renumber
 

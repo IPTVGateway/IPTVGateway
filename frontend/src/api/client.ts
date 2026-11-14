@@ -19,6 +19,7 @@ import type {
   IngestStatus,
   MediaGroup,
   MediaStatus,
+  MirrorCredential,
 } from '../types'
 import { DEFAULT_PROBE_SECONDS } from '../lib/constants'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../lib/storage'
@@ -134,7 +135,10 @@ export interface SettingsBundle {
   version?: number
   config?: Partial<AppConfig>
   sources?: Partial<Source>[]
-  lists?: (Partial<CustomList> & { groups?: Partial<CustomGroup>[] })[]
+  lists?: (Partial<CustomList> & {
+    groups?: Partial<CustomGroup>[]
+    mirrorCredentials?: Partial<MirrorCredential>[] // a mirror's own provider accounts
+  })[]
 }
 
 /** One line of the service log (GET /api/logs). */
@@ -243,6 +247,15 @@ export const api = {
   saveList: (l: Partial<CustomList>) =>
     http<CustomList>('/lists', { method: 'POST', body: JSON.stringify(l) }),
   deleteList: (id: number) => http<void>(`/lists/${id}`, { method: 'DELETE' }),
+  // a mirror bouquet's own provider account per source (only stored rows)
+  getMirrorCredentials: (listId: number) =>
+    http<MirrorCredential[]>(`/lists/${listId}/mirror-credentials`),
+  // replaces all of the mirror's credential rows; returns the stored list
+  saveMirrorCredentials: (listId: number, credentials: MirrorCredential[]) =>
+    http<MirrorCredential[]>(`/lists/${listId}/mirror-credentials`, {
+      method: 'POST',
+      body: JSON.stringify({ credentials }),
+    }),
   listGroups: (listId: number) => http<CustomGroup[]>(`/lists/${listId}/groups`),
   saveGroup: (listId: number, g: Partial<CustomGroup>) =>
     http<CustomGroup>(`/lists/${listId}/groups`, { method: 'POST', body: JSON.stringify(g) }),

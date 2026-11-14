@@ -431,3 +431,27 @@ describe('ListPanel', () => {
   })
 })
 
+
+describe('ListPanel — mirror bouquet', () => {
+  const WITH_MIRROR: CustomList[] = [
+    ...LISTS,
+    { id: 2, name: 'Kids', outputUsername: 'k', outputPassword: 'k', enabled: true, mirrorOfListId: 1 },
+  ]
+
+  it('shows a notice instead of the editor and opens the master', async () => {
+    const onSelectList = vi.fn()
+    renderPanel({ lists: WITH_MIRROR, activeListId: 2, groups: [], items: [], onSelectList })
+    expect(screen.getByText(/This bouquet mirrors “L”/)).toBeInTheDocument()
+    // no bouquet editing controls for a mirror
+    expect(screen.queryByPlaceholderText('New group name')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Renumber bouquet' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Open “L”' }))
+    expect(onSelectList).toHaveBeenCalledWith(1)
+  })
+
+  it('the master itself keeps the normal editor', () => {
+    renderPanel({ lists: WITH_MIRROR, activeListId: 1 })
+    expect(screen.queryByText(/This bouquet mirrors/)).toBeNull()
+    expect(screen.getByPlaceholderText('New group name')).toBeInTheDocument()
+  })
+})

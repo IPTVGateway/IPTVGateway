@@ -89,6 +89,16 @@ type
     [Test] procedure AuthThrottle_LocksOutAfterTooManyFailures;
     /// <summary>SSDP replies echo the requested search target and skip foreign ones.</summary>
     [Test] procedure Ssdp_RepliesWithTheRequestedSearchTarget;
+    /// <summary>Mirror playback: the /USER/PASS/ path segment gets the new account.</summary>
+    [Test] procedure RewriteProviderUrl_XtreamPath;
+    /// <summary>Mirror playback: the M3U query values get the new account, URL-encoded.</summary>
+    [Test] procedure RewriteProviderUrl_M3uQuery;
+    /// <summary>Mirror playback: a new server replaces only the source's base.</summary>
+    [Test] procedure RewriteProviderUrl_NewServer;
+    /// <summary>Mirror playback: only the overridden parts change.</summary>
+    [Test] procedure RewriteProviderUrl_PartialOverrides;
+    /// <summary>Mirror playback: an unrecognised URL stays as is.</summary>
+    [Test] procedure RewriteProviderUrl_UnrecognisedUnchanged;
     /// <summary>Credentials in URLs are masked.</summary>
     [Test] procedure MaskUrlSecrets_HidesCredentials;
   end;
@@ -580,6 +590,67 @@ begin
   Assert.IsTrue(lReply.Contains(#13#10'ST: upnp:rootdevice'#13#10));
   Assert.IsTrue(lReply.Contains('::upnp:rootdevice'#13#10), 'USN matches the ST');
   Assert.IsTrue(lReply.Contains('LOCATION: http://10.0.0.2:7777/discover.json'));
+end;
+
+const
+  cRwSrc = 'http://prov.tv:8080';
+  cRwLive = 'http://prov.tv:8080/live/u1/p1/4711.ts';
+
+procedure TUtilsTests.RewriteProviderUrl_XtreamPath;
+begin
+  Assert.AreEqual('http://prov.tv:8080/live/u2/p2/4711.ts',
+    RewriteProviderUrl(cRwLive, cRwSrc, 'u1', 'p1', '', 'u2', 'p2'));
+  Assert.AreEqual('http://prov.tv:8080/movie/u2/p2/9.mkv',
+    RewriteProviderUrl('http://prov.tv:8080/movie/u1/p1/9.mkv', cRwSrc, 'u1', 'p1', '', 'u2', 'p2'));
+  // escaped in the stored URL, escaped in the result
+  Assert.AreEqual('http://prov.tv:8080/live/u2/n%2Fw%20x/1.ts',
+    RewriteProviderUrl('http://prov.tv:8080/live/u1/a%2Fb/1.ts', cRwSrc, 'u1', 'a/b', '', 'u2', 'n/w x'));
+  // the host is never mistaken for the account (search starts after the authority)
+  Assert.AreEqual('http://u1/live/u2/p2/1.ts',
+    RewriteProviderUrl('http://u1/live/u1/p1/1.ts', 'http://u1', 'u1', 'p1', '', 'u2', 'p2'));
+end;
+
+procedure TUtilsTests.RewriteProviderUrl_M3uQuery;
+const
+  cSrc = 'http://m3u.tv/get.php?username=u1&password=p1&type=m3u_plus';
+begin
+  Assert.AreEqual('http://m3u.tv/play.php?username=u2&password=p%26%202&id=7',
+    RewriteProviderUrl('http://m3u.tv/play.php?username=u1&password=p1&id=7', cSrc, '', '', '', 'u2', 'p& 2'));
+  // the account comes from the source URL's query: Xtream-style paths follow too
+  Assert.AreEqual('http://m3u.tv/u2/p2/7',
+    RewriteProviderUrl('http://m3u.tv/u1/p1/7', cSrc, '', '', '', 'u2', 'p2'));
+end;
+
+procedure TUtilsTests.RewriteProviderUrl_NewServer;
+begin
+  Assert.AreEqual('https://other.tv/live/u2/p2/4711.ts',
+    RewriteProviderUrl(cRwLive, cRwSrc + '/', 'u1', 'p1', 'https://other.tv/', 'u2', 'p2'));
+  Assert.AreEqual('http://other.tv:81/live/u1/p1/4711.ts',
+    RewriteProviderUrl(cRwLive, cRwSrc, 'u1', 'p1', 'other.tv:81', '', ''), 'no scheme: http');
+  Assert.AreEqual('http://other.tv/live/u1/p1/4711.ts',
+    RewriteProviderUrl('HTTP://PROV.TV:8080/live/u1/p1/4711.ts', cRwSrc, 'u1', 'p1', 'http://other.tv/x', '', ''),
+    'case-insensitive base; only the new base is used');
+  // another port is another base: left alone
+  Assert.AreEqual('http://prov.tv:80801/live/u1/p1/1.ts',
+    RewriteProviderUrl('http://prov.tv:80801/live/u1/p1/1.ts', cRwSrc, 'u1', 'p1', 'http://other.tv', '', ''));
+end;
+
+procedure TUtilsTests.RewriteProviderUrl_PartialOverrides;
+begin
+  Assert.AreEqual('http://prov.tv:8080/live/u2/p1/4711.ts',
+    RewriteProviderUrl(cRwLive, cRwSrc, 'u1', 'p1', '', 'u2', ''), 'only the username');
+  Assert.AreEqual('http://prov.tv:8080/live/u1/p2/4711.ts',
+    RewriteProviderUrl(cRwLive, cRwSrc, 'u1', 'p1', '', '', 'p2'), 'only the password');
+  Assert.AreEqual(cRwLive, RewriteProviderUrl(cRwLive, cRwSrc, 'u1', 'p1', '', '', ''), 'nothing overridden');
+end;
+
+procedure TUtilsTests.RewriteProviderUrl_UnrecognisedUnchanged;
+const
+  cForeign = 'http://cdn.example/hls/abc/index.m3u8';
+begin
+  Assert.AreEqual(cForeign, RewriteProviderUrl(cForeign, cRwSrc, 'u1', 'p1', 'http://other.tv', 'u2', 'p2'));
+  Assert.AreEqual('', RewriteProviderUrl('', cRwSrc, 'u1', 'p1', 'http://other.tv', 'u2', 'p2'));
+  Assert.AreEqual('not a url', RewriteProviderUrl('not a url', cRwSrc, 'u1', 'p1', 'http://other.tv', 'u2', 'p2'));
 end;
 
 initialization

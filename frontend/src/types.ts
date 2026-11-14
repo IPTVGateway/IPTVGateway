@@ -159,6 +159,16 @@ export interface CustomList {
   outputUsername: string
   outputPassword: string
   enabled: boolean
+  /** id of the list this one mirrors (0/undefined = a normal list with its own channels) */
+  mirrorOfListId?: number
+}
+
+/** A mirror bouquet's own provider account for one source ('' = the source's value). */
+export interface MirrorCredential {
+  sourceId: number
+  url: string
+  username: string
+  password: string
 }
 
 /** Runtime settings (subset of config.json) exposed via /api/config. */

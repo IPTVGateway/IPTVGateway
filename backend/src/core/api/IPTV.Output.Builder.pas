@@ -51,8 +51,10 @@ type
 
 /// Catch-up: the provider's timeshift URL for a (list-scoped) stream, the start
 /// shifted from UTC to the portal's clock. '' when the stream's source is not an
-/// Xtream portal (only Xtream exposes /timeshift) or no longer exists.
-function TimeshiftUpstreamUrl(const AStore: IStore; const AStream: TStreamItem;
+/// Xtream portal (only Xtream exposes /timeshift) or no longer exists. AListId is
+/// the list the box plays through: a mirror bouquet's own provider account (server
+/// URL / username / password per source) replaces the source's.
+function TimeshiftUpstreamUrl(const AStore: IStore; AListId: Integer; const AStream: TStreamItem;
   ADurationMin: Integer; AStartUtc: TDateTime; const AExt: string): string;
 
 /// Load the list's output channels (canonical order) filtered to AGroups
@@ -322,11 +324,13 @@ begin
       AChannels.Delete(i); // owned list: frees it
 end;
 
-function TimeshiftUpstreamUrl(const AStore: IStore; const AStream: TStreamItem;
+function TimeshiftUpstreamUrl(const AStore: IStore; AListId: Integer; const AStream: TStreamItem;
   ADurationMin: Integer; AStartUtc: TDateTime; const AExt: string): string;
 var
   lSources: TObjectList<TSourceConfig>;
   lSource: TSourceConfig;
+  lCredential: TMirrorCredential;
+  lUrl, lUser, lPass: string;
 begin
   Result := '';
   if AStream = nil then
@@ -337,8 +341,24 @@ begin
       if lSource.Id = AStream.SourceId then
       begin
         if lSource.Kind = skXtream then
-          Result := XtreamTimeshiftUrl(lSource.Url, lSource.Username, lSource.Password, ADurationMin,
+        begin
+          lUrl := lSource.Url;
+          lUser := lSource.Username;
+          lPass := lSource.Password;
+          // a mirror bouquet plays the archive with its own account (only a mirror
+          // has stored credentials)
+          for lCredential in AStore.LoadMirrorCredentials(AListId) do
+            if lCredential.SourceId = lSource.Id then
+            begin
+              lUrl := RewriteProviderUrl(lSource.Url, lSource.Url, '', '', lCredential.Url, '', '');
+              if lCredential.Username <> '' then
+                lUser := lCredential.Username;
+              if lCredential.Password <> '' then
+                lPass := lCredential.Password;
+            end;
+          Result := XtreamTimeshiftUrl(lUrl, lUser, lPass, ADurationMin,
             AStartUtc, lSource.TzOffsetMin, AStream.UpstreamId, AExt);
+        end;
         Break;
       end;
   finally

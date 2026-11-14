@@ -11,6 +11,7 @@ import type {
 import { SEARCH_DEBOUNCE_MS, useDebounced } from '../hooks/useDebounced'
 import { CONTENT_LIVE, CONTENT_TYPES, byNameCI, compareGroups } from '../lib/ordering'
 import { useT } from '../i18n'
+import { isMirror } from '../lib/mirror'
 import { QualityProbeModal } from './QualityProbeModal'
 import { ArchiveBadge } from './ArchiveBadge'
 
@@ -73,6 +74,14 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     // for the previous list, so we never assign a foreign group to added items
     setTargetGroupId(0)
   }, [activeListId])
+
+  // A mirror bouquet has no channels of its own (they come from its master), so
+  // it is never an add target - not even when it is the active list.
+  const addTargets = useMemo(() => lists.filter((l) => !isMirror(l)), [lists])
+  const targetIsMirror = isMirror(lists.find((l) => l.id === targetListId))
+  useEffect(() => {
+    if (targetIsMirror) setTargetListId('')
+  }, [targetIsMirror])
 
   // The custom-group dropdown lists the ACTIVE list's groups. If you target a
   // different list, those group ids don't belong to it — so only "Upstream group"
@@ -359,7 +368,7 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
               }
             >
               <option value="">{t('Target list…')}</option>
-              {lists.map((l) => (
+              {addTargets.map((l) => (
                 <option key={l.id} value={l.id}>
                   {l.name}
                 </option>

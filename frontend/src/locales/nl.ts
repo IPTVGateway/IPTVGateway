@@ -571,4 +571,24 @@ export const nl: Record<string, string> = {
   'Media servers: allowed clients': 'Mediaservers: toegestane clients',
   'The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = every client.':
     'De Plex/Jellyfin-tuner en de HDHomeRun-adressen hebben geen login. Eén IP-adres per regel (bijv. je Plex-server), of een voorvoegsel dat op een punt eindigt zoals 192.168.1. voor een heel netwerk. Leeg = elke client.',
+
+  // ── Mirror bouquets ───────────────────────────────────────────────────────
+  'Mirror of': 'Spiegel van',
+  '(none — own channels)': '(geen — eigen kanalen)',
+  'Mirrored by {names}, so this bouquet can’t mirror another one itself.':
+    'Gespiegeld door {names}, dus dit bouquet kan zelf geen ander bouquet spiegelen.',
+  'A mirror always shows the channels of the chosen bouquet (read-only) and plays them with its own provider account.':
+    'Een spiegel toont altijd de kanalen van het gekozen bouquet (alleen-lezen) en speelt ze af met een eigen provideraccount.',
+  'Server URL': 'Server-URL',
+  'Server URL for {source}': 'Server-URL voor {source}',
+  'Username for {source}': 'Gebruikersnaam voor {source}',
+  'Password for {source}': 'Wachtwoord voor {source}',
+  '(same as the source)': '(zelfde als de bron)',
+  'Only for another account at the same provider; the server URL must point to that same provider.':
+    'Alleen voor een ander account bij dezelfde provider; de server-URL moet naar diezelfde provider wijzen.',
+  'This bouquet mirrors “{name}”: its channels come from there, it only plays them with its own provider account.':
+    'Dit bouquet spiegelt “{name}”: de kanalen komen daarvandaan, het speelt ze alleen af met een eigen provideraccount.',
+  'Open “{name}”': '“{name}” openen',
+  'Its box login, provider accounts and on/off switch are under Settings → Output lists.':
+    'De box-login, provideraccounts en aan/uit-schakelaar staan onder Instellingen → Uitvoerlijsten.',
 }

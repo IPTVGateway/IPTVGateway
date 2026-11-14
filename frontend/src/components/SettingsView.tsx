@@ -1,6 +1,7 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import { api, type SettingsBundle } from '../api/client'
-import type { AppConfig, CustomList } from '../types'
+import type { AppConfig, CustomList, MirrorCredential, Source } from '../types'
+import { isMirror } from '../lib/mirror'
 import { useI18n, useT } from '../i18n'
 
 // valid TCP port range for the relay (proxy) port
@@ -433,28 +434,47 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
 
   const current = selected === NEW_LIST ? null : lists.find((l) => l.id === selected) ?? null
 
-  async function saveExisting(patch: Partial<CustomList> & { id: number }) {
+  // A mirror's own provider accounts are stored separately, AFTER the list: the
+  // backend only accepts them once the list is (saved as) a mirror.
+  async function saveExisting(
+    patch: Partial<CustomList> & { id: number },
+    credentials?: MirrorCredential[],
+  ) {
     setError(null)
     try {
       await api.saveList(patch)
-      onChanged()
+    } catch (err) {
+      setError((err as Error).message)
+      return
+    }
+    try {
+      if (credentials) await api.saveMirrorCredentials(patch.id, credentials)
     } catch (err) {
       setError((err as Error).message)
     }
+    onChanged()
   }
 
-  async function createList(draft: Partial<CustomList>) {
+  async function createList(draft: Partial<CustomList>, credentials?: MirrorCredential[]) {
     setError(null)
+    let saved: CustomList | undefined
     try {
-      await api.saveList({
+      saved = await api.saveList({
         name: draft.name!.trim(),
         outputUsername: draft.outputUsername?.trim() ?? '',
         outputPassword: draft.outputPassword?.trim() ?? '',
         enabled: draft.enabled ?? true,
+        mirrorOfListId: draft.mirrorOfListId ?? 0,
       })
     } catch (err) {
       setError((err as Error).message)
       throw err // the editor keeps the typed values on failure
+    }
+    try {
+      if (credentials && saved?.id) await api.saveMirrorCredentials(saved.id, credentials)
+    } catch (err) {
+      // the list exists now; only its accounts failed - edit it to retry
+      setError((err as Error).message)
     }
     onChanged()
   }
@@ -500,8 +520,9 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
           <ListEditor
             // keyed on the server values too: when the list changes underneath
             // (e.g. a settings import), the editor restarts from the new values
-            key={JSON.stringify([current.id, current.name, current.outputUsername, current.outputPassword, current.enabled])}
+            key={JSON.stringify([current.id, current.name, current.outputUsername, current.outputPassword, current.enabled, current.mirrorOfListId ?? 0])}
             list={current}
+            lists={lists}
             onSave={saveExisting}
             onDelete={(l) => {
               remove(l)
@@ -509,7 +530,7 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
             }}
           />
         ) : (
-          <ListEditor key="new" onCreate={createList} onCreated={() => undefined} />
+          <ListEditor key="new" lists={lists} onCreate={createList} onCreated={() => undefined} />
         )}
 
         <span className="hint">
@@ -523,52 +544,141 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
 interface ListEditorProps {
   /** Existing list to edit; omit for the "new list" form. */
   list?: CustomList
-  onSave?: (patch: Partial<CustomList> & { id: number }) => void
+  /** Every list (the "Mirror of" choices). */
+  lists: CustomList[]
+  onSave?: (patch: Partial<CustomList> & { id: number }, credentials?: MirrorCredential[]) => void
   onDelete?: (l: CustomList) => void
-  onCreate?: (draft: Partial<CustomList>) => Promise<void>
+  onCreate?: (draft: Partial<CustomList>, credentials?: MirrorCredential[]) => Promise<void>
   onCreated?: () => void
+}
+
+/** A mirror's per-source account as edited in the form ('' = the source's own value). */
+type CredForm = Record<number, { url: string; username: string; password: string }>
+const EMPTY_CRED = { url: '', username: '', password: '' }
+
+/** The rows worth storing: trimmed, and only sources with at least one value. */
+function credentialsToSave(sources: Source[], creds: CredForm): MirrorCredential[] {
+  const out: MirrorCredential[] = []
+  for (const src of sources) {
+    const c = creds[src.id] ?? EMPTY_CRED
+    const row = {
+      sourceId: src.id,
+      url: c.url.trim(),
+      username: c.username.trim(),
+      password: c.password.trim(),
+    }
+    if (row.url || row.username || row.password) out.push(row)
+  }
+  return out
 }
 
 /**
  * Edits a single output list (or, with no `list`, captures a new one). Same set
  * of fields either way — the picker decides which list this is bound to.
  */
-function ListEditor({ list, onSave, onDelete, onCreate, onCreated }: ListEditorProps) {
+function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: ListEditorProps) {
   const t = useT()
   const [name, setName] = useState(list?.name ?? '')
   const [username, setUsername] = useState(list?.outputUsername ?? '')
   const [password, setPassword] = useState(list?.outputPassword ?? '')
   const [enabled, setEnabled] = useState(list?.enabled ?? true)
+  const [mirrorOf, setMirrorOf] = useState(list?.mirrorOfListId ?? 0)
+  const [sources, setSources] = useState<Source[] | null>(null)
+  const [creds, setCreds] = useState<CredForm>({})
+  const [credsDirty, setCredsDirty] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
+
+  // one level only: a mirror can't be mirrored, and a list can't mirror itself
+  const masters = lists.filter((l) => !isMirror(l) && l.id !== list?.id)
+  // a list that other bouquets mirror can't become a mirror itself
+  const mirroredBy = list ? lists.filter((l) => l.mirrorOfListId === list.id) : []
+  const mirroring = mirrorOf > 0
+
+  // the per-source account table needs the sources: fetched once a mirror is picked
+  useEffect(() => {
+    if (!mirroring || sources) return
+    let cancelled = false
+    api
+      .listSources()
+      .then((s) => {
+        if (!cancelled) setSources(s)
+      })
+      .catch(() => {
+        if (!cancelled) setSources([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mirroring, sources])
+
+  // the stored accounts of an existing mirror
+  const listId = list?.id
+  const storedMirror = isMirror(list)
+  useEffect(() => {
+    if (listId == null || !storedMirror) return
+    let cancelled = false
+    api
+      .getMirrorCredentials(listId)
+      .then((rows) => {
+        if (cancelled) return
+        const next: CredForm = {}
+        for (const r of rows ?? [])
+          next[r.sourceId] = { url: r.url ?? '', username: r.username ?? '', password: r.password ?? '' }
+        setCreds(next)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [listId, storedMirror])
+
+  function setCred(sourceId: number, field: keyof typeof EMPTY_CRED, value: string) {
+    setCreds((prev) => ({ ...prev, [sourceId]: { ...(prev[sourceId] ?? EMPTY_CRED), [field]: value } }))
+    setCredsDirty(true)
+  }
 
   const dirty =
     !list ||
     name !== list.name ||
     username !== list.outputUsername ||
     password !== list.outputPassword ||
-    enabled !== list.enabled
+    enabled !== list.enabled ||
+    mirrorOf !== (list.mirrorOfListId ?? 0) ||
+    (mirroring && credsDirty)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     if (!name.trim()) return
+    // only a mirror has accounts of its own (the backend refuses them otherwise)
+    const credentials = mirroring ? credentialsToSave(sources ?? [], creds) : undefined
     if (list) {
-      onSave?.({
-        id: list.id,
-        name: name.trim(),
-        outputUsername: username.trim(),
-        outputPassword: password.trim(),
-        enabled,
-      })
+      onSave?.(
+        {
+          id: list.id,
+          name: name.trim(),
+          outputUsername: username.trim(),
+          outputPassword: password.trim(),
+          enabled,
+          mirrorOfListId: mirrorOf,
+        },
+        credentials,
+      )
       return
     }
     setBusy(true)
     try {
-      await onCreate?.({ name, outputUsername: username, outputPassword: password, enabled })
+      await onCreate?.(
+        { name, outputUsername: username, outputPassword: password, enabled, mirrorOfListId: mirrorOf },
+        credentials,
+      )
       setName('')
       setUsername('')
       setPassword('')
       setEnabled(true)
+      setMirrorOf(0)
+      setCreds({})
+      setCredsDirty(false)
       onCreated?.()
     } catch {
       // the parent shows the error; keep the form values for a retry
@@ -601,6 +711,91 @@ function ListEditor({ list, onSave, onDelete, onCreate, onCreated }: ListEditorP
           {t('Enabled')}
         </label>
       </div>
+
+      <label className="inline list-mirror-of">
+        {t('Mirror of')}
+        <select
+          value={String(mirrorOf)}
+          disabled={mirroredBy.length > 0 && !mirroring}
+          onChange={(e) => setMirrorOf(Number(e.target.value))}
+        >
+          <option value="0">{t('(none — own channels)')}</option>
+          {masters.map((l) => (
+            <option key={l.id} value={String(l.id)}>
+              {l.name || t('(unnamed)')}
+            </option>
+          ))}
+        </select>
+      </label>
+      <span className="hint">
+        {mirroredBy.length > 0 && !mirroring
+          ? t('Mirrored by {names}, so this bouquet can’t mirror another one itself.').replace(
+              '{names}',
+              mirroredBy.map((l) => `“${l.name}”`).join(', '),
+            )
+          : t('A mirror always shows the channels of the chosen bouquet (read-only) and plays them with its own provider account.')}
+      </span>
+
+      {mirroring && (
+        <div className="mirror-creds">
+          {sources == null ? (
+            <p className="muted">{t('Loading…')}</p>
+          ) : sources.length === 0 ? (
+            <p className="muted">{t('No sources yet.')}</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="data-table mirror-creds-table">
+                <thead>
+                  <tr>
+                    <th>{t('Source')}</th>
+                    <th>{t('Server URL')}</th>
+                    <th>{t('Username')}</th>
+                    <th>{t('Password')}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sources.map((src) => {
+                    const c = creds[src.id] ?? EMPTY_CRED
+                    return (
+                      <tr key={src.id}>
+                        <td>{src.name}</td>
+                        <td>
+                          <input
+                            aria-label={t('Server URL for {source}').replace('{source}', src.name)}
+                            placeholder={t('(same as the source)')}
+                            value={c.url}
+                            onChange={(e) => setCred(src.id, 'url', e.target.value)}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            aria-label={t('Username for {source}').replace('{source}', src.name)}
+                            placeholder={t('(same as the source)')}
+                            value={c.username}
+                            onChange={(e) => setCred(src.id, 'username', e.target.value)}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            aria-label={t('Password for {source}').replace('{source}', src.name)}
+                            placeholder={t('(same as the source)')}
+                            value={c.password}
+                            onChange={(e) => setCred(src.id, 'password', e.target.value)}
+                          />
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <span className="hint">
+            {t('Only for another account at the same provider; the server URL must point to that same provider.')}
+          </span>
+        </div>
+      )}
+
       <div className="form-actions">
         <button type="submit" disabled={busy || !name.trim() || !dirty}>
           {list ? t('Save') : busy ? t('Adding…') : t('Add list')}

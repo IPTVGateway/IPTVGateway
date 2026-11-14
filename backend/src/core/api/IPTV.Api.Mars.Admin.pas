@@ -113,9 +113,18 @@ type
     /// Create or (partially) update an output list.
     [POST, Path('lists'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
     function PostList([BodyParam] ABody: TJSONObject): TJSONObject;
-    /// Delete an output list with its groups and items.
+    /// Delete an output list with its groups and items (400 while mirrors point at it).
     [DELETE, Path('lists/{id}')]
     procedure DeleteList([PathParam('id')] AId: Integer);
+    /// The provider credentials of a mirror bouquet: [ { sourceId, url, username,
+    /// password } ] (only the stored rows; empty for a normal list).
+    [GET, Path('lists/{id}/mirror-credentials'), Produces(TMediaType.APPLICATION_JSON)]
+    function GetMirrorCredentials([PathParam('id')] AId: Integer): TJSONArray;
+    /// Replace a mirror bouquet's provider credentials. Body: { credentials: [ … ] }
+    /// (same shape as the GET) -> the stored rows. 400 when the list is no mirror.
+    [POST, Path('lists/{id}/mirror-credentials'),
+      Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
+    function PostMirrorCredentials([PathParam('id')] AId: Integer; [BodyParam] ABody: TJSONObject): TJSONArray;
     /// Curated EPG of a list, keyed by the effective tvg-ids.
     [GET, Path('lists/{id}/epg'), Produces(TMediaType.APPLICATION_JSON)]
     function GetListEpg([PathParam('id')] AId: Integer): TJSONArray;
@@ -327,6 +336,10 @@ const
   cDefaultProbeSeconds = 8;  // ?seconds= absent or <= 0
   cProbeRoundDigits = -2;    // RoundTo: 2 decimals
 
+  // mirror bouquets: a write to a mirror's channels (%s = the master's name)
+  cMsgMirrorReadOnly = 'This bouquet mirrors %s - edit the channels there';
+  cNoMirror = 0;
+
   // download exports
   cHeaderContentDisposition = 'Content-Disposition';
   cAttachmentFmt = 'attachment; filename="%s"';
@@ -485,6 +498,78 @@ begin
 end;
 
 { TAdminResource }
+
+// 400 when AListId is a mirror bouquet: its groups and channels are the master's
+// and are edited there
+procedure RequireOwnChannels(AListId: Integer);
+var
+  lLists: TObjectList<TCustomList>;
+  lList: TCustomList;
+  lMasterId: Integer;
+  lMasterName: string;
+begin
+  lMasterId := cNoMirror;
+  lMasterName := '';
+  lLists := App.Store.LoadLists;
+  try
+    for lList in lLists do
+      if lList.Id = AListId then
+        lMasterId := lList.MirrorOfListId;
+    if lMasterId = cNoMirror then
+      Exit;
+    for lList in lLists do
+      if lList.Id = lMasterId then
+        lMasterName := lList.Name;
+  finally
+    FreeAndNil(lLists);
+  end;
+  raise EMARSHttpException.Create(Format(cMsgMirrorReadOnly, [lMasterName]), cHttpBadRequest);
+end;
+
+// the list whose groups (AIsGroup) or items contain AId, among the mirror bouquets
+// only; 0 when none (a mirror normally has neither - SaveList enforces it)
+function MirrorOwning(AId: Integer; AIsGroup: Boolean): Integer;
+var
+  lLists: TObjectList<TCustomList>;
+  lList: TCustomList;
+  lGroups: TCustomGroupList;
+  lItems: TCustomItemList;
+  i: Integer;
+begin
+  Result := cNoMirror;
+  lLists := App.Store.LoadLists;
+  try
+    for lList in lLists do
+    begin
+      if lList.MirrorOfListId = cNoMirror then
+        Continue;
+      if AIsGroup then
+      begin
+        lGroups := App.Store.LoadGroups(lList.Id);
+        try
+          for i := 0 to lGroups.Count - 1 do
+            if lGroups[i].Id = AId then
+              Exit(lList.Id);
+        finally
+          FreeAndNil(lGroups);
+        end;
+      end
+      else
+      begin
+        lItems := App.Store.LoadItems(lList.Id);
+        try
+          for i := 0 to lItems.Count - 1 do
+            if lItems[i].Id = AId then
+              Exit(lList.Id);
+        finally
+          FreeAndNil(lItems);
+        end;
+      end;
+    end;
+  finally
+    FreeAndNil(lLists);
+  end;
+end;
 
 function TAdminResource.Health: TJSONObject;
 begin
@@ -831,6 +916,7 @@ begin
             lList.OutputUsername := lExisting.OutputUsername;
             lList.OutputPassword := lExisting.OutputPassword;
             lList.Enabled := lExisting.Enabled;
+            lList.MirrorOfListId := lExisting.MirrorOfListId;
             Break;
           end;
       finally
@@ -838,7 +924,12 @@ begin
       end;
     end;
     ListFromJson(ABody, lList);
-    App.Store.SaveList(lList);
+    try
+      App.Store.SaveList(lList);
+    except
+      on E: EStoreValidation do // mirror rules: readable 400
+        raise EMARSHttpException.Create(E.Message, cHttpBadRequest);
+    end;
     Result := ListToJson(lList);
   finally
     FreeAndNil(lList);
@@ -848,7 +939,35 @@ end;
 procedure TAdminResource.DeleteList(AId: Integer);
 begin
   RequireApp;
-  App.Store.DeleteList(AId);
+  try
+    App.Store.DeleteList(AId);
+  except
+    on E: EStoreValidation do // still mirrored: name the mirrors
+      raise EMARSHttpException.Create(E.Message, cHttpBadRequest);
+  end;
+end;
+
+function TAdminResource.GetMirrorCredentials(AId: Integer): TJSONArray;
+begin
+  RequireApp;
+  Result := MirrorCredentialsToJson(App.Store.LoadMirrorCredentials(AId));
+end;
+
+function TAdminResource.PostMirrorCredentials(AId: Integer; ABody: TJSONObject): TJSONArray;
+var
+  lArray: TJSONArray;
+begin
+  RequireApp;
+  lArray := nil;
+  if ABody.GetValue('credentials') is TJSONArray then
+    lArray := TJSONArray(ABody.GetValue('credentials'));
+  try
+    App.Store.SaveMirrorCredentials(AId, MirrorCredentialsFromJson(lArray));
+  except
+    on E: EStoreValidation do // not a mirror
+      raise EMARSHttpException.Create(E.Message, cHttpBadRequest);
+  end;
+  Result := MirrorCredentialsToJson(App.Store.LoadMirrorCredentials(AId));
 end;
 
 function TAdminResource.GetConfig: TJSONObject;
@@ -1075,11 +1194,16 @@ begin
 
   // one transaction: a failure half-way leaves the old sources and bouquets intact
   // (before, an error after the wipe left a half-imported setup)
-  App.Store.RunInTransaction(
-    procedure(AStore: IStore)
-    begin
-      lCounts := ImportStoreSettings(AStore, ABody);
-    end);
+  try
+    App.Store.RunInTransaction(
+      procedure(AStore: IStore)
+      begin
+        lCounts := ImportStoreSettings(AStore, ABody);
+      end);
+  except
+    on E: EStoreValidation do // the bundle breaks a store rule (rolled back)
+      raise EMARSHttpException.Create('Invalid import file: ' + E.Message, cHttpBadRequest);
+  end;
 
   // from here on the store IS replaced: a setting that can't be applied (the relay
   // port is taken here, SSDP can't bind) is reported as a warning, not as a failed
@@ -1417,6 +1541,7 @@ var
   lId: Integer;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lGroup := TCustomGroup.Create;
   try
     // load-then-merge for an update: a PARTIAL patch (e.g. just the favorite
@@ -1452,6 +1577,7 @@ end;
 procedure TAdminResource.DeleteGroup(AId: Integer);
 begin
   RequireApp;
+  RequireOwnChannels(MirrorOwning(AId, True));
   App.Store.DeleteGroup(AId);
 end;
 
@@ -1475,6 +1601,7 @@ var
   lId: Integer;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lItem := TCustomItem.Create;
   try
     // load-then-merge: a partial patch must not reset channel_number / move the
@@ -1516,6 +1643,7 @@ var
   lAdded: Integer;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lAdded := App.Store.AddItems(AId, ABody.GetValue<Integer>('customGroupId', 0),
     IntArrayFromJson(ABody, 'streamItemIds'));
   Result := TJSONObject.Create.AddPair('added', TJSONNumber.Create(lAdded));
@@ -1529,6 +1657,7 @@ var
   lReps: TArray<TItemStreamReplace>;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lReps := [];
   if ABody.GetValue('replacements') is TJSONArray then
   begin
@@ -1549,6 +1678,7 @@ end;
 procedure TAdminResource.DeleteItem(AId: Integer);
 begin
   RequireApp;
+  RequireOwnChannels(MirrorOwning(AId, False));
   App.Store.DeleteItem(AId);
 end;
 
@@ -1557,6 +1687,7 @@ var
   lRemoved: Integer;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lRemoved := App.Store.ClearGroupItems(AId, ABody.GetValue<Integer>('customGroupId', 0));
   Result := TJSONObject.Create.AddPair('removed', TJSONNumber.Create(lRemoved));
 end;
@@ -1564,6 +1695,7 @@ end;
 function TAdminResource.DedupeList(AId: Integer): TJSONObject;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   Result := TJSONObject.Create.AddPair('removed', TJSONNumber.Create(App.Store.DedupeListItems(AId)));
 end;
 
@@ -1572,6 +1704,7 @@ var
   lSorted: Integer;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lSorted := App.Store.SortGroupAlphabetically(AId, ABody.GetValue<Integer>('customGroupId', 0));
   Result := TJSONObject.Create.AddPair('sorted', TJSONNumber.Create(lSorted));
 end;
@@ -1581,6 +1714,7 @@ var
   lNumbered: Integer;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   // body: { customGroupId, itemIds:[…] } — itemIds in the desired display order
   lNumbered := App.Store.ReorderGroupItems(AId, ABody.GetValue<Integer>('customGroupId', 0),
     IntArrayFromJson(ABody, 'itemIds'));
@@ -1595,6 +1729,7 @@ var
   lNumbers: TArray<TItemNumber>;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lNumbers := [];
   if ABody.GetValue('numbers') is TJSONArray then
   begin
@@ -1615,6 +1750,7 @@ end;
 function TAdminResource.OrderGroups(AId: Integer; ABody: TJSONObject): TJSONObject;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   // body: { groupIds:[…] } — group ids in the desired display order (drag result)
   Result := TJSONObject.Create.AddPair('ordered',
     TJSONNumber.Create(App.Store.ReorderGroups(AId, IntArrayFromJson(ABody, 'groupIds'))));
@@ -1660,6 +1796,7 @@ var
   lEntry: TJSONObject;
 begin
   RequireApp;
+  RequireOwnChannels(AId);
   lPrefixes := [];
   lSuffixes := [];
   if ABody.GetValue('extraPrefixes') is TJSONArray then

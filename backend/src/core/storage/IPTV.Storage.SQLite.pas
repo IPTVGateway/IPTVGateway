@@ -39,6 +39,20 @@ uses
 type
   /// FireDAC/SQLite implementation of IStore (one connection; see the unit header).
   TSQLiteStore = class(TInterfacedObject, IStore)
+  private type
+    /// How a mirror bouquet plays one source: the source's own account (what the
+    /// stored URLs contain) and the mirror's override for it.
+    TPlaybackAccount = record
+      SourceUrl: string;
+      SourceUser: string;
+      SourcePass: string;
+      Credential: TMirrorCredential;
+    end;
+    /// One failover candidate: its upstream URL and the source it comes from.
+    TSiblingUrl = record
+      SourceId: Integer;
+      Url: string;
+    end;
   private
     FConn: TFDConnection;
     /// A new query on FConn (caller frees it).
@@ -69,6 +83,23 @@ type
     function StreamHash(const AItem: TStreamItem): string;
     /// Match the channels to the extra (third-party) guides; sets ExtraGuideId.
     procedure ApplyExtraGuides(AChannels: TOutputChannelList);
+    /// The master a list mirrors (lists.mirror_of_list_id); 0 = a normal list or unknown.
+    function ListMasterId(AListId: Integer): Integer;
+    /// Raise EStoreValidation when AList.MirrorOfListId breaks a mirror rule (see IStore.SaveList).
+    procedure ValidateMirror(const AList: TCustomList);
+    /// The names of the lists that mirror AListId, A-Z.
+    function MirrorNamesOf(AListId: Integer): TArray<string>;
+    /// The playback accounts of a mirror bouquet per source id (caller frees).
+    function LoadPlaybackAccounts(AListId: Integer): TDictionary<Integer, TPlaybackAccount>;
+    /// AUrl of a stream from ASourceId as the mirror plays it (unchanged without an override).
+    function PlaybackUrl(const AAccounts: TDictionary<Integer, TPlaybackAccount>; ASourceId: Integer;
+      const AUrl: string): string;
+    /// LoadOutputChannels of a list's OWN items (no mirror resolution).
+    function LoadListChannels(AListId: Integer): TOutputChannelList;
+    /// LoadListStreamById scoped to a list's OWN items (no mirror resolution).
+    function LoadScopedStream(AListId, AStreamItemId: Integer): TStreamItem;
+    /// The failover candidates of a stream (see IStore.LoadStreamSiblings) with their source.
+    function LoadSiblingUrls(AStreamItemId: Integer): TArray<TSiblingUrl>;
     // row -> object
     /// Read the current row of AQuery into a new object (caller owns it).
     function ReadSource(AQuery: TFDQuery): TSourceConfig;
@@ -107,6 +138,7 @@ type
     function FindEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
       AExts: TArray<string>): TArray<Integer>;
     function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
+    function LoadStreamSiblingsForList(AListId, AStreamItemId: Integer): TArray<string>;
     function DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
     function LoadKnownTvgIds: TArray<TTvgIdInfo>;
     function FindQualityVariants(AListId, ASourceGroupId: Integer;
@@ -128,6 +160,8 @@ type
     function LoadLists: TObjectList<TCustomList>;
     function SaveList(const AList: TCustomList): Integer;
     procedure DeleteList(AId: Integer);
+    function LoadMirrorCredentials(AListId: Integer): TArray<TMirrorCredential>;
+    procedure SaveMirrorCredentials(AListId: Integer; const ACredentials: TArray<TMirrorCredential>);
     procedure RunInTransaction(const AProc: TProc<IStore>);
     function FindListByCredentials(const AUser, APass: string): TCustomList;
 
@@ -259,6 +293,18 @@ const
   // provider source ids are > 0 (the extra-EPG slots use negative ids, no sources row)
   cMinProviderSourceId = 1;
 
+  // mirror bouquets: lists.mirror_of_list_id of a normal list, and the validation
+  // messages (shown to the operator as the API's 400 text)
+  cNoMirror = 0;
+  cMirrorNameSep = ', ';
+  cMsgMirrorSelf = 'A bouquet can''t mirror itself';
+  cMsgMirrorUnknown = 'The bouquet to mirror (id %d) does not exist';
+  cMsgMirrorOfMirror = '"%s" is a mirror itself - mirror the bouquet it mirrors instead';
+  cMsgMirroredCantMirror = 'This bouquet is mirrored by %s - it can''t become a mirror itself';
+  cMsgMirrorNotEmpty = 'This bouquet still has groups or channels - empty the bouquet first';
+  cMsgMasterHasMirrors = 'This bouquet is mirrored by %s - delete those mirrors first';
+  cMsgNotAMirror = 'Only a mirror bouquet has its own provider credentials';
+
 // Strong IPTV group/name delimiters. We deliberately exclude '-' and '.' since
 // VOD titles use them freely, which would explode the discovered-prefix list.
 // Includes the Unicode vertical bars providers decorate names with (┃ │ ¦ ｜ …) —
@@ -356,7 +402,7 @@ const
     CREATE TABLE IF NOT EXISTS lists (
       id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
       output_username TEXT NOT NULL DEFAULT '', output_password TEXT NOT NULL DEFAULT '',
-      enabled INTEGER NOT NULL DEFAULT 1)
+      enabled INTEGER NOT NULL DEFAULT 1, mirror_of_list_id INTEGER NOT NULL DEFAULT 0)
     ''',
 
     '''
@@ -506,6 +552,15 @@ begin
   AddColumn('list_items', 'tvg_id_override TEXT NOT NULL DEFAULT ''''');
   // manual group drag-order (0 => unset, falls back to A→Z; favorites still first)
   AddColumn('list_groups', 'sort_order INTEGER NOT NULL DEFAULT 0');
+  // mirror bouquets: the master a list mirrors (0 = own channels) and the mirror's
+  // own provider account per source (playback only)
+  AddColumn('lists', 'mirror_of_list_id INTEGER NOT NULL DEFAULT 0');
+  Exec('''
+    CREATE TABLE IF NOT EXISTS list_source_credentials (
+      list_id INTEGER NOT NULL, source_id INTEGER NOT NULL,
+      url TEXT NOT NULL DEFAULT '', username TEXT NOT NULL DEFAULT '', password TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(list_id, source_id))
+    ''');
   // change-tracking columns: present inline in the current CREATE TABLE, but a DB
   // created by an OLDER build that predates them would lack them, and
   // CREATE TABLE IF NOT EXISTS won't add them — then every catalog read / refresh
@@ -979,6 +1034,7 @@ begin
   FConn.ExecSQL('DELETE FROM categories WHERE source_id=:id', [ASourceId]);
   FConn.ExecSQL('DELETE FROM epg WHERE source_id=:id', [ASourceId]);
   FConn.ExecSQL('DELETE FROM epg_channels WHERE source_id=:id', [ASourceId]);
+  FConn.ExecSQL('DELETE FROM list_source_credentials WHERE source_id=:id', [ASourceId]);
 end;
 
 procedure TSQLiteStore.DeleteSource(AId: Integer);
@@ -1665,11 +1721,12 @@ begin
   end;
 end;
 
-function TSQLiteStore.LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
+function TSQLiteStore.LoadSiblingUrls(AStreamItemId: Integer): TArray<TSiblingUrl>;
 var
   lQuery: TFDQuery;
   lCt, lTvg, lName: string;
-  lUrls: TList<string>;
+  lUrls: TList<TSiblingUrl>;
+  lSibling: TSiblingUrl;
 begin
   Result := nil;
   lQuery := NewQuery;
@@ -1681,14 +1738,14 @@ begin
     lTvg := lQuery.FieldByName('tvg_id').AsString;
     lName := lQuery.FieldByName('name').AsString;
     lQuery.Close;
-    lUrls := TList<string>.Create;
+    lUrls := TList<TSiblingUrl>.Create;
     try
       // same channel from a DIFFERENT row: by tvg-id when present (reliable), else by
       // exact case-insensitive name (conservative — avoids failing over to a wrong
       // channel). Same content type; skip self and empty URLs.
       lQuery.SQL.Text :=
         '''
-        SELECT s.upstream_url FROM streams s
+        SELECT s.upstream_url, s.source_id FROM streams s
         LEFT JOIN sources src ON src.id = s.source_id
         WHERE s.id <> :id AND s.content_type = :ct AND s.upstream_url <> ''
           AND ((:tvg <> '' AND s.tvg_id = :tvg) OR (:tvg = '' AND s.name = :nm COLLATE NOCASE))
@@ -1701,7 +1758,9 @@ begin
       lQuery.Open;
       while not lQuery.Eof do
       begin
-        lUrls.Add(lQuery.Fields[0].AsString);
+        lSibling.Url := lQuery.Fields[0].AsString;
+        lSibling.SourceId := lQuery.Fields[1].AsInteger;
+        lUrls.Add(lSibling);
         lQuery.Next;
       end;
       Result := lUrls.ToArray;
@@ -1713,7 +1772,55 @@ begin
   end;
 end;
 
+function TSQLiteStore.LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
+var
+  lSibling: TSiblingUrl;
+begin
+  Result := nil;
+  for lSibling in LoadSiblingUrls(AStreamItemId) do
+    Result := Result + [lSibling.Url];
+end;
+
+function TSQLiteStore.LoadStreamSiblingsForList(AListId, AStreamItemId: Integer): TArray<string>;
+var
+  lSibling: TSiblingUrl;
+  lAccounts: TDictionary<Integer, TPlaybackAccount>;
+begin
+  Result := nil;
+  if ListMasterId(AListId) = cNoMirror then
+    Exit(LoadStreamSiblings(AStreamItemId));
+  // a mirror plays each candidate with its own account at that candidate's source
+  lAccounts := LoadPlaybackAccounts(AListId);
+  try
+    for lSibling in LoadSiblingUrls(AStreamItemId) do
+      Result := Result + [PlaybackUrl(lAccounts, lSibling.SourceId, lSibling.Url)];
+  finally
+    FreeAndNil(lAccounts);
+  end;
+end;
+
 function TSQLiteStore.LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
+var
+  lMasterId: Integer;
+  lAccounts: TDictionary<Integer, TPlaybackAccount>;
+begin
+  lMasterId := ListMasterId(AListId);
+  if lMasterId = cNoMirror then
+    Exit(LoadScopedStream(AListId, AStreamItemId));
+  // a mirror: the master's channels (incl. its series episodes), played with the
+  // mirror's own provider account
+  Result := LoadScopedStream(lMasterId, AStreamItemId);
+  if Result = nil then
+    Exit;
+  lAccounts := LoadPlaybackAccounts(AListId);
+  try
+    Result.UpstreamUrl := PlaybackUrl(lAccounts, Result.SourceId, Result.UpstreamUrl);
+  finally
+    FreeAndNil(lAccounts);
+  end;
+end;
+
+function TSQLiteStore.LoadScopedStream(AListId, AStreamItemId: Integer): TStreamItem;
 var
   lQuery: TFDQuery;
 begin
@@ -2885,6 +2992,7 @@ begin
   Result.OutputUsername := AQuery.FieldByName('output_username').AsString;
   Result.OutputPassword := AQuery.FieldByName('output_password').AsString;
   Result.Enabled := AQuery.FieldByName('enabled').AsInteger <> 0;
+  Result.MirrorOfListId := AQuery.FieldByName('mirror_of_list_id').AsInteger;
 end;
 
 function TSQLiteStore.LoadLists: TObjectList<TCustomList>;
@@ -2905,36 +3013,231 @@ begin
   end;
 end;
 
+function TSQLiteStore.ListMasterId(AListId: Integer): Integer;
+var
+  lQuery: TFDQuery;
+begin
+  Result := cNoMirror;
+  lQuery := NewQuery;
+  try
+    lQuery.Open('SELECT mirror_of_list_id FROM lists WHERE id=:id', [AListId]);
+    if not lQuery.IsEmpty then
+      Result := lQuery.Fields[0].AsInteger;
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
+function TSQLiteStore.MirrorNamesOf(AListId: Integer): TArray<string>;
+var
+  lQuery: TFDQuery;
+begin
+  Result := nil;
+  lQuery := NewQuery;
+  try
+    lQuery.Open('SELECT name FROM lists WHERE mirror_of_list_id=:id ORDER BY name COLLATE NOCASE', [AListId]);
+    while not lQuery.Eof do
+    begin
+      Result := Result + [lQuery.Fields[0].AsString];
+      lQuery.Next;
+    end;
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
+procedure TSQLiteStore.ValidateMirror(const AList: TCustomList);
+var
+  lQuery: TFDQuery;
+  lMirrors: TArray<string>;
+begin
+  if AList.MirrorOfListId = cNoMirror then
+    Exit;
+  if AList.MirrorOfListId < cNoMirror then
+    raise EStoreValidation.CreateFmt(cMsgMirrorUnknown, [AList.MirrorOfListId]);
+  if AList.MirrorOfListId = AList.Id then
+    raise EStoreValidation.Create(cMsgMirrorSelf);
+  lQuery := NewQuery;
+  try
+    lQuery.Open('SELECT name, mirror_of_list_id FROM lists WHERE id=:id', [AList.MirrorOfListId]);
+    if lQuery.IsEmpty then
+      raise EStoreValidation.CreateFmt(cMsgMirrorUnknown, [AList.MirrorOfListId]);
+    if lQuery.Fields[1].AsInteger <> cNoMirror then
+      raise EStoreValidation.CreateFmt(cMsgMirrorOfMirror, [lQuery.Fields[0].AsString]);
+    lQuery.Close;
+    if AList.Id = 0 then
+      Exit; // a new list has no mirrors, groups or items yet
+    lMirrors := MirrorNamesOf(AList.Id);
+    if Length(lMirrors) > 0 then
+      raise EStoreValidation.CreateFmt(cMsgMirroredCantMirror, [string.Join(cMirrorNameSep, lMirrors)]);
+    lQuery.Open(
+      '''
+      SELECT (SELECT COUNT(*) FROM list_groups WHERE list_id=:g)
+           + (SELECT COUNT(*) FROM list_items WHERE list_id=:i)
+      ''', [AList.Id, AList.Id]);
+    if lQuery.Fields[0].AsInteger > 0 then
+      raise EStoreValidation.Create(cMsgMirrorNotEmpty);
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
 function TSQLiteStore.SaveList(const AList: TCustomList): Integer;
 var
   lQuery: TFDQuery;
 begin
+  ValidateMirror(AList);
   lQuery := NewQuery;
   try
-    if AList.Id = 0 then
-      lQuery.SQL.Text := '''
-        INSERT INTO lists(name,output_username,output_password,enabled)
-        VALUES(:name,:u,:p,:enabled)
-        '''
-    else
-    begin
-      lQuery.SQL.Text :=
-        'UPDATE lists SET name=:name,output_username=:u,output_password=:p,enabled=:enabled WHERE id=:id';
-      lQuery.ParamByName('id').AsInteger := AList.Id;
+    FConn.StartTransaction;
+    try
+      if AList.Id = 0 then
+        lQuery.SQL.Text := '''
+          INSERT INTO lists(name,output_username,output_password,enabled,mirror_of_list_id)
+          VALUES(:name,:u,:p,:enabled,:m)
+          '''
+      else
+      begin
+        lQuery.SQL.Text := '''
+          UPDATE lists SET name=:name,output_username=:u,output_password=:p,enabled=:enabled,
+            mirror_of_list_id=:m
+          WHERE id=:id
+          ''';
+        lQuery.ParamByName('id').AsInteger := AList.Id;
+      end;
+      lQuery.ParamByName('name').AsWideString := AList.Name;
+      lQuery.ParamByName('u').AsWideString := AList.OutputUsername;
+      lQuery.ParamByName('p').AsWideString := AList.OutputPassword;
+      lQuery.ParamByName('enabled').AsInteger := Ord(AList.Enabled);
+      lQuery.ParamByName('m').AsInteger := AList.MirrorOfListId;
+      lQuery.ExecSQL;
+      if AList.Id = 0 then
+        Result := FConn.GetLastAutoGenValue('')
+      else
+        Result := AList.Id;
+      // only a mirror has its own provider credentials
+      if AList.MirrorOfListId = cNoMirror then
+        FConn.ExecSQL('DELETE FROM list_source_credentials WHERE list_id=:id', [Result]);
+      FConn.Commit;
+    except
+      SafeRollback;
+      raise;
     end;
-    lQuery.ParamByName('name').AsWideString := AList.Name;
-    lQuery.ParamByName('u').AsWideString := AList.OutputUsername;
-    lQuery.ParamByName('p').AsWideString := AList.OutputPassword;
-    lQuery.ParamByName('enabled').AsInteger := Ord(AList.Enabled);
-    lQuery.ExecSQL;
-    if AList.Id = 0 then
-      Result := FConn.GetLastAutoGenValue('')
-    else
-      Result := AList.Id;
     AList.Id := Result;
   finally
     FreeAndNil(lQuery);
   end;
+end;
+
+function TSQLiteStore.LoadMirrorCredentials(AListId: Integer): TArray<TMirrorCredential>;
+var
+  lQuery: TFDQuery;
+  lCredential: TMirrorCredential;
+begin
+  Result := nil;
+  lQuery := NewQuery;
+  try
+    lQuery.Open(
+      '''
+      SELECT source_id, url, username, password FROM list_source_credentials
+      WHERE list_id=:l ORDER BY source_id
+      ''', [AListId]);
+    while not lQuery.Eof do
+    begin
+      lCredential.SourceId := lQuery.FieldByName('source_id').AsInteger;
+      lCredential.Url := lQuery.FieldByName('url').AsString;
+      lCredential.Username := lQuery.FieldByName('username').AsString;
+      lCredential.Password := lQuery.FieldByName('password').AsString;
+      Result := Result + [lCredential];
+      lQuery.Next;
+    end;
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
+procedure TSQLiteStore.SaveMirrorCredentials(AListId: Integer; const ACredentials: TArray<TMirrorCredential>);
+var
+  lQuery: TFDQuery;
+  lCredential: TMirrorCredential;
+begin
+  if ListMasterId(AListId) = cNoMirror then
+    raise EStoreValidation.Create(cMsgNotAMirror);
+  lQuery := NewQuery;
+  try
+    FConn.StartTransaction;
+    try
+      FConn.ExecSQL('DELETE FROM list_source_credentials WHERE list_id=:l', [AListId]);
+      // a row for a source that doesn't exist (any more) is not stored
+      lQuery.SQL.Text :=
+        '''
+        INSERT OR REPLACE INTO list_source_credentials(list_id, source_id, url, username, password)
+        SELECT :l, :s, :url, :u, :p WHERE EXISTS (SELECT 1 FROM sources WHERE id=:s)
+        ''';
+      for lCredential in ACredentials do
+      begin
+        if (lCredential.SourceId < cMinProviderSourceId) or ((lCredential.Url.Trim = '') and
+          (lCredential.Username.Trim = '') and (lCredential.Password.Trim = '')) then
+          Continue;
+        lQuery.ParamByName('l').AsInteger := AListId;
+        lQuery.ParamByName('s').AsInteger := lCredential.SourceId;
+        lQuery.ParamByName('url').AsWideString := lCredential.Url.Trim;
+        lQuery.ParamByName('u').AsWideString := lCredential.Username.Trim;
+        lQuery.ParamByName('p').AsWideString := lCredential.Password.Trim;
+        lQuery.ExecSQL;
+      end;
+      FConn.Commit;
+    except
+      SafeRollback;
+      raise;
+    end;
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
+function TSQLiteStore.LoadPlaybackAccounts(AListId: Integer): TDictionary<Integer, TPlaybackAccount>;
+var
+  lQuery: TFDQuery;
+  lAccount: TPlaybackAccount;
+begin
+  Result := TDictionary<Integer, TPlaybackAccount>.Create;
+  lQuery := NewQuery;
+  try
+    lQuery.Open(
+      '''
+      SELECT c.source_id, c.url, c.username, c.password,
+        src.url AS surl, src.username AS su, src.password AS sp
+      FROM list_source_credentials c
+      JOIN sources src ON src.id = c.source_id
+      WHERE c.list_id = :l
+      ''', [AListId]);
+    while not lQuery.Eof do
+    begin
+      lAccount.SourceUrl := lQuery.FieldByName('surl').AsString;
+      lAccount.SourceUser := lQuery.FieldByName('su').AsString;
+      lAccount.SourcePass := lQuery.FieldByName('sp').AsString;
+      lAccount.Credential.SourceId := lQuery.FieldByName('source_id').AsInteger;
+      lAccount.Credential.Url := lQuery.FieldByName('url').AsString;
+      lAccount.Credential.Username := lQuery.FieldByName('username').AsString;
+      lAccount.Credential.Password := lQuery.FieldByName('password').AsString;
+      Result.AddOrSetValue(lAccount.Credential.SourceId, lAccount);
+      lQuery.Next;
+    end;
+  finally
+    FreeAndNil(lQuery);
+  end;
+end;
+
+function TSQLiteStore.PlaybackUrl(const AAccounts: TDictionary<Integer, TPlaybackAccount>;
+  ASourceId: Integer; const AUrl: string): string;
+var
+  lAccount: TPlaybackAccount;
+begin
+  if not AAccounts.TryGetValue(ASourceId, lAccount) then
+    Exit(AUrl);
+  Result := RewriteProviderUrl(AUrl, lAccount.SourceUrl, lAccount.SourceUser, lAccount.SourcePass,
+    lAccount.Credential.Url, lAccount.Credential.Username, lAccount.Credential.Password);
 end;
 
 procedure TSQLiteStore.RunInTransaction(const AProc: TProc<IStore>);
@@ -2951,11 +3254,17 @@ begin
 end;
 
 procedure TSQLiteStore.DeleteList(AId: Integer);
+var
+  lMirrors: TArray<string>;
 begin
+  lMirrors := MirrorNamesOf(AId);
+  if Length(lMirrors) > 0 then
+    raise EStoreValidation.CreateFmt(cMsgMasterHasMirrors, [string.Join(cMirrorNameSep, lMirrors)]);
   FConn.StartTransaction;
   try
     FConn.ExecSQL('DELETE FROM list_items WHERE list_id=:id', [AId]);
     FConn.ExecSQL('DELETE FROM list_groups WHERE list_id=:id', [AId]);
+    FConn.ExecSQL('DELETE FROM list_source_credentials WHERE list_id=:id', [AId]);
     FConn.ExecSQL('DELETE FROM lists WHERE id=:id', [AId]);
     FConn.Commit;
   except
@@ -3169,6 +3478,26 @@ begin
 end;
 
 function TSQLiteStore.LoadOutputChannels(AListId: Integer): TOutputChannelList;
+var
+  lMasterId: Integer;
+  lAccounts: TDictionary<Integer, TPlaybackAccount>;
+  lChannel: TOutputChannel;
+begin
+  lMasterId := ListMasterId(AListId);
+  if lMasterId = cNoMirror then
+    Exit(LoadListChannels(AListId));
+  // a mirror: exactly the master's channels, played with the mirror's own account
+  Result := LoadListChannels(lMasterId);
+  lAccounts := LoadPlaybackAccounts(AListId);
+  try
+    for lChannel in Result do
+      lChannel.UpstreamUrl := PlaybackUrl(lAccounts, lChannel.SourceId, lChannel.UpstreamUrl);
+  finally
+    FreeAndNil(lAccounts);
+  end;
+end;
+
+function TSQLiteStore.LoadListChannels(AListId: Integer): TOutputChannelList;
 var
   lQuery: TFDQuery;
   lChannel: TOutputChannel;

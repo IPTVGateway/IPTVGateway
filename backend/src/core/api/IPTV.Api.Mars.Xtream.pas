@@ -981,7 +981,7 @@ begin
            lStream.Id, System.StrUtils.IfThen(lExt = '', cExtTs, lExt)]);
       end
       else
-        lTarget := TimeshiftUpstreamUrl(App.Store, lStream, lDuration, lStartUtc, lExt);
+        lTarget := TimeshiftUpstreamUrl(App.Store, lList.Id, lStream, lDuration, lStartUtc, lExt);
       if lTarget = '' then
       begin
         // the stream's source isn't an Xtream portal: no timeshift there

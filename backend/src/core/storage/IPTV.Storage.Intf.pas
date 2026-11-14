@@ -25,6 +25,10 @@ const
   cStateLineupChanged = 'lineup_changed_utc';
 
 type
+  /// A write the store refuses because it would break a data rule (mirror bouquet
+  /// validation): the message is meant for the operator, the API answers it as 400.
+  EStoreValidation = class(Exception);
+
   /// A name-prefix discovered in a source's ingested streams, with how many
   /// streams carry it. Powers the "pick a filter prefix" UI when editing a source.
   TPrefixCount = record
@@ -159,6 +163,8 @@ type
     /// Also resolves a series EPISODE id (>= cEpisodeIdBase, see EnsureEpisodeIds)
     /// when its series is on the list: the result then carries the episode's URL.
     /// Streams of a disabled source / content type are never returned.
+    /// For a mirror bouquet the lookup is scoped to the MASTER's items and the URL
+    /// is rewritten to the mirror's own provider credentials.
     function LoadListStreamById(AListId, AStreamItemId: Integer): TStreamItem;
     /// Stable box-facing ids for the upstream episodes of a series stream (Xtream
     /// get_series_info): one row per (series, upstream episode id); AExts[i] is the
@@ -173,6 +179,9 @@ type
     /// matched by tvg-id when the stream has one, else by exact (case-insensitive)
     /// name; same content type; excludes the stream itself and empty URLs.
     function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
+    /// LoadStreamSiblings as played through list AListId: for a mirror bouquet each
+    /// URL is rewritten to the mirror's own provider credentials of its source.
+    function LoadStreamSiblingsForList(AListId, AStreamItemId: Integer): TArray<string>;
     /// Distinct leading name-prefixes (e.g. "NL|", "UK:") found across a source's
     /// ingested streams, each with its stream count, most common first. Drives the
     /// "select a filter prefix" UI. Empty when the source has nothing ingested yet.
@@ -224,10 +233,22 @@ type
     // ── Custom lists (output) ────────────────────────────────────────
     /// All output lists (caller owns the list).
     function LoadLists: TObjectList<TCustomList>;
-    /// Insert or update a list; returns its id.
+    /// Insert or update a list; returns its id. Raises EStoreValidation when
+    /// MirrorOfListId is invalid: not 0 and not an existing list, the list itself,
+    /// a list that is a mirror itself, a list that is mirrored itself, or the list
+    /// still has groups/items. A list that stops being a mirror loses its
+    /// mirror credentials.
     function SaveList(const AList: TCustomList): Integer;
-    /// Delete a list and everything under it (its groups + items).
+    /// Delete a list and everything under it (its groups + items + mirror
+    /// credentials). Raises EStoreValidation while mirrors point at it.
     procedure DeleteList(AId: Integer);
+    /// The stored provider credentials of a mirror bouquet, one per source
+    /// (ordered by source id); empty for a normal list.
+    function LoadMirrorCredentials(AListId: Integer): TArray<TMirrorCredential>;
+    /// Replace all provider credentials of a mirror bouquet; rows whose url,
+    /// username and password are all empty are not stored. Raises EStoreValidation
+    /// when the list is not a mirror.
+    procedure SaveMirrorCredentials(AListId: Integer; const ACredentials: TArray<TMirrorCredential>);
     /// <summary>Runs AProc inside ONE database transaction: everything it writes
     /// commits together, or nothing does when it raises (the exception is re-raised).
     /// AProc gets the store to use for it - call that one, not the outer store.</summary>
@@ -251,6 +272,8 @@ type
     function LoadItems(AListId: Integer): TCustomItemList;
     /// Resolved output rows (item⋈stream⋈group, overrides applied) in canonical
     /// order: favorite groups first, groups A→Z, channels A→Z (case-insensitive).
+    /// For a mirror bouquet: the master's rows, each UpstreamUrl rewritten to the
+    /// mirror's own provider credentials (RewriteProviderUrl).
     function LoadOutputChannels(AListId: Integer): TOutputChannelList;
     /// Insert or update a list item; returns its id.
     function SaveItem(const AItem: TCustomItem): Integer;

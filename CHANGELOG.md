@@ -16,6 +16,16 @@ All notable changes to IPTV Gateway. Released versions are also on the
   swap to the channels that have one quality now, for example only the RAW channels by
   HD. Works for both "by quality" and "by provider". Channels of other qualities are left
   as they are; the review step says how many.
+- **Mirror bouquets** (Settings → Bouquets → "Mirror of"). A mirror always shows the
+  live content of another bouquet: same groups, channels, order, names, numbers, logos
+  and EPG. It is read-only, but has its own name, box login and on/off switch. For each
+  source it can use another account at the same provider: server URL, username and
+  password, where empty means the source's own value. Only playback uses that account
+  (live, movies, episodes and catch-up, in redirect and relay mode, failover included).
+  The catalog, EPG and VOD/series info keep the source's account. So two boxes can
+  watch the same bouquet without sharing one provider connection. One level only: a
+  mirror can't mirror another mirror. A bouquet with mirrors can't be deleted until the
+  mirrors are gone. Settings export and import carry mirrors and their credentials.
 
 ### Changed
 - **"↻ Refresh Plex"** (toolbar) only lights up when the lineup Plex sees changed: the

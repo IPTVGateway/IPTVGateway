@@ -25,7 +25,8 @@ unit IPTV.Storage.Locking;
   the stream on that list (FindListByCredentials + LoadListStreamById). Both are
   answered from memory after the first hit, so a zap never waits on the database
   - notably not on the nightly refresh holding the (single, FUSE) connection.
-  Cleared AFTER every write that can change lists, items, streams or sources
+  Cleared AFTER every write that can change lists, items, streams, sources or a
+  mirror bouquet's credentials
   (not for EPG / seen / state writes); entries loaded while a write was running
   are not stored (generation check), so a stale answer can't stick. }
 
@@ -87,6 +88,7 @@ type
     function FindEpisodeIds(ASeriesStreamId: Integer; const AUpstreamIds,
       AExts: TArray<string>): TArray<Integer>;
     function LoadStreamSiblings(AStreamItemId: Integer): TArray<string>;
+    function LoadStreamSiblingsForList(AListId, AStreamItemId: Integer): TArray<string>;
     function DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
     function LoadKnownTvgIds: TArray<TTvgIdInfo>;
     function FindQualityVariants(AListId, ASourceGroupId: Integer;
@@ -106,6 +108,8 @@ type
     function LoadLists: TObjectList<TCustomList>;
     function SaveList(const AList: TCustomList): Integer;
     procedure DeleteList(AId: Integer);
+    function LoadMirrorCredentials(AListId: Integer): TArray<TMirrorCredential>;
+    procedure SaveMirrorCredentials(AListId: Integer; const ACredentials: TArray<TMirrorCredential>);
     procedure RunInTransaction(const AProc: TProc<IStore>);
     function FindListByCredentials(const AUser, APass: string): TCustomList;
     function LoadGroups(AListId: Integer): TCustomGroupList;
@@ -216,6 +220,7 @@ begin
   Result.OutputUsername := AList.OutputUsername;
   Result.OutputPassword := AList.OutputPassword;
   Result.Enabled := AList.Enabled;
+  Result.MirrorOfListId := AList.MirrorOfListId;
 end;
 
 function CloneStream(const AStream: TStreamItem): TStreamItem;
@@ -381,6 +386,17 @@ begin
   try
     FWrite.DeleteList(AId);
   finally // also after a failed write
+    FWriteLock.Release;
+    InvalidateZap;
+  end;
+end;
+
+procedure TLockingStore.SaveMirrorCredentials(AListId: Integer; const ACredentials: TArray<TMirrorCredential>);
+begin
+  FWriteLock.Acquire;
+  try
+    FWrite.SaveMirrorCredentials(AListId, ACredentials);
+  finally // also after a failed write: a mirror's zap answers carry its account
     FWriteLock.Release;
     InvalidateZap;
   end;
@@ -713,6 +729,16 @@ begin
   end;
 end;
 
+function TLockingStore.LoadStreamSiblingsForList(AListId, AStreamItemId: Integer): TArray<string>;
+begin
+  FReadLock.Acquire;
+  try
+    Result := FRead.LoadStreamSiblingsForList(AListId, AStreamItemId);
+  finally
+    FReadLock.Release;
+  end;
+end;
+
 function TLockingStore.DiscoverPrefixes(ASourceId: Integer): TArray<TPrefixCount>;
 begin
   FReadLock.Acquire;
@@ -801,6 +827,16 @@ begin
   FReadLock.Acquire;
   try
     Result := FRead.LoadLists;
+  finally
+    FReadLock.Release;
+  end;
+end;
+
+function TLockingStore.LoadMirrorCredentials(AListId: Integer): TArray<TMirrorCredential>;
+begin
+  FReadLock.Acquire;
+  try
+    Result := FRead.LoadMirrorCredentials(AListId);
   finally
     FReadLock.Release;
   end;

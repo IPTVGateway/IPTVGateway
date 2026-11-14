@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CatalogPanel } from './CatalogPanel'
-import type { Category, Source, StreamItem } from '../types'
+import type { Category, CustomList, Source, StreamItem } from '../types'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -98,5 +98,34 @@ describe('CatalogPanel — paging + prefix', () => {
     )
     // a prefix alone keeps the groups view (no flat stream search)
     expect(api.streams).not.toHaveBeenCalled()
+  })
+})
+
+describe('CatalogPanel — mirror bouquets', () => {
+  const LISTS: CustomList[] = [
+    { id: 1, name: 'Main', outputUsername: '', outputPassword: '', enabled: true },
+    { id: 2, name: 'Kids', outputUsername: 'k', outputPassword: 'k', enabled: true, mirrorOfListId: 1 },
+  ]
+
+  async function showStreams(activeListId: number) {
+    vi.mocked(api.streams).mockResolvedValue([
+      { id: 31, sourceId: 2, contentType: 'live', name: 'NPO 1', isNew: false },
+    ])
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 1 })
+    render(<CatalogPanel sources={SOURCES} lists={LISTS} groups={[]} activeListId={activeListId} />)
+    await userEvent.type(screen.getByPlaceholderText('Search (contains)…'), 'npo')
+    await screen.findByText('NPO 1')
+    return screen.getByText('Add to').querySelector('select') as HTMLSelectElement
+  }
+
+  it('never offers a mirror as add target', async () => {
+    const target = await showStreams(1)
+    expect([...target.options].map((o) => o.value)).toEqual(['', '1'])
+    expect(target).toHaveValue('1')
+  })
+
+  it('an active mirror is not preselected as target', async () => {
+    const target = await showStreams(2)
+    expect(target).toHaveValue('')
   })
 })

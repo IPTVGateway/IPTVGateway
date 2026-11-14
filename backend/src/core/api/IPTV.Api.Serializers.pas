@@ -61,6 +61,13 @@ procedure ListFromJson(const AJson: TJSONObject; const AList: TCustomList);
 /// <summary>Custom lists as a JSON array.</summary>
 function ListsToJson(const AList: TObjectList<TCustomList>): TJSONArray;
 
+/// <summary>A mirror bouquet's provider credentials as
+/// [ { sourceId, url, username, password } ].</summary>
+function MirrorCredentialsToJson(const ACredentials: TArray<TMirrorCredential>): TJSONArray;
+/// <summary>Mirror credentials from such a JSON array (non-objects skipped; missing
+/// fields '' / 0).</summary>
+function MirrorCredentialsFromJson(const AArray: TJSONArray): TArray<TMirrorCredential>;
+
 /// <summary>Custom group as JSON.</summary>
 function GroupToJson(const AGroup: TCustomGroup): TJSONObject;
 /// <summary>Applies JSON fields onto an existing custom group.</summary>
@@ -282,6 +289,7 @@ begin
   Result.AddPair('outputUsername', AList.OutputUsername);
   Result.AddPair('outputPassword', AList.OutputPassword);
   Result.AddPair('enabled', TJSONBool.Create(AList.Enabled));
+  Result.AddPair('mirrorOfListId', TJSONNumber.Create(AList.MirrorOfListId));
 end;
 
 procedure ListFromJson(const AJson: TJSONObject; const AList: TCustomList);
@@ -291,6 +299,7 @@ begin
   AList.OutputUsername := AJson.GetValue<string>('outputUsername', AList.OutputUsername);
   AList.OutputPassword := AJson.GetValue<string>('outputPassword', AList.OutputPassword);
   AList.Enabled := AJson.GetValue<Boolean>('enabled', AList.Enabled);
+  AList.MirrorOfListId := AJson.GetValue<Integer>('mirrorOfListId', AList.MirrorOfListId);
 end;
 
 function ListsToJson(const AList: TObjectList<TCustomList>): TJSONArray;
@@ -300,6 +309,42 @@ begin
   Result := TJSONArray.Create;
   for lList in AList do
     Result.Add(ListToJson(lList));
+end;
+
+function MirrorCredentialsToJson(const ACredentials: TArray<TMirrorCredential>): TJSONArray;
+var
+  lCredential: TMirrorCredential;
+  lEntry: TJSONObject;
+begin
+  Result := TJSONArray.Create;
+  for lCredential in ACredentials do
+  begin
+    lEntry := TJSONObject.Create;
+    lEntry.AddPair('sourceId', TJSONNumber.Create(lCredential.SourceId));
+    lEntry.AddPair('url', lCredential.Url);
+    lEntry.AddPair('username', lCredential.Username);
+    lEntry.AddPair('password', lCredential.Password);
+    Result.AddElement(lEntry);
+  end;
+end;
+
+function MirrorCredentialsFromJson(const AArray: TJSONArray): TArray<TMirrorCredential>;
+var
+  lValue: TJSONValue;
+  lCredential: TMirrorCredential;
+begin
+  Result := nil;
+  if AArray = nil then
+    Exit;
+  for lValue in AArray do
+    if lValue is TJSONObject then
+    begin
+      lCredential.SourceId := TJSONObject(lValue).GetValue<Integer>('sourceId', 0);
+      lCredential.Url := TJSONObject(lValue).GetValue<string>('url', '');
+      lCredential.Username := TJSONObject(lValue).GetValue<string>('username', '');
+      lCredential.Password := TJSONObject(lValue).GetValue<string>('password', '');
+      Result := Result + [lCredential];
+    end;
 end;
 
 function GroupToJson(const AGroup: TCustomGroup): TJSONObject;

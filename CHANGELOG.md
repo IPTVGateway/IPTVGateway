@@ -5,6 +5,13 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+## [1.2.41] - 2026-11-14
+
+Security and robustness release from two rounds of bug and security hunting. Without an
+admin password the admin part now only answers your local network; secrets are no
+longer sent to the browser; the stream relay, the login lockout and request handling
+are hardened; and many smaller bugs are fixed.
+
 ### Security
 - **Without an admin password, the admin part (web app and API) only answers your local
   network.** Clients are checked by address (through `trustedProxies` behind a reverse

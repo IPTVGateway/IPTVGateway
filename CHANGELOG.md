@@ -12,6 +12,10 @@ All notable changes to IPTV Gateway. Released versions are also on the
   A tuner or DVR Plex already has is re-used, so it can be run again after bouquet
   changes. Needs the HDHomeRun tuner enabled, plus the Plex server URL and token.
   Plex doesn't document this API, so the calls follow what other tuner projects use.
+- **Replace channels (⎘±): "Only replace channels with quality"**. Optionally limit the
+  swap to the channels that have one quality now, for example only the RAW channels by
+  HD. Works for both "by quality" and "by provider". Channels of other qualities are left
+  as they are; the review step says how many.
 
 ### Changed
 - **"↻ Refresh Plex"** (toolbar) only lights up when the lineup Plex sees changed: the

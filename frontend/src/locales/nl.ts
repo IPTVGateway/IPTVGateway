@@ -553,6 +553,11 @@ export const nl: Record<string, string> = {
     'Bron “{name}” verwijderen? Al haar zenders worden uit elk bouquet verwijderd.',
   'Delete group': 'Groep verwijderen',
   'Download': 'Downloaden',
+  'Only replace channels with quality': 'Alleen kanalen vervangen met kwaliteit',
+  '(all qualities)': '(alle kwaliteiten)',
+  'No channel in this group has quality {q}.': 'Geen kanaal in deze groep heeft kwaliteit {q}.',
+  'Only channels with quality {q}: {n} other channels are left as they are.':
+    'Alleen kanalen met kwaliteit {q}: {n} andere kanalen blijven zoals ze zijn.',
   'Bouquet changed — set the Plex server/token (Media Servers), or scan manually in Plex':
     'Bouquet gewijzigd — stel de Plex-server/token in (Mediaservers), of scan handmatig in Plex',
   'The Plex bouquet changed — update the channels and guide in Plex':

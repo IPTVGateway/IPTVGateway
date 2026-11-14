@@ -459,6 +459,11 @@ export function ListPanel({
   const [variantMode, setVariantMode] = useState<VariantMode>('quality')
   const [variantTarget, setVariantTarget] = useState<VariantTarget>('replace')
   const [variantQuality, setVariantQuality] = useState<string>('UHD')
+  // only replace the channels that currently have this quality ('' = every channel),
+  // e.g. only the RAW ones by HD
+  const [variantFromQuality, setVariantFromQuality] = useState<string>('')
+  // channels left out by that filter (shown in the review step)
+  const [variantSkipped, setVariantSkipped] = useState(0)
   const [variantSourceId, setVariantSourceId] = useState<number>(0)
   const [variantName, setVariantName] = useState('')
   const [variantNameTouched, setVariantNameTouched] = useState(false)
@@ -492,6 +497,8 @@ export function ListPanel({
     setVariantMode('quality')
     setVariantTarget('replace')
     setVariantQuality('UHD')
+    setVariantFromQuality('')
+    setVariantSkipped(0)
     setVariantSourceId(firstSource)
     setVariantName(`${g.name} UHD`)
     setVariantNameTouched(false)
@@ -541,9 +548,14 @@ export function ListPanel({
         variantMode === 'quality'
           ? await api.groupVariants(activeListId, variantGroup.id, variantQuality)
           : await api.groupProviderVariants(activeListId, variantGroup.id, variantSourceId)
-      setVariantRows(rows)
+      // only the channels of the chosen current quality, when one is set
+      const wanted = variantFromQuality
+        ? rows.filter((r) => (r.quality ?? '').toUpperCase() === variantFromQuality.toUpperCase())
+        : rows
+      setVariantSkipped(rows.length - wanted.length)
+      setVariantRows(wanted)
       // default-accept every channel that has a usable variant (matched, not already here)
-      setVariantAccepted(new Set(rows.filter((r) => r.matched && !r.alreadyInList).map((r) => r.itemId)))
+      setVariantAccepted(new Set(wanted.filter((r) => r.matched && !r.alreadyInList).map((r) => r.itemId)))
     } catch (err) {
       setLocalError((err as Error).message)
     } finally {
@@ -1184,6 +1196,17 @@ export function ListPanel({
                   )}
                 </label>
               )}
+              <label>
+                {t('Only replace channels with quality')}
+                <select value={variantFromQuality} onChange={(e) => setVariantFromQuality(e.target.value)}>
+                  <option value="">{t('(all qualities)')}</option>
+                  {QUALITIES.map((q) => (
+                    <option key={q} value={q}>
+                      {q}
+                    </option>
+                  ))}
+                </select>
+              </label>
               {variantTarget === 'copy' && (
                 <label>
                   {t('New group name')}
@@ -1198,9 +1221,20 @@ export function ListPanel({
               )}
             </div>
           ) : variantRows.length === 0 ? (
-            <p className="muted">{t('This group has no channels.')}</p>
+            <p className="muted">
+              {variantSkipped > 0
+                ? t('No channel in this group has quality {q}.').replace('{q}', variantFromQuality)
+                : t('This group has no channels.')}
+            </p>
           ) : (
             <>
+              {variantSkipped > 0 && (
+                <p className="hint">
+                  {t('Only channels with quality {q}: {n} other channels are left as they are.')
+                    .replace('{q}', variantFromQuality)
+                    .replace('{n}', String(variantSkipped))}
+                </p>
+              )}
               <p className="hint">
                 {(variantTarget === 'replace'
                   ? t('Review the {q} variant for each channel. Ticked channels are replaced in this group; unmatched ones stay as they are.')

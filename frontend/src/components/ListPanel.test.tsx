@@ -308,6 +308,29 @@ describe('ListPanel', () => {
     expect(await screen.findByText(/Replaced 1 channels in “Sport”/)).toBeInTheDocument()
   })
 
+  it('replaces only the channels of the chosen current quality (RAW -> HD)', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle(/duplicate this group/))
+    await userEvent.selectOptions(screen.getByLabelText('Target quality'), 'HD')
+    await userEvent.selectOptions(screen.getByLabelText('Only replace channels with quality'), 'RAW')
+
+    ;(api.groupVariants as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      { itemId: 100, streamId: 5, name: 'NPO 1 RAW', quality: 'RAW', candidateStreamId: 55, candidateName: 'NPO 1 HD', matched: true, alreadyInList: false },
+      { itemId: 101, streamId: 6, name: 'RTL 4 UHD', quality: 'UHD', candidateStreamId: 66, candidateName: 'RTL 4 HD', matched: true, alreadyInList: false },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Find variants' }))
+    expect(await screen.findByText('NPO 1 HD')).toBeInTheDocument()
+    // the UHD channel is not offered (and so never replaced)
+    expect(screen.queryByText('RTL 4 HD')).not.toBeInTheDocument()
+    expect(screen.getByText(/1 other channels are left as they are/)).toBeInTheDocument()
+
+    ;(api.replaceItems as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ replaced: 1 })
+    await userEvent.click(screen.getByRole('button', { name: 'Replace 1 channels' }))
+    await waitFor(() =>
+      expect(api.replaceItems).toHaveBeenCalledWith(1, [{ itemId: 100, streamId: 55 }]),
+    )
+  })
+
   it('cleans the names of an existing group: preview with extra tokens, then apply', async () => {
     const restrip = api.restripGroup as ReturnType<typeof vi.fn>
     restrip.mockResolvedValueOnce([]) // initial preview (source rules only): nothing

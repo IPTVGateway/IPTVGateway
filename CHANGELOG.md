@@ -5,6 +5,8 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+## [1.2.38] - 2026-11-14
+
 Third bug hunt (five separate runs). The big code-style pass of 1.2.36 was checked
 rename by rename: no regressions.
 

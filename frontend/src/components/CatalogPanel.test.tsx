@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CatalogPanel } from './CatalogPanel'
-import type { Category, CustomList, Source, StreamItem } from '../types'
+import type { Category, CustomGroup, CustomList, Source, StreamItem } from '../types'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -160,3 +160,127 @@ describe('CatalogPanel — new channels in groups', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 })
+
+describe('CatalogPanel — add target group', () => {
+  const LISTS: CustomList[] = [{ id: 1, name: 'Main', outputUsername: '', outputPassword: '', enabled: true }]
+  const G: CustomGroup[] = [
+    { id: 10, listId: 1, name: 'Sport', contentType: 'live', isFavorite: false },
+    { id: 11, listId: 1, name: 'News', contentType: 'live', isFavorite: false },
+  ]
+
+  it('falls back to the upstream group when the picked group is deleted', async () => {
+    vi.mocked(api.streams).mockResolvedValue([{ id: 31, sourceId: 2, contentType: 'live', name: 'NPO 1', isNew: false }])
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 1 })
+    const { rerender } = render(<CatalogPanel sources={SOURCES} lists={LISTS} groups={G} activeListId={1} />)
+    await userEvent.type(screen.getByPlaceholderText('Search (contains)…'), 'npo')
+    const row = (await screen.findByText('NPO 1')).closest('tr') as HTMLElement
+    const groupSel = document.querySelector('select.target-group') as HTMLSelectElement
+    await userEvent.selectOptions(groupSel, '10')
+    expect(groupSel).toHaveValue('10')
+    // group 10 is deleted in the bouquet panel
+    rerender(<CatalogPanel sources={SOURCES} lists={LISTS} groups={[G[1]]} activeListId={1} />)
+    await waitFor(() => expect(document.querySelector('select.target-group')).toHaveValue('0'))
+    await userEvent.click(within(row).getByRole('checkbox'))
+    await userEvent.click(screen.getByRole('button', { name: /Add 1/ }))
+    expect(api.addItems).toHaveBeenCalledWith(1, [31], 0)
+  })
+})
+
+describe('CatalogPanel — failed page load', () => {
+  it('clears the previous rows and the selection when a page fails to load', async () => {
+    vi.mocked(api.streams).mockResolvedValue([{ id: 41, sourceId: 2, contentType: 'live', name: 'Old Row', isNew: false }])
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 250 })
+    renderPanel()
+    await userEvent.type(screen.getByPlaceholderText('Search (contains)…'), 'old')
+    const row = (await screen.findByText('Old Row')).closest('tr') as HTMLElement
+    await userEvent.click(within(row).getByRole('checkbox'))
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+    vi.mocked(api.streams).mockRejectedValue(new Error('500 boom'))
+    await userEvent.click(screen.getByRole('button', { name: 'Next ›' }))
+    expect(await screen.findByText('500 boom')).toBeInTheDocument()
+    expect(screen.queryByText('Old Row')).toBeNull()
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    vi.mocked(api.streams).mockResolvedValue([])
+  })
+
+  it('stays on the page that failed (no jump back to page 1) and keeps the error', async () => {
+    vi.mocked(api.streams).mockResolvedValue([{ id: 42, sourceId: 2, contentType: 'live', name: 'Row', isNew: false }])
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 250 })
+    renderPanel()
+    await userEvent.type(screen.getByPlaceholderText('Search (contains)…'), 'row')
+    await screen.findByText('Page 1 / 3')
+    vi.mocked(api.countStreams).mockRejectedValue(new Error('500 count'))
+    await userEvent.click(screen.getByRole('button', { name: 'Next ›' }))
+    expect(await screen.findByText('500 count')).toBeInTheDocument()
+    expect(screen.getByText('Page 2 / 3')).toBeInTheDocument()
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 0 })
+  })
+})
+
+describe('CatalogPanel — mark all as seen counts', () => {
+  it('re-fetches the counts when the sources change', async () => {
+    const { rerender } = render(<CatalogPanel sources={SOURCES} lists={[]} groups={[]} activeListId={null} />)
+    await waitFor(() => expect(api.newCounts).toHaveBeenCalledTimes(1))
+    rerender(<CatalogPanel sources={[{ ...SOURCES[0] }]} lists={[]} groups={[]} activeListId={null} />)
+    await waitFor(() => expect(api.newCounts).toHaveBeenCalledTimes(2))
+  })
+
+  it("never shows the previous source's counts while the new ones load", async () => {
+    vi.mocked(api.newCounts).mockResolvedValue({ categories: 1, streams: 4 })
+    renderPanel()
+    await screen.findByRole('button', { name: 'Mark all as seen (5)' })
+    vi.mocked(api.newCounts).mockReturnValue(new Promise(() => {})) // the next source's counts hang
+    await userEvent.selectOptions(screen.getByDisplayValue('All sources'), '2')
+    await waitFor(() => expect(api.newCounts).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('button', { name: /Mark all as seen/ })).toBeNull()
+  })
+})
+
+describe('CatalogPanel — search debounce', () => {
+  it('a term typed right after clearing never brings back the old one', async () => {
+    vi.mocked(api.streams).mockResolvedValue([])
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 0 })
+    renderPanel()
+    const box = screen.getByPlaceholderText('Search (contains)…')
+    await userEvent.type(box, 'abc')
+    await screen.findByText('Search: “abc”')
+    await userEvent.clear(box)
+    const callsAfterClear = vi.mocked(api.streams).mock.calls.length
+    await userEvent.type(box, 'x')
+    expect(screen.queryByText('Search: “abc”')).toBeNull()
+    await screen.findByText('Search: “x”')
+    for (const c of vi.mocked(api.streams).mock.calls.slice(callsAfterClear))
+      expect((c[0] as { search?: string }).search).not.toBe('abc')
+  })
+})
+
+describe('CatalogPanel — back to groups', () => {
+  it('in a flat search, Back clears the search and the prefix and shows the groups', async () => {
+    vi.mocked(api.streams).mockResolvedValue([{ id: 51, sourceId: 2, contentType: 'live', name: 'Hit', isNew: false }])
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 1 })
+    renderPanel()
+    await userEvent.type(screen.getByPlaceholderText('Prefix (e.g. NL:)'), 'NL|')
+    await userEvent.type(screen.getByPlaceholderText('Search (contains)…'), 'hit')
+    await screen.findByText('Hit')
+    await userEvent.click(screen.getByRole('button', { name: '← Back to groups' }))
+    expect(await screen.findByText('KEEP')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Search (contains)…')).toHaveValue('')
+    expect(screen.getByPlaceholderText('Prefix (e.g. NL:)')).toHaveValue('')
+    expect(screen.queryByRole('button', { name: '← Back to groups' })).toBeNull()
+  })
+
+  it('drilled with a search term, Back returns to the group list (not the flat search)', async () => {
+    vi.mocked(api.streams).mockResolvedValue([{ id: 52, sourceId: 2, contentType: 'live', name: 'In group', isNew: false }])
+    vi.mocked(api.countStreams).mockResolvedValue({ count: 1 })
+    renderPanel()
+    await userEvent.selectOptions(screen.getByDisplayValue('All sources'), '2')
+    await userEvent.click(await screen.findByText('KEEP'))
+    await screen.findByText('In group')
+    await userEvent.type(screen.getByPlaceholderText('Search (contains)…'), 'in')
+    await userEvent.click(screen.getByRole('button', { name: '← Back to groups' }))
+    expect(await screen.findByText('KEEP')).toBeInTheDocument()
+    expect(screen.queryByText(/Search: /)).toBeNull()
+    expect(screen.getByPlaceholderText('Search (contains)…')).toHaveValue('')
+  })
+})
+

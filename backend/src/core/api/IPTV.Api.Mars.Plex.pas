@@ -106,7 +106,9 @@ uses
   IPTV.Output.Builder,
   IPTV.Core.Utils,
   IPTV.Model.Types,
-  IPTV.Api.Serializers;
+  IPTV.Api.Serializers,
+  IPTV.Api.Security,
+  IPTV.Api.Server;
 
 const
   // the emulated HDHomeRun device (discover.json / lineup_status.json)
@@ -119,16 +121,24 @@ const
   cHdhrFallbackDeviceId = '12345678'; // only when no device id is configured yet
   cHdhrSource = 'Cable';
   cHdhrLineupPath = '/lineup.json';
+  cHeaderHost = 'Host';
 
   // BuildM3U ASequentialChno: Plex's M3U tuner needs unique numbers 1,2,3...
   cSequentialChno = True;
 
 { shared helpers }
 
-// the Plex/HDHomeRun endpoints have no login: optionally limited to known clients
+// the Plex/HDHomeRun endpoints have no login (and lineup.json / playlist.m3u carry the
+// bouquet's box login): limited to mediaAllowedClients, or to LAN addresses when empty.
+// The client is resolved through trustedProxies + X-Forwarded-For; the Host must pass
+// the DNS-rebinding rule (also checked in TApiServer's BeforeHandleRequest).
 function ClientAllowed(const ARequest: IMARSRequest): Boolean;
 begin
-  Result := (App = nil) or App.IsMediaClientAllowed(ARequest.RemoteIP);
+  if App = nil then
+    Exit(True); // every endpoint answers 404 without App
+  Result := IsAllowedAdminHost(ARequest.GetHeaderParamValue(cHeaderHost), App.Config.PublicBaseUrl,
+      App.Config.AllowedHosts) and
+    App.IsMediaClientAllowed(ARequest.RemoteIP, RequestForwardedFor(ARequest));
 end;
 
 // the single default output list Plex serves (nil if none/ no app)

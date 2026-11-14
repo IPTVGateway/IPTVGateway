@@ -23,12 +23,14 @@ import type {
   NewCounts,
 } from '../types'
 import { DEFAULT_PROBE_SECONDS } from '../lib/constants'
+import { ApiError } from '../lib/errors'
 import { safeGetItem, safeRemoveItem, safeSetItem } from '../lib/storage'
 
 // ── admin password (optional) ───────────────────────────────────────────────
 // When the backend has an admin password set, every /api/* call must carry it.
-// We keep it in localStorage and send it as a header (and, for plain <a download>
-// links that can't set headers, as a ?pw= query param).
+// We keep it in localStorage and send it as a header. Plain download links can't
+// set headers: they carry a short-lived, path-bound download token (?dt=) instead,
+// never the password itself (it would end up in history, logs and Referer headers).
 // every admin endpoint lives under this path (Vite proxies it to the backend in dev)
 const API_BASE = '/api'
 const PW_KEY = 'iptv.admin.pw'
@@ -115,7 +117,8 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
     throw new TooManyRequestsError(parseRetryAfter(res.headers?.get(RETRY_AFTER_HEADER)))
   if (!res.ok) {
     const detail = text.trim().replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_ERROR_DETAIL)
-    throw new Error(`${res.status} ${detail || res.statusText}`)
+    // the status stays readable for the guards' texts (403 access block, 411/413, 400)
+    throw new ApiError(res.status, detail || res.statusText)
   }
   if (!text) return undefined as T
   try {
@@ -125,10 +128,38 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
-// download links can't send headers — pass the password as a query param instead
-function pwQuery(): string {
-  const pw = adminAuth.get()
-  return pw ? `?pw=${encodeURIComponent(pw)}` : ''
+// query param a GET download authenticates with (POST /api/download-token)
+const DOWNLOAD_TOKEN_PARAM = 'dt'
+
+/** A short-lived download token (valid ~60 s) bound to the exact path it will GET
+ *  (e.g. `/api/lists/12/export.m3u`), fetched via the normal header auth. */
+function downloadToken(fullPath: string): Promise<{ token: string }> {
+  return http<{ token: string }>('/download-token', {
+    method: 'POST',
+    body: JSON.stringify({ path: fullPath }),
+  })
+}
+
+/** An admin URL a plain link/new tab can open: a fresh path-bound token is fetched
+ *  first and appended as ?dt=. `path` is relative to /api (may carry a query). */
+async function tokenUrl(path: string): Promise<string> {
+  const fullPath = `${API_BASE}${path}`
+  // the token is bound to the path without its query string
+  const { token } = await downloadToken(fullPath.split('?')[0])
+  const sep = path.includes('?') ? '&' : '?'
+  return `${fullPath}${sep}${DOWNLOAD_TOKEN_PARAM}=${encodeURIComponent(token ?? '')}`
+}
+
+/** Starts a browser download of an admin GET endpoint (token-authenticated). */
+async function downloadFile(path: string): Promise<void> {
+  const url = await tokenUrl(path)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = ''
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
 }
 
 /** A portable settings export (config + sources + lists with their groups). */
@@ -354,8 +385,12 @@ export const api = {
       body: JSON.stringify({ customGroupId, itemIds }),
     }),
 
-  // download URLs for the curated list (use as <a href download>): the list as
-  // M3U_plus (raw upstream URLs) and the curated EPG as XMLTV.
-  exportM3uUrl: (listId: number) => `${API_BASE}/lists/${listId}/export.m3u${pwQuery()}`,
-  exportXmltvUrl: (listId: number) => `${API_BASE}/lists/${listId}/export.xmltv${pwQuery()}`,
+  // a download token (valid ~60 s) for ONE path (e.g. '/api/lists/1/export.m3u'): GET path?dt=<token>
+  downloadToken,
+  /** An admin GET URL with a fresh download token, for a link or a new tab. */
+  tokenUrl,
+  // downloads of the curated list: the list as M3U_plus (raw upstream URLs) and
+  // the curated EPG as XMLTV. Each fetches a fresh download token first.
+  downloadExportM3u: (listId: number) => downloadFile(`/lists/${listId}/export.m3u`),
+  downloadExportXmltv: (listId: number) => downloadFile(`/lists/${listId}/export.xmltv`),
 }

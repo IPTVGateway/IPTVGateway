@@ -36,6 +36,8 @@ const
 function SourceKindFromString(const AValue: string): TSourceKind;
 /// Parses a content type name (case-insensitive); unknown names give ctLive.
 function ContentTypeFromString(const AValue: string): TContentType;
+/// Strict parse of a content type name (case-insensitive): False for an unknown name.
+function TryContentTypeFromString(const AValue: string; out AContentType: TContentType): Boolean;
 
 implementation
 
@@ -61,6 +63,20 @@ begin
     if SameText(AValue, ContentTypeNames[lContentType]) then
       Exit(lContentType);
   Result := ctLive;
+end;
+
+function TryContentTypeFromString(const AValue: string; out AContentType: TContentType): Boolean;
+var
+  lContentType: TContentType;
+begin
+  for lContentType := Low(TContentType) to High(TContentType) do
+    if SameText(AValue, ContentTypeNames[lContentType]) then
+    begin
+      AContentType := lContentType;
+      Exit(True);
+    end;
+  AContentType := ctLive;
+  Result := False;
 end;
 
 end.

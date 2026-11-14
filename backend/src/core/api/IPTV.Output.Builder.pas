@@ -32,7 +32,8 @@ uses
   IPTV.Model.Types,
   IPTV.Model.Source,
   IPTV.Model.CustomList,
-  IPTV.Model.Catalog;
+  IPTV.Model.Catalog,
+  IPTV.Model.Epg;
 
 type
   /// Dummy-EPG generation settings (mirrors the config fields). Enabled=False =>
@@ -148,6 +149,13 @@ function BuildXmltvChannels(const AStore: IStore; const AChannels: TOutputChanne
   const ADisplayNames: TArray<string> = nil;
   const AGuideIds: TArray<string> = nil): string;
 
+/// The guide of AChannels as programmes (the admin's curated EPG preview): read via
+/// each channel's EpgReadIds (incl. a matched extra guide) and re-keyed to the id
+/// BuildXmltv publishes it under (ChannelGuideId) - one copy per published id when
+/// one stored id feeds several channels. Caller owns the result.
+function ListEpgProgrammes(const AStore: IStore; const AChannels: TOutputChannelList;
+  AMaxDays: Integer): TEpgProgrammeList;
+
 /// Extension of a URL's file name ('mkv' for .../123.mkv?x=1), '' if none.
 function UrlExt(const AUrl: string): string;
 
@@ -158,6 +166,20 @@ function SwapUrlExt(const AUrl, AExt: string): string;
 /// Only an Xtream source's .ts/.m3u8 URL is rewritten; any other URL (an M3U HLS
 /// playlist, a radio .mp3, a play.php?id=) and every non-live item come back as-is.
 function LiveUpstreamUrl(const AStore: IStore; const AStream: TStreamItem; const AExt: string): string;
+
+/// The LIVE container a box may ask for in /live/u/p/<id>.<ext>: 'ts' or 'm3u8' (lower
+/// case); anything else ('mp4', 'php', junk) gives '' = keep the upstream container.
+function LiveRequestExt(const AExt: string): string;
+
+/// True when AUrl really is an HLS playlist (its path ends in .m3u8). A forced or
+/// requested HLS only counts when the resolved upstream URL is one; otherwise the
+/// normal path applies (the relay in proxy mode).
+function IsHlsUrl(const AUrl: string): Boolean;
+
+/// The file name of a stream on our relay port, rebuilt from the RESOLVED stream id
+/// (never the box's raw path token): <id>.<AExt> when AExt is a short alphanumeric
+/// token (ts, m3u8, a movie's mkv), else <id>.ts.
+function RelayStreamFileName(AStreamId: Integer; const AExt: string): string;
 
 /// The source with id ASourceId (caller frees), nil when it is gone.
 function FindSourceById(const AStore: IStore; ASourceId: Integer): TSourceConfig;
@@ -200,13 +222,15 @@ uses
   System.StrUtils,
   System.NetEncoding,
   // own
-  IPTV.Model.Epg,
   IPTV.Core.Utils;
 
 const
   // stream extensions
   cExtTs = 'ts';
   cExtHls = 'm3u8';
+  // RelayStreamFileName: what a container token from the box may look like
+  cMaxContainerExtLen = 5;
+  cExtChars = ['A'..'Z', 'a'..'z', '0'..'9'];
 
   /// how PathCred writes an empty login field into a URL path
   cPathCredEmpty = '-';
@@ -313,6 +337,40 @@ begin
   finally
     FreeAndNil(lSource);
   end;
+end;
+
+function LiveRequestExt(const AExt: string): string;
+begin
+  if SameText(AExt, cExtTs) then
+    Result := cExtTs
+  else if SameText(AExt, cExtHls) then
+    Result := cExtHls
+  else
+    Result := '';
+end;
+
+function IsHlsUrl(const AUrl: string): Boolean;
+begin
+  Result := SameText(UrlExt(AUrl), cExtHls);
+end;
+
+function IsPlainExt(const AExt: string): Boolean;
+var
+  lChar: Char;
+begin
+  Result := (AExt <> '') and (AExt.Length <= cMaxContainerExtLen);
+  if Result then
+    for lChar in AExt do
+      if not CharInSet(lChar, cExtChars) then
+        Exit(False);
+end;
+
+function RelayStreamFileName(AStreamId: Integer; const AExt: string): string;
+begin
+  if IsPlainExt(AExt) then
+    Result := AStreamId.ToString + '.' + AExt
+  else
+    Result := AStreamId.ToString + '.' + cExtTs;
 end;
 
 procedure KeepContentTypes(AChannels: TOutputChannelList; const ATypes: TContentTypes);
@@ -1012,6 +1070,80 @@ begin
     FreeAndNil(lEffById);
     FreeAndNil(lGroupById);
     FreeAndNil(lNameById);
+  end;
+end;
+
+// ListEpgProgrammes: fills AResult (which the caller owns)
+procedure AddListEpgProgrammes(const AStore: IStore; const AChannels: TOutputChannelList;
+  AMaxDays: Integer; AResult: TEpgProgrammeList);
+var
+  lChannel: TOutputChannel;
+  lUpstreams: TStringList;
+  lPubById: TDictionary<string, TArray<string>>; // stored id -> published ids reading it
+  lProgs: TEpgProgrammeList;
+  lProg, lCopy: TEpgProgramme;
+  lGid, lRId: string;
+  lPubs: TArray<string>;
+begin
+  lUpstreams := nil;
+  lPubById := nil;
+  lProgs := nil;
+  try
+    // case-SENSITIVE like BuildXmltvChannels (and the SQL IN of LoadEpgForTvgIds)
+    lUpstreams := TStringList.Create;
+    lUpstreams.CaseSensitive := True;
+    lUpstreams.Sorted := True;
+    lUpstreams.Duplicates := dupIgnore;
+    lPubById := TDictionary<string, TArray<string>>.Create;
+    for lChannel in AChannels do
+    begin
+      lGid := ChannelGuideId(lChannel);
+      for lRId in lChannel.EpgReadIds do
+      begin
+        if not lPubById.TryGetValue(lRId, lPubs) then
+          lPubs := nil;
+        if IndexStr(lGid, lPubs) < 0 then
+          lPubById.AddOrSetValue(lRId, lPubs + [lGid]);
+        lUpstreams.Add(lRId);
+      end;
+    end;
+    if lUpstreams.Count = 0 then
+      Exit;
+    lProgs := AStore.LoadEpgForTvgIds(lUpstreams.ToStringArray, AMaxDays);
+    for lProg in lProgs do
+    begin
+      if not lPubById.TryGetValue(lProg.ChannelTvgId, lPubs) then
+        lPubs := [lProg.ChannelTvgId];
+      for lGid in lPubs do
+      begin
+        lCopy := TEpgProgramme.Create;
+        AResult.Add(lCopy);
+        lCopy.Id := lProg.Id;
+        lCopy.SourceId := lProg.SourceId;
+        lCopy.ChannelTvgId := lGid;
+        lCopy.StartUtc := lProg.StartUtc;
+        lCopy.StopUtc := lProg.StopUtc;
+        lCopy.Title := lProg.Title;
+        lCopy.Description := lProg.Description;
+        lCopy.Category := lProg.Category;
+      end;
+    end;
+  finally
+    FreeAndNil(lProgs);
+    FreeAndNil(lUpstreams);
+    FreeAndNil(lPubById);
+  end;
+end;
+
+function ListEpgProgrammes(const AStore: IStore; const AChannels: TOutputChannelList;
+  AMaxDays: Integer): TEpgProgrammeList;
+begin
+  Result := TEpgProgrammeList.Create;
+  try
+    AddListEpgProgrammes(AStore, AChannels, AMaxDays, Result);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 

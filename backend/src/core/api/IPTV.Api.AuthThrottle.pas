@@ -33,13 +33,16 @@ type
     FMaxFailures: Integer;
     FWindowMs: UInt64;
     FLockoutMs: UInt64;
-    procedure PruneLocked(ANowMs: UInt64);
+    FMaxEntries: Integer;
+    /// Makes room for one more key; False when the table is full of blocked keys.
+    function MakeRoomLocked(ANowMs: UInt64): Boolean;
     function GetTrustedProxies: TArray<string>;
     procedure SetTrustedProxies(const AValue: TArray<string>);
     function IsTrustedProxy(const AIp: string): Boolean;
   public
-    /// <summary>AMaxFailures failures within AWindowSec lock the key out for ALockoutSec.</summary>
-    constructor Create(AMaxFailures, AWindowSec, ALockoutSec: Integer);
+    /// <summary>AMaxFailures failures within AWindowSec lock the key out for ALockoutSec.
+    /// At most AMaxEntries keys are tracked (0 = the default cap).</summary>
+    constructor Create(AMaxFailures, AWindowSec, ALockoutSec: Integer; AMaxEntries: Integer = 0);
     /// <summary>Frees the counters.</summary>
     destructor Destroy; override;
     /// <summary>Is this key currently locked out? ARetryAfterSec = seconds left.</summary>
@@ -49,9 +52,17 @@ type
     /// <summary>Note a successful login: forgets the failures of that key (an
     /// active lockout stays until it ends).</summary>
     procedure RegisterSuccess(const AKey: string);
-    /// <summary>The lockout key of a request: ASurface + ':' + client, where client
-    /// is the first X-Forwarded-For address when ARemoteIp is one of the
-    /// TrustedProxies, else ARemoteIp.</summary>
+    /// <summary>The client address of a request: the right-most X-Forwarded-For
+    /// address that is not itself a trusted proxy when ARemoteIp is one of the
+    /// TrustedProxies, else ARemoteIp (trimmed).</summary>
+    function ClientAddress(const ARemoteIp, AForwardedFor: string): string;
+    /// <summary>Is the request from the local network? The client address
+    /// (ClientAddress) must be private/local - and when the peer is NOT a trusted proxy
+    /// but forwards an X-Forwarded-For (an untrusted reverse proxy on the LAN), the
+    /// right-most forwarded hop must be private/local too.</summary>
+    function IsLocalClient(const ARemoteIp, AForwardedFor: string): Boolean;
+    /// <summary>The lockout key of a request: ASurface + ':' + the client address
+    /// (ClientAddress), IPv6 reduced to its /64 (IPTV.Api.Security.ClientAddressKey).</summary>
     function ClientKey(const ASurface, ARemoteIp, AForwardedFor: string): string;
     /// <summary>Forget all counters (tests).</summary>
     procedure Reset;
@@ -83,23 +94,48 @@ var
   /// <summary>The process-wide throttle (created in initialization).</summary>
   GAuthThrottle: TAuthThrottle;
 
+/// <summary>All X-Forwarded-For header lines of a request as one value, in order
+/// (a client or proxy may send the header more than once; reading only the first line
+/// would let the walk start from an attacker-chosen hop). Blank lines are dropped.</summary>
+function JoinForwardedFor(const ALines: TArray<string>): string;
+
 implementation
 
 uses
   // RTL
   System.SysUtils,
   System.Classes,
-  System.Math;
+  System.Math,
+  System.Generics.Defaults,
+  // own units
+  IPTV.Api.Security;
 
 const
   // the table never grows without bound (many distinct IPs probing)
-  cMaxEntries = 10000;
+  cDefaultMaxEntries = 10000;
+  // on overflow this share of the cap is freed at once (amortises the scan)
+  cEvictDivisor = 10;
   cMsPerSec = 1000;
   // ClientKey: '<surface>:<client>'; X-Forwarded-For is 'client, proxy1, proxy2'
   cKeySeparator = ':';
   cForwardedSeparator = ',';
+  cForwardedJoin = ', ';
 
-constructor TAuthThrottle.Create(AMaxFailures, AWindowSec, ALockoutSec: Integer);
+function JoinForwardedFor(const ALines: TArray<string>): string;
+var
+  lLine: string;
+begin
+  Result := '';
+  for lLine in ALines do
+    if lLine.Trim <> '' then
+    begin
+      if Result <> '' then
+        Result := Result + cForwardedJoin;
+      Result := Result + lLine.Trim;
+    end;
+end;
+
+constructor TAuthThrottle.Create(AMaxFailures, AWindowSec, ALockoutSec: Integer; AMaxEntries: Integer);
 begin
   inherited Create;
   FLock := TCriticalSection.Create;
@@ -108,6 +144,10 @@ begin
   FMaxFailures := AMaxFailures;
   FWindowMs := UInt64(Max(0, AWindowSec)) * cMsPerSec;
   FLockoutMs := UInt64(Max(0, ALockoutSec)) * cMsPerSec;
+  if AMaxEntries > 0 then
+    FMaxEntries := AMaxEntries
+  else
+    FMaxEntries := cDefaultMaxEntries;
 end;
 
 destructor TAuthThrottle.Destroy;
@@ -117,25 +157,57 @@ begin
   inherited;
 end;
 
-procedure TAuthThrottle.PruneLocked(ANowMs: UInt64);
+function TAuthThrottle.MakeRoomLocked(ANowMs: UInt64): Boolean;
 var
   lPair: TPair<string, TEntry>;
   lStale: TList<string>;
+  lFree: TList<TPair<string, TEntry>>;
   lKey: string;
+  lTarget: Integer;
+  i: Integer;
 begin
-  if FEntries.Count < cMaxEntries then
-    Exit;
+  if FEntries.Count < FMaxEntries then
+    Exit(True);
   lStale := TList<string>.Create;
+  lFree := TList<TPair<string, TEntry>>.Create;
   try
+    // 1) entries whose window and lockout are both over carry no information
     for lPair in FEntries do
-      if (lPair.Value.BlockedUntilMs <= ANowMs) and (lPair.Value.WindowStartMs + FWindowMs < ANowMs) then
-        lStale.Add(lPair.Key);
+      if lPair.Value.BlockedUntilMs <= ANowMs then
+      begin
+        if lPair.Value.WindowStartMs + FWindowMs < ANowMs then
+          lStale.Add(lPair.Key)
+        else
+          lFree.Add(lPair);
+      end;
     for lKey in lStale do
       FEntries.Remove(lKey);
-    // still full (a flood of fresh IPs): start over rather than grow
-    if FEntries.Count >= cMaxEntries then
-      FEntries.Clear;
+    // 2) still full: evict counting (not blocked) entries, oldest window first.
+    // Blocked keys are never dropped - a flood of fresh IPs must not lift lockouts.
+    if FEntries.Count >= FMaxEntries then
+    begin
+      lFree.Sort(TComparer<TPair<string, TEntry>>.Construct(
+        function (const ALeft, ARight: TPair<string, TEntry>): Integer
+        begin
+          if ALeft.Value.WindowStartMs < ARight.Value.WindowStartMs then
+            Result := -1
+          else if ALeft.Value.WindowStartMs > ARight.Value.WindowStartMs then
+            Result := 1
+          else
+            Result := 0;
+        end));
+      lTarget := FMaxEntries - Max(1, FMaxEntries div cEvictDivisor);
+      i := 0;
+      while (FEntries.Count > lTarget) and (i < lFree.Count) do
+      begin
+        FEntries.Remove(lFree[i].Key);
+        Inc(i);
+      end;
+    end;
+    // 3) full of blocked keys: the caller doesn't track the new key
+    Result := FEntries.Count < FMaxEntries;
   finally
+    FreeAndNil(lFree);
     FreeAndNil(lStale);
   end;
 end;
@@ -165,7 +237,8 @@ begin
   lNowMs := TThread.GetTickCount64;
   FLock.Acquire;
   try
-    PruneLocked(lNowMs);
+    if not FEntries.ContainsKey(AKey) and not MakeRoomLocked(lNowMs) then
+      Exit; // the table is full of locked-out keys: don't track (never clear them)
     if not FEntries.TryGetValue(AKey, lEntry) or (lEntry.WindowStartMs + FWindowMs < lNowMs) then
     begin
       lEntry.Failures := 0;
@@ -245,25 +318,52 @@ begin
   end;
 end;
 
-function TAuthThrottle.ClientKey(const ASurface, ARemoteIp, AForwardedFor: string): string;
+function TAuthThrottle.ClientAddress(const ARemoteIp, AForwardedFor: string): string;
 var
-  lClient: string;
-  lSepPos: Integer;
+  lHops: TArray<string>;
+  lHop: string;
+  i: Integer;
 begin
-  lClient := ARemoteIp.Trim;
+  Result := ARemoteIp.Trim;
   // only a known reverse proxy may name the real client; from anyone else the
-  // header is attacker-controlled and would let a guesser pick a fresh key per try
-  if (AForwardedFor.Trim <> '') and IsTrustedProxy(lClient) then
+  // header is attacker-controlled and would let a guesser pick a fresh key per try.
+  // Walk X-Forwarded-For right to left: each proxy APPENDS the address it saw, so the
+  // left part can be forged by the client; the right-most hop that is not one of our
+  // own trusted proxies is the address our proxy chain actually received it from.
+  if (AForwardedFor.Trim <> '') and IsTrustedProxy(Result) then
   begin
-    lSepPos := Pos(cForwardedSeparator, AForwardedFor);
-    if lSepPos > 0 then
-      lClient := Copy(AForwardedFor, 1, lSepPos - 1).Trim
-    else
-      lClient := AForwardedFor.Trim;
-    if lClient = '' then
-      lClient := ARemoteIp.Trim;
+    lHops := AForwardedFor.Split([cForwardedSeparator]);
+    for i := High(lHops) downto Low(lHops) do
+    begin
+      lHop := lHops[i].Trim;
+      if lHop = '' then
+        Continue;
+      Result := lHop;
+      if not IsTrustedProxy(lHop) then
+        Break;
+    end;
   end;
-  Result := ASurface + cKeySeparator + lClient;
+end;
+
+function TAuthThrottle.IsLocalClient(const ARemoteIp, AForwardedFor: string): Boolean;
+var
+  lHops: TArray<string>;
+  i: Integer;
+begin
+  Result := IsPrivateAddress(ClientAddress(ARemoteIp, AForwardedFor));
+  if not Result or IsTrustedProxy(ARemoteIp.Trim) or (AForwardedFor.Trim = '') then
+    Exit;
+  // a LAN peer that forwards for someone (a reverse proxy not listed in trustedProxies):
+  // the hop it received the request from must be local too
+  lHops := AForwardedFor.Split([cForwardedSeparator]);
+  for i := High(lHops) downto Low(lHops) do
+    if lHops[i].Trim <> '' then
+      Exit(IsPrivateAddress(lHops[i].Trim));
+end;
+
+function TAuthThrottle.ClientKey(const ASurface, ARemoteIp, AForwardedFor: string): string;
+begin
+  Result := ASurface + cKeySeparator + ClientAddressKey(ClientAddress(ARemoteIp, AForwardedFor));
 end;
 
 procedure TAuthThrottle.Reset;

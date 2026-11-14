@@ -129,14 +129,22 @@ const
 
   // UTF-8 lead/continuation byte masks
   cUtf8AsciiMax = $80;        // below: a 1-byte (ASCII) sequence
-  cUtf8Lead2Mask = $E0;
-  cUtf8Lead2Bits = $C0;
-  cUtf8Lead3Mask = $F0;
-  cUtf8Lead3Bits = $E0;
-  cUtf8Lead4Mask = $F8;
-  cUtf8Lead4Bits = $F0;
   cUtf8ContMask = $C0;
   cUtf8ContBits = $80;
+  cUtf8ContMin = $80;         // continuation bytes: 80..BF
+  cUtf8ContMax = $BF;
+  cUtf8Lead2Min = $C2;        // C0/C1 would only encode overlong ASCII
+  cUtf8Lead2Max = $DF;
+  cUtf8Lead3Min = $E0;
+  cUtf8Lead3Max = $EF;
+  cUtf8Lead3Overlong = $E0;   // E0 needs A0..BF (80..9F = overlong)
+  cUtf8Lead3OverlongSecondMin = $A0;
+  cUtf8Lead3Surrogate = $ED;  // ED needs 80..9F (A0..BF = UTF-16 surrogate, CESU-8)
+  cUtf8Lead3SurrogateSecondMax = $9F;
+  cUtf8Lead4Min = $F0;        // F0 needs 90..BF (80..8F = overlong)
+  cUtf8Lead4OverlongSecondMin = $90;
+  cUtf8Lead4Max = $F4;        // F4 needs 80..8F (above = beyond U+10FFFF); F5..FF never
+  cUtf8Lead4TopSecondMax = $8F;
 
   // Decode only the HEAD of a response for the challenge scan. A Cloudflare
   // interstitial is a few KB; a real playlist/EPG can be hundreds of MB, and a
@@ -173,49 +181,73 @@ end;
 
 // ── charset detection ──────────────────────────────────────────────────────
 
-// Scan the bytes as UTF-8: AValidMulti = well-formed multi-byte sequences,
-// AInvalid = bytes that start no well-formed sequence (each skipped singly).
-procedure CountUtf8(const ABytes: TBytes; out AValidMulti, AInvalid: Int64);
+// Length of the well-formed UTF-8 sequence starting at ABytes[AIndex] (1 for
+// ASCII), 0 when that byte starts none. Strict (Unicode table 3-7): no overlong
+// forms (C0/C1, E0 80..9F, F0 80..8F), no CESU-8 surrogates (ED A0..BF), nothing
+// above U+10FFFF (F4 90.., F5..FF) - exactly what the RTL's decoder refuses.
+function Utf8SequenceLength(const ABytes: TBytes; AIndex: Integer): Integer;
 var
-  i, j, lLen, lExtra: Integer;
-  lOk: Boolean;
+  j, lExtra: Integer;
+  lLead, lSecondMin, lSecondMax: Byte;
+begin
+  lLead := ABytes[AIndex];
+  if lLead < cUtf8AsciiMax then
+    Exit(1);
+  lSecondMin := cUtf8ContMin;
+  lSecondMax := cUtf8ContMax;
+  if (lLead >= cUtf8Lead2Min) and (lLead <= cUtf8Lead2Max) then
+    lExtra := 1
+  else if (lLead >= cUtf8Lead3Min) and (lLead <= cUtf8Lead3Max) then
+  begin
+    lExtra := 2;
+    if lLead = cUtf8Lead3Overlong then
+      lSecondMin := cUtf8Lead3OverlongSecondMin
+    else if lLead = cUtf8Lead3Surrogate then
+      lSecondMax := cUtf8Lead3SurrogateSecondMax;
+  end
+  else if (lLead >= cUtf8Lead4Min) and (lLead <= cUtf8Lead4Max) then
+  begin
+    lExtra := 3;
+    if lLead = cUtf8Lead4Min then
+      lSecondMin := cUtf8Lead4OverlongSecondMin
+    else if lLead = cUtf8Lead4Max then
+      lSecondMax := cUtf8Lead4TopSecondMax;
+  end
+  else
+    Exit(0);
+  if AIndex + lExtra >= Length(ABytes) then
+    Exit(0);
+  if (ABytes[AIndex + 1] < lSecondMin) or (ABytes[AIndex + 1] > lSecondMax) then
+    Exit(0);
+  for j := AIndex + 2 to AIndex + lExtra do
+    if (ABytes[j] and cUtf8ContMask) <> cUtf8ContBits then
+      Exit(0);
+  Result := lExtra + 1;
+end;
+
+// Scan the bytes from AStart on as UTF-8: AValidMulti = well-formed multi-byte
+// sequences, AInvalid = bytes that start no well-formed sequence (each skipped singly).
+procedure CountUtf8(const ABytes: TBytes; out AValidMulti, AInvalid: Int64; AStart: Integer = 0);
+var
+  i, lLen, lSeq: Integer;
 begin
   AValidMulti := 0;
   AInvalid := 0;
-  i := 0;
+  i := AStart;
   lLen := Length(ABytes);
   while i < lLen do
   begin
-    if ABytes[i] < cUtf8AsciiMax then
-    begin
-      Inc(i);
-      Continue;
-    end;
-    if (ABytes[i] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
-      lExtra := 1
-    else if (ABytes[i] and cUtf8Lead3Mask) = cUtf8Lead3Bits then
-      lExtra := 2
-    else if (ABytes[i] and cUtf8Lead4Mask) = cUtf8Lead4Bits then
-      lExtra := 3
-    else
-      lExtra := -1;
-    lOk := (lExtra > 0) and (i + lExtra < lLen);
-    if lOk then
-      for j := i + 1 to i + lExtra do
-        if (ABytes[j] and cUtf8ContMask) <> cUtf8ContBits then
-        begin
-          lOk := False;
-          Break;
-        end;
-    if lOk then
-    begin
-      Inc(AValidMulti);
-      Inc(i, lExtra + 1);
-    end
-    else
+    lSeq := Utf8SequenceLength(ABytes, i);
+    if lSeq = 0 then
     begin
       Inc(AInvalid);
       Inc(i);
+    end
+    else
+    begin
+      if lSeq > 1 then
+        Inc(AValidMulti);
+      Inc(i, lSeq);
     end;
   end;
 end;
@@ -286,52 +318,29 @@ begin
     Result := cCodePageWestern;
 end;
 
-// UTF-8 decode that never raises (TEncoding.UTF8 replaces invalid bytes); False
-// when the RTL refused the bytes anyway
-// ABytes with every byte that isn't part of a well-formed UTF-8 sequence replaced by
-// U+FFFD (EF BF BD) - the RTL's UTF-8 decoder raises on such bytes instead of
-// replacing them, on Windows as well as on Linux
-function SanitizedUtf8(const ABytes: TBytes): TBytes;
+// ABytes from AStart on, with every byte that isn't part of a well-formed UTF-8
+// sequence replaced by U+FFFD (EF BF BD) - the RTL's UTF-8 decoder raises on such
+// bytes instead of replacing them, on Windows as well as on Linux. AInvalid =
+// CountUtf8's count.
+function SanitizedUtf8(const ABytes: TBytes; AInvalid: Int64; AStart: Integer = 0): TBytes;
 const
   cReplacement: array[0..2] of Byte = ($EF, $BF, $BD);
 var
-  i, j, lLen, lExtra, lOut: Integer;
-  lOk: Boolean;
+  i, lLen, lSeq, lOut: Integer;
 begin
   lLen := Length(ABytes);
-  SetLength(Result, lLen * Length(cReplacement)); // worst case: every byte replaced
+  // each invalid byte grows from 1 to 3 bytes
+  SetLength(Result, lLen - AStart + AInvalid * (Length(cReplacement) - 1));
   lOut := 0;
-  i := 0;
+  i := AStart;
   while i < lLen do
   begin
-    if ABytes[i] < cUtf8AsciiMax then
+    lSeq := Utf8SequenceLength(ABytes, i);
+    if lSeq > 0 then
     begin
-      Result[lOut] := ABytes[i];
-      Inc(lOut);
-      Inc(i);
-      Continue;
-    end;
-    if (ABytes[i] and cUtf8Lead2Mask) = cUtf8Lead2Bits then
-      lExtra := 1
-    else if (ABytes[i] and cUtf8Lead3Mask) = cUtf8Lead3Bits then
-      lExtra := 2
-    else if (ABytes[i] and cUtf8Lead4Mask) = cUtf8Lead4Bits then
-      lExtra := 3
-    else
-      lExtra := -1;
-    lOk := (lExtra > 0) and (i + lExtra < lLen);
-    if lOk then
-      for j := i + 1 to i + lExtra do
-        if (ABytes[j] and cUtf8ContMask) <> cUtf8ContBits then
-        begin
-          lOk := False;
-          Break;
-        end;
-    if lOk then
-    begin
-      Move(ABytes[i], Result[lOut], lExtra + 1);
-      Inc(lOut, lExtra + 1);
-      Inc(i, lExtra + 1);
+      Move(ABytes[i], Result[lOut], lSeq);
+      Inc(lOut, lSeq);
+      Inc(i, lSeq);
     end
     else
     begin
@@ -343,12 +352,16 @@ begin
   SetLength(Result, lOut);
 end;
 
-function TryDecodeUtf8(const ABytes: TBytes; out AText: string): Boolean;
+// UTF-8 decode of ABytes from AStart on that never raises: invalid sequences become
+// U+FFFD. False only when the RTL refused even the sanitized bytes (should not happen).
+function TryDecodeUtf8(const ABytes: TBytes; AInvalid: Int64; out AText: string;
+  AStart: Integer = 0): Boolean;
 begin
   try
-    // (overlong / surrogate sequences still pass the scan above; the strict RTL
-    // decoder then raises and the caller falls back to the legacy code page)
-    AText := TEncoding.UTF8.GetString(SanitizedUtf8(ABytes));
+    if AInvalid = 0 then
+      AText := TEncoding.UTF8.GetString(ABytes, AStart, Length(ABytes) - AStart)
+    else
+      AText := TEncoding.UTF8.GetString(SanitizedUtf8(ABytes, AInvalid, AStart));
     Result := True;
   except
     AText := '';
@@ -359,6 +372,7 @@ end;
 function DecodeBytes(const ABytes: TBytes): string;
 var
   lEnc: TEncoding;
+  lBytes: TBytes;
   lBomLen, lCodePage: Integer;
   lValidMulti, lInvalid: Int64;
 begin
@@ -367,32 +381,47 @@ begin
   // nil: detect any BOM (UTF-8, and UTF-16 LE/BE too)
   lEnc := nil;
   lBomLen := TEncoding.GetBufferEncoding(ABytes, lEnc, TEncoding.UTF8);
+  lBytes := ABytes;
   if lBomLen > 0 then
-    Exit(lEnc.GetString(ABytes, lBomLen, Length(ABytes) - lBomLen));
-  CountUtf8(ABytes, lValidMulti, lInvalid);
-  if lInvalid = 0 then
-    Exit(TEncoding.UTF8.GetString(ABytes));
+  begin
+    if lEnc.CodePage <> cCodePageUtf8 then
+      try
+        Exit(lEnc.GetString(ABytes, lBomLen, Length(ABytes) - lBomLen));
+      except
+        Exit(TEncoding.ANSI.GetString(ABytes, lBomLen, Length(ABytes) - lBomLen));
+      end;
+    // a UTF-8 BOM: decode the rest leniently (the strict decoder would raise), from
+    // behind the BOM - no copy of a body that can be hundreds of MB
+    CountUtf8(ABytes, lValidMulti, lInvalid, lBomLen);
+    if TryDecodeUtf8(ABytes, lInvalid, Result, lBomLen) then
+      Exit;
+    // (should not happen) the legacy fallback below needs the bytes without the BOM
+    lBytes := Copy(ABytes, lBomLen, Length(ABytes) - lBomLen);
+  end;
+  CountUtf8(lBytes, lValidMulti, lInvalid);
+  if (lInvalid = 0) and TryDecodeUtf8(lBytes, lInvalid, Result) then
+    Exit;
   // not clean UTF-8: the XML prolog's encoding, else a Cyrillic/Western guess
   // (older European grabbers send ISO-8859-1; it used to come out as Cyrillic)
-  lCodePage := DeclaredCodePage(ABytes);
+  lCodePage := DeclaredCodePage(lBytes);
   // a body declared UTF-8, or one that is overwhelmingly valid UTF-8, keeps UTF-8:
   // one stray byte in a big guide must not turn every name into mojibake
   if ((lCodePage = cCodePageUtf8) or
     ((lCodePage = 0) and (lInvalid <= cUtf8MaxInvalidShare * (lValidMulti + lInvalid)))) and
-    TryDecodeUtf8(ABytes, Result) then
+    TryDecodeUtf8(lBytes, lInvalid, Result) then
     Exit;
   if (lCodePage = 0) or (lCodePage = cCodePageUtf8) then
-    lCodePage := GuessLegacyCodePage(ABytes);
+    lCodePage := GuessLegacyCodePage(lBytes);
   // guarded: a code page may be unavailable on a bare Linux without ICU
   try
     lEnc := TEncoding.GetEncoding(lCodePage);
     try
-      Result := lEnc.GetString(ABytes);
+      Result := lEnc.GetString(lBytes);
     finally
       FreeAndNil(lEnc);
     end;
   except
-    Result := TEncoding.ANSI.GetString(ABytes);
+    Result := TEncoding.ANSI.GetString(lBytes);
   end;
 end;
 

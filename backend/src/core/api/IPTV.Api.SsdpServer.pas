@@ -38,6 +38,9 @@ type
     procedure Start;
     /// Stops listening (no-op when not running).
     procedure Stop;
+    /// The advertised discover.json URL (fixed per instance: a new location = a new
+    /// responder, so the listener thread never reads a string being replaced).
+    property Location: string read FLocation;
   end;
 
 /// <summary>The search targets (ST) to answer for one M-SEARCH datagram: the requested
@@ -52,7 +55,9 @@ implementation
 
 uses
   // RTL
-  System.SysUtils;
+  System.SysUtils,
+  // own units
+  IPTV.Api.Security;
 
 const
   // SSDP / UPnP discovery
@@ -123,6 +128,10 @@ procedure TSsdpServer.DoRead(AThread: TIdUDPListenerThread; const AData: TIdByte
 var
   lTarget: string;
 begin
+  // SSDP is a LAN protocol: a probe from a public address (a spoofed source on an
+  // exposed UDP 1900) would turn us into a reflection/amplification source - ignored
+  if not IsPrivateAddress(ABinding.PeerIP) then
+    Exit;
   // before: every probe got "ST: upnp:rootdevice", whatever was searched for - a
   // client asking for another type (or ssdp:all) saw a mismatched answer
   for lTarget in SsdpReplyTargets(IndyTextEncoding_ASCII.GetString(AData)) do

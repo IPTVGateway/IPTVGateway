@@ -35,6 +35,8 @@ function loadCollapsed(id: number | null): Set<number> {
 
 interface Props {
   lists: CustomList[]
+  /** The app's sources (kept current by the app after every source change/refresh). */
+  sources: Source[]
   activeListId: number | null
   onSelectList: (id: number) => void
   groups: CustomGroup[]
@@ -62,6 +64,7 @@ function idUnderPoint(x: number, y: number, attr: string): number | null {
 
 export function ListPanel({
   lists,
+  sources,
   activeListId,
   onSelectList,
   groups,
@@ -101,19 +104,37 @@ export function ListPanel({
     persistCollapsed(next)
   }
 
-  // known guide ids for the per-channel tvg-id picker (catalog-wide; fetch once)
+  // known guide ids for the per-channel tvg-id picker (catalog-wide). Re-fetched
+  // whenever the app's sources change: the app reloads them after every source
+  // save/delete and after a refresh finishes, so a new source's ids are known too
   const [tvgIds, setTvgIds] = useState<TvgIdInfo[]>([])
   useEffect(() => {
-    api.tvgIds().then(setTvgIds).catch(() => setTvgIds([]))
-  }, [])
+    let cancelled = false
+    api
+      .tvgIds()
+      .then((ids) => {
+        if (!cancelled) setTvgIds(ids)
+      })
+      .catch(() => {
+        if (!cancelled) setTvgIds([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sources])
 
-  // sources, for the "duplicate group from another provider" target picker
-  const [sources, setSources] = useState<Source[]>([])
+  // a download link: the token fetch can fail (e.g. backend down) — show why
+  async function download(run: () => Promise<void>) {
+    setLocalError(null)
+    try {
+      await run()
+    } catch (e) {
+      setLocalError((e as Error).message)
+    }
+  }
+
   // "measure quality" dialog for one channel row (all its variants, then "use this")
   const [probeItem, setProbeItem] = useState<CustomItem | null>(null)
-  useEffect(() => {
-    api.listSources().then(setSources).catch(() => setSources([]))
-  }, [])
 
   const sortedGroups = useMemo(() => [...groups].sort(compareGroups), [groups])
 
@@ -731,12 +752,22 @@ export function ListPanel({
         </select>
         {activeListId != null && (
           <span className="exports">
-            <a href={api.exportM3uUrl(activeListId)} download title={t('Download playlist as M3U')}>
+            {/* buttons, not links: a link without credentials would 401 on middle-click /
+                new tab. A click fetches a path-bound download token first. */}
+            <button
+              type="button"
+              title={t('Download playlist as M3U')}
+              onClick={() => void download(() => api.downloadExportM3u(activeListId))}
+            >
               {t('⬇ .m3u')}
-            </a>
-            <a href={api.exportXmltvUrl(activeListId)} download title={t('Download EPG as XMLTV')}>
+            </button>
+            <button
+              type="button"
+              title={t('Download EPG as XMLTV')}
+              onClick={() => void download(() => api.downloadExportXmltv(activeListId))}
+            >
               {t('⬇ EPG')}
-            </a>
+            </button>
           </span>
         )}
       </header>

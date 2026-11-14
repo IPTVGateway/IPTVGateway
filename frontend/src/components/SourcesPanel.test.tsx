@@ -28,7 +28,8 @@ const SOURCE: Source = {
   kind: 'xtream',
   url: 'http://host',
   username: 'u',
-  password: 'p',
+  password: '', // write-only: the backend never returns it
+  hasPassword: true,
   epgUrl: '',
   enabled: true,
   contentTypes: ['live'],
@@ -186,5 +187,107 @@ describe('SourcesPanel — delete', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(api.deleteSource).toHaveBeenCalledWith(2))
     confirm.mockRestore()
+  })
+})
+
+describe('SourcesPanel — write-only password', () => {
+  async function openEditor() {
+    render(<SourcesPanel />)
+    await screen.findByText('ProviderC')
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByText(/Edit source #2/)
+    return document.querySelector('input[type="password"]') as HTMLInputElement
+  }
+
+  it('shows "(unchanged)" and omits the password on save when not typed in', async () => {
+    const pw = await openEditor()
+    expect(pw).toHaveValue('')
+    expect(pw).toHaveAttribute('placeholder', '(unchanged)')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalled())
+    expect(vi.mocked(api.saveSource).mock.calls[0][0]).not.toHaveProperty('password')
+  })
+
+  it('sends a typed password', async () => {
+    const pw = await openEditor()
+    await userEvent.type(pw, 'secret')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalledWith(expect.objectContaining({ password: 'secret' })))
+  })
+
+  it('sends clearPassword after an explicit clear, and shows it as pending', async () => {
+    await openEditor()
+    await userEvent.click(screen.getByRole('button', { name: 'clear' }))
+    expect(screen.getByText('Will be removed on save')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalled())
+    const body = vi.mocked(api.saveSource).mock.calls[0][0]
+    expect(body).toMatchObject({ clearPassword: true })
+    expect(body).not.toHaveProperty('password')
+  })
+
+  it('undo of a pending clear keeps the stored password', async () => {
+    await openEditor()
+    await userEvent.click(screen.getByRole('button', { name: 'clear' }))
+    await userEvent.click(screen.getByRole('button', { name: 'undo' }))
+    expect(screen.queryByText('Will be removed on save')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalled())
+    const body = vi.mocked(api.saveSource).mock.calls[0][0]
+    expect(body).not.toHaveProperty('password')
+    expect(body).not.toHaveProperty('clearPassword')
+  })
+
+  it('typing and deleting back to empty counts as untouched (keeps the stored one)', async () => {
+    const pw = await openEditor()
+    await userEvent.type(pw, 'x')
+    await userEvent.clear(pw)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalled())
+    const body = vi.mocked(api.saveSource).mock.calls[0][0]
+    expect(body).not.toHaveProperty('password')
+    expect(body).not.toHaveProperty('clearPassword')
+  })
+
+  it('sends a masked URL back unchanged and explains the ***', async () => {
+    const url = 'http://host/get.php?username=u&password=***'
+    vi.mocked(api.listSources).mockResolvedValue([{ ...SOURCE, kind: 'm3u', url }])
+    await openEditor()
+    expect(screen.getByText(/hides a stored secret/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalled())
+    expect(vi.mocked(api.saveSource).mock.calls[0][0]).toMatchObject({ url })
+  })
+
+  it('a quick content-type toggle never sends the (empty) password back', async () => {
+    render(<SourcesPanel />)
+    await screen.findByText('ProviderC')
+    await userEvent.click(screen.getByLabelText('Movies'))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalled())
+    const body = vi.mocked(api.saveSource).mock.calls[0][0]
+    expect(body).not.toHaveProperty('password')
+    expect(body).not.toHaveProperty('hasPassword')
+    expect(body).toMatchObject({ id: 2, username: 'u', contentTypes: ['live', 'movie'] })
+  })
+})
+
+describe('SourcesPanel — quick content-type toggles', () => {
+  it('disables the toggles of a source while a save is busy and builds on the latest state', async () => {
+    let finish: () => void = () => {}
+    vi.mocked(api.saveSource).mockImplementationOnce(
+      () => new Promise((res) => { finish = () => res({} as Source) }),
+    )
+    render(<SourcesPanel />)
+    await screen.findByText('ProviderC')
+    await userEvent.click(screen.getByLabelText('Movies'))
+    expect(screen.getByLabelText('Series')).toBeDisabled()
+    expect(screen.getByLabelText('Movies')).toBeChecked() // optimistic
+    // the save landed: the server now has live + movie
+    vi.mocked(api.listSources).mockResolvedValue([{ ...SOURCE, contentTypes: ['live', 'movie'] }])
+    finish()
+    await waitFor(() => expect(screen.getByLabelText('Series')).not.toBeDisabled())
+    await userEvent.click(screen.getByLabelText('Series'))
+    await waitFor(() => expect(api.saveSource).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.saveSource).mock.calls[1][0]).toMatchObject({ contentTypes: ['live', 'movie', 'series'] })
   })
 })

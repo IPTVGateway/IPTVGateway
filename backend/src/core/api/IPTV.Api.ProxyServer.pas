@@ -20,6 +20,7 @@ uses
   IdHTTPServer,
   IdCustomHTTPServer,
   IdContext,
+  IdHeaderList,
   // own
   IPTV.Ingest.Service;
 
@@ -33,6 +34,14 @@ type
     /// Handles one relay request (GET/HEAD) on an Indy worker thread.
     procedure DoCommandGet(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo;
       AResponseInfo: TIdHTTPResponseInfo);
+    /// Refuses ANY request body (Content-Length > 0 or a Transfer-Encoding) unread.
+    procedure DoHeadersAvailable(AContext: TIdContext; const AUri: string; AHeaders: TIdHeaderList;
+      var VContinueProcessing: Boolean);
+    /// 413 (body) / 411 (Transfer-Encoding) for a request refused by DoHeadersAvailable.
+    procedure DoHeadersBlocked(AContext: TIdContext; AHeaders: TIdHeaderList; var VResponseNo: Integer;
+      var VResponseText, VContentText: string);
+    /// Bounds the time a connection may take to send its request (slow-loris).
+    procedure DoConnect(AContext: TIdContext);
   public
     /// Creates the (inactive) relay server for APort with a bounded thread pool.
     constructor Create(APort: Integer; const ALog: TLogProc = nil);
@@ -51,17 +60,22 @@ uses
   System.SysUtils,
   System.Classes,
   System.StrUtils,
-  System.RegularExpressions,
   System.NetEncoding,
   System.Generics.Collections,
   // Indy
   IdHTTP,
   IdGlobal,
+  IdURI,
+  IdStack,
+  IdStackBSDBase,
+  IdStackConsts,
   IdIOHandler,
   IdSchedulerOfThreadPool,
-  IdHeaderList,
   IdSSLOpenSSL,
   IdSSLOpenSSLHeaders,
+{$IFDEF POSIX}
+  Posix.SysTime,
+{$ENDIF}
   // own
   IPTV.Storage.Intf,
   IPTV.Model.Catalog,
@@ -71,6 +85,9 @@ uses
   IPTV.Core.Utils,
   IPTV.Output.Builder,
   IPTV.Api.AuthThrottle,
+  IPTV.Api.Security,
+  IPTV.Api.Serializers,
+  IPTV.Api.RelayRules,
   IPTV.Model.Types;
 
 const
@@ -79,6 +96,10 @@ const
   cMaxRedirects = 5;
   cTimeoutConnectMs = 8000;            // fail fast on a dead node (A3)
   cTimeoutReadMs = 30000;
+  // writing to a box that vanished without closing its socket gives up after
+  // RelaySendTimeoutMs (IPTV.Api.RelayRules): short for live, long for pausable VOD
+  cMsPerSec = 1000;
+  cUsPerMs = 1000;
 
   // thread pool: cap concurrent relays so a burst of zapping can't spawn
   // unbounded threads
@@ -94,6 +115,8 @@ const
   cHttpStatusUnauthorized = 401;
   cHttpStatusNotFound = 404;
   cHttpStatusServiceUnavailable = 503;
+  cMsgBodyTooLarge = 'Request body not accepted';
+  cMsgLengthRequired = 'Chunked request body not accepted';
 
   // headers / MIME
   cHeaderContentType = 'Content-Type';
@@ -101,6 +124,7 @@ const
   cHeaderContentLength = 'Content-Length';
   cHeaderRange = 'Range';
   cHeaderIfRange = 'If-Range';
+  cHeaderTransferEncoding = 'Transfer-Encoding';
   cMimeMpegTs = 'video/mp2t';
   cMethodHead = 'HEAD';
 
@@ -117,6 +141,12 @@ const
   cHeaderRetryAfter = 'Retry-After';
   // the first path segment the relay answers (anything else is a 404)
   cRelayKinds: array[0..4] of string = ('live', 'movie', 'series', 'stream', cPathTimeshift);
+  // portal routes a box may send here (server_info names the relay port, and some
+  // boxes build EVERY URL from it): bounced with a 302 to the same path on httpPort
+  cApiKinds: array[0..3] of string = ('player_api.php', 'xmltv.php', 'get.php', 'panel_api.php');
+  cSchemeHttp = 'http';
+  cSchemeHttps = 'https';
+  cPathLoginEmpty = '-'; // PathCred's empty field (no login)
   cQueryUsername = 'username';
   cQueryPassword = 'password';
   cQueryDuration = 'duration';
@@ -138,10 +168,85 @@ const
 // (?username=&password=&token=). Never log either verbatim.
 function MaskCreds(const AUrl: string): string;
 begin
-  Result := TRegEx.Replace(AUrl, '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+/',
-    '$1***/***/', [roIgnoreCase]);
-  Result := TRegEx.Replace(Result, '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*',
-    '$1***', [roIgnoreCase]);
+  Result := MaskUrlSecrets(AUrl); // one masking rule for every log line (IPTV.Core.Utils)
+end;
+
+// name -> IP for the redirect guard (IPv4 first, else IPv6); '' when unknown.
+// (no const: the signature of TFunc<string, string>)
+function ResolveHostIp(AHost: string): string;
+begin
+  Result := '';
+  try
+    Result := GStack.ResolveHost(AHost, Id_IPv4);
+  except
+    try
+      Result := GStack.ResolveHost(AHost, Id_IPv6);
+    except
+      Result := '';
+    end;
+  end;
+end;
+
+// the host part of an absolute URL ('' for a relative one or garbage)
+function UrlHostOf(const AUrl: string): string;
+var
+  lUri: TIdURI;
+begin
+  Result := '';
+  try
+    lUri := TIdURI.Create(AUrl);
+    try
+      Result := lUri.Host;
+    finally
+      FreeAndNil(lUri);
+    end;
+  except
+    Result := '';
+  end;
+end;
+
+// SO_SNDTIMEO on the box's socket (Win32: DWORD ms; POSIX: struct timeval)
+procedure SetSendTimeout(AContext: TIdContext; ATimeoutMs: Integer);
+var
+{$IFDEF MSWINDOWS}
+  lValue: Cardinal;
+{$ENDIF}
+{$IFDEF POSIX}
+  lValue: timeval;
+{$ENDIF}
+begin
+  try
+{$IFDEF MSWINDOWS}
+    lValue := Cardinal(ATimeoutMs);
+{$ENDIF}
+{$IFDEF POSIX}
+    lValue.tv_sec := ATimeoutMs div cMsPerSec;
+    lValue.tv_usec := (ATimeoutMs mod cMsPerSec) * cUsPerMs;
+{$ENDIF}
+    (GStack as TIdStackBSDBase).SetSocketOption(AContext.Binding.Handle, Id_SOL_SOCKET, Id_SO_SNDTIMEO,
+      lValue, SizeOf(lValue));
+  except
+    // best-effort: without it a vanished box only ends the relay on the TCP timeout
+  end;
+end;
+
+// the 302 target of a portal route asked on the relay port: publicBaseUrl (the
+// address boxes reach the API on, also through Docker port mapping), else the API
+// port on a host the box's Host header can't steer elsewhere (RelayApiBounceUrl)
+function ApiPortUrl(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo): string;
+var
+  lPathAndQuery, lListenHost: string;
+begin
+  lPathAndQuery := ARequestInfo.URI;
+  if ARequestInfo.QueryParams <> '' then
+    lPathAndQuery := lPathAndQuery + '?' + ARequestInfo.QueryParams;
+  try
+    lListenHost := AContext.Binding.IP; // the local address this connection arrived on
+  except
+    lListenHost := '';
+  end;
+  Result := RelayApiBounceUrl(App.Config.PublicBaseUrl, App.Config.AllowedHosts, ARequestInfo.Host,
+    lListenHost, App.Config.UseHttps, App.Config.HttpPort, lPathAndQuery);
 end;
 
 // the operator's name for the source a stream belongs to (for the relay log);
@@ -213,15 +318,64 @@ end;
   response (so we mirror 200 vs 206 Partial Content), once, before the body
   starts streaming. One instance per relayed request → thread-safe. }
 
+// every value of header AName (Indy keeps repeated headers as separate lines)
+function HeaderLines(AHeaders: TIdHeaderList; const AName: string): TArray<string>;
+var
+  i: Integer;
+begin
+  Result := [];
+  for i := 0 to AHeaders.Count - 1 do
+    if SameText(AHeaders.Names[i], AName) then
+      Result := Result + [AHeaders.ValueFromIndex[i]];
+end;
+
+// the hosts of the configured source servers (the relay's notion of "our providers")
+function ConfiguredSourceHosts(const AStore: IStore): TArray<string>;
+var
+  lSources: TObjectList<TSourceConfig>;
+  lSource: TSourceConfig;
+  lHost: string;
+begin
+  Result := [];
+  lSources := AStore.LoadSources;
+  try
+    for lSource in lSources do
+    begin
+      lHost := UrlHostOf(lSource.Url);
+      if lHost <> '' then
+        Result := Result + [lHost];
+    end;
+  finally
+    FreeAndNil(lSources);
+  end;
+end;
+
 type
+  /// A provider redirect the relay won't follow.
+  ERelayRedirectRefused = class(Exception);
+
   TRelaySession = class
   private
     FIO: TIdIOHandler;
     FWritten: Boolean;
     FAllowFailover: Boolean;
     FFailedCode: Integer;
+    FOriginalHost: string;
+    FAllowInternal: Boolean;
   public
     constructor Create(AIO: TIdIOHandler);
+    /// True when this attempt's provider is configured with a server on the LAN: only
+    /// then may the relay connect to private addresses (never to loopback).
+    property AllowInternal: Boolean read FAllowInternal write FAllowInternal;
+    /// Indy OnConnected (every hop, redirects too): refuses (raises) when the address
+    /// actually connected to is loopback, or private while AllowInternal is off.
+    procedure Connected(Sender: TObject);
+    /// The host of the upstream URL this attempt started at (redirect guard).
+    property OriginalHost: string read FOriginalHost write FOriginalHost;
+    /// Indy OnRedirect: refuses (raises) a provider redirect to a loopback / private /
+    /// link-local address unless the original upstream is in such a range itself.
+    procedure Redirect(Sender: TObject; var ADest: string; var ANumRedirect: Integer;
+      var AHandled: Boolean; var AMethod: TIdHTTPMethod);
     /// When set, an upstream 4xx/5xx is NOT passed to the client: FailedCode is
     /// set instead, so the caller can try the next source.
     property AllowFailover: Boolean read FAllowFailover write FAllowFailover;
@@ -236,6 +390,27 @@ constructor TRelaySession.Create(AIO: TIdIOHandler);
 begin
   inherited Create;
   FIO := AIO;
+end;
+
+procedure TRelaySession.Redirect(Sender: TObject; var ADest: string; var ANumRedirect: Integer;
+  var AHandled: Boolean; var AMethod: TIdHTTPMethod);
+begin
+  // a provider (or a node it bounces to) must not turn the relay into a probe of
+  // our own network: only http(s), never loopback, no hop to an internal address
+  // from a public upstream
+  if AHandled and not IsRelayRedirectAllowed(FOriginalHost, ADest, ResolveHostIp) then
+    raise ERelayRedirectRefused.Create('redirect to a loopback / internal address or non-http URL refused');
+end;
+
+procedure TRelaySession.Connected(Sender: TObject);
+var
+  lPeer: string;
+begin
+  lPeer := '';
+  if (Sender is TIdHTTP) and (TIdHTTP(Sender).Socket <> nil) and (TIdHTTP(Sender).Socket.Binding <> nil) then
+    lPeer := TIdHTTP(Sender).Socket.Binding.PeerIP;
+  if not IsRelayPeerAllowed(lPeer, FAllowInternal) then
+    raise ERelayRedirectRefused.Create('connection to a loopback / internal address refused');
 end;
 
 procedure TRelaySession.HeadersAvailable(ASender: TObject; AHeaders: TIdHeaderList;
@@ -324,6 +499,9 @@ begin
   FServer := TIdHTTPServer.Create(nil);
   FServer.DefaultPort := APort;
   FServer.OnCommandGet := DoCommandGet;
+  FServer.OnHeadersAvailable := DoHeadersAvailable; // body cap, before the body is read
+  FServer.OnHeadersBlocked := DoHeadersBlocked;
+  FServer.OnConnect := DoConnect; // request read timeout
   // Bounded thread pool instead of Indy's default thread-per-connection, so a
   // zapping storm can't exhaust the machine (A4 of the proxy hardening spec).
   lSched := TIdSchedulerOfThreadPool.Create(FServer);
@@ -353,12 +531,41 @@ begin
     FServer.Active := False;
 end;
 
+procedure TStreamProxyServer.DoHeadersAvailable(AContext: TIdContext; const AUri: string;
+  AHeaders: TIdHeaderList; var VContinueProcessing: Boolean);
+begin
+  // the relay only serves GET/HEAD: no request body at all, refused before it is read
+  if RelayBodyRefusal(AHeaders.Values[cHeaderContentLength], AHeaders.Values[cHeaderTransferEncoding]) <> 0 then
+    VContinueProcessing := False;
+end;
+
+procedure TStreamProxyServer.DoHeadersBlocked(AContext: TIdContext; AHeaders: TIdHeaderList;
+  var VResponseNo: Integer; var VResponseText, VContentText: string);
+begin
+  VResponseNo := RelayBodyRefusal(AHeaders.Values[cHeaderContentLength], AHeaders.Values[cHeaderTransferEncoding]);
+  if VResponseNo = cHttpLengthRequired then
+    VContentText := cMsgLengthRequired
+  else
+  begin
+    VResponseNo := cHttpRelayPayloadTooLarge;
+    VContentText := cMsgBodyTooLarge;
+  end;
+end;
+
+procedure TStreamProxyServer.DoConnect(AContext: TIdContext);
+begin
+  // a client that opens the connection but dribbles (or never sends) its request
+  // must not hold a pool thread forever; the relay itself never reads from the box
+  AContext.Connection.IOHandler.ReadTimeout := cRelayRequestReadTimeoutMs;
+end;
+
 procedure TStreamProxyServer.DoCommandGet(AContext: TIdContext;
   ARequestInfo: TIdHTTPRequestInfo; AResponseInfo: TIdHTTPResponseInfo);
 var
   lParts: TArray<string>;
-  lUser, lPass, lIdPart, lIdText: string;
-  lDot, lStreamId: Integer;
+  lUser, lPass, lIdPart, lReqExt, lLogId: string;
+  lStreamId: Integer;
+  lContentType: TContentType;
   lList: TCustomList;
   lStream: TStreamItem;
   lUpstream: string;
@@ -380,6 +587,8 @@ var
   lRetryAfter: Integer;
   lThrottleKey: string;
   lSibling: string;
+  lConfiguredHosts: TArray<string>;
+  lAllowInternal: Boolean;
 begin
   lHlsUrl := '';
   if App = nil then
@@ -390,7 +599,7 @@ begin
   // the same lockout key as the box endpoints on the API port (behind a trusted
   // reverse proxy: the client from X-Forwarded-For, not the proxy's address)
   lThrottleKey := GAuthThrottle.ClientKey(cSurfaceBox, AContext.Binding.PeerIP,
-    ARequestInfo.RawHeaders.Values[cHeaderForwardedFor]);
+    JoinForwardedFor(HeaderLines(ARequestInfo.RawHeaders, cHeaderForwardedFor)));
   // too many failed logins from this client: 429 until the lockout ends
   if GAuthThrottle.IsBlocked(lThrottleKey, lRetryAfter) then
   begin
@@ -407,6 +616,13 @@ begin
   // Split the RAW path, then decode each segment: Indy's Document is already
   // decoded, so a '/' in a password (sent as %2F) would split the login in two.
   lParts := RawPathSegments(ARequestInfo.URI);
+  // a portal route (player_api.php, xmltv.php, get.php, panel_api.php) on the relay
+  // port: the API answers those on httpPort - bounce there
+  if (Length(lParts) = cSegKind + 1) and MatchText(lParts[cSegKind], cApiKinds) then
+  begin
+    AResponseInfo.Redirect(ApiPortUrl(AContext, ARequestInfo));
+    Exit;
+  end;
   // catch-up, query flavour: /streaming/timeshift.php?username=&password=&stream=&start=&duration=
   // -> rewritten to the path form below
   if (Length(lParts) = cSegCountTimeshiftPhp) and SameText(lParts[1], cPathStreaming) and
@@ -449,11 +665,11 @@ begin
     lIdPart := lParts[cSegTsId]
   else
     lIdPart := lParts[cSegId];
-  lIdText := lIdPart;
-  lDot := lIdText.IndexOf('.');
-  if lDot >= 0 then
-    lIdText := lIdText.Substring(0, lDot);
-  lStreamId := StrToIntDef(lIdText, 0);
+  // the id strictly as digits, the extension only ts / m3u8 (anything else, e.g. an
+  // encoded '/' or '?', never reaches an upstream URL); an invalid id is a 404 below
+  if not ParseRelayIdPart(lIdPart, lStreamId, lReqExt) then
+    lStreamId := 0;
+  lLogId := RelayStreamFileName(lStreamId, lReqExt); // log-safe (no CR/LF from the box)
 
   lList := FindListForPath(lStore, lUser, lPass); // '-' = empty login, %-encoding
   if lList = nil then
@@ -462,7 +678,9 @@ begin
     AResponseInfo.ResponseNo := cHttpStatusUnauthorized;
     Exit;
   end;
-  GAuthThrottle.RegisterSuccess(lThrottleKey);
+  // only a real login clears the counter (not a login-free hit on the default list)
+  if (lList.OutputUsername <> '') and (lUser <> '') and (lUser <> cPathLoginEmpty) then
+    GAuthThrottle.RegisterSuccess(lThrottleKey);
   lListId := lList.Id; // failover below plays through this list (a mirror's own account)
   try
     // scope to the authenticated list — don't relay a stream that isn't on it
@@ -476,12 +694,16 @@ begin
       if lIsTimeshift then
       begin
         lUpstream := TimeshiftUpstreamUrl(lStore, lListId, lStream, lTsDur, lTsStart,
-          IfThen(lIdPart.Contains('.'), lIdPart.Substring(lIdPart.LastIndexOf('.') + 1), cExtTs));
+          IfThen(lReqExt = '', cExtTs, lReqExt));
         if lUpstream = '' then
         begin
           AResponseInfo.ResponseNo := cHttpStatusNotFound; // source isn't an Xtream portal
           Exit;
         end;
+        // an archive asked as HLS: a playlist can't be relayed as one byte stream -
+        // bounce the box to the provider, like a live HLS channel
+        if SameText(lReqExt, cExtHls) and IsHlsUrl(lUpstream) then
+          lHlsUrl := lUpstream;
       end
       else
       begin
@@ -493,7 +715,7 @@ begin
         begin
           lSource := FindSourceById(lStore, lStream.SourceId);
           try
-            if SameText(UrlExt(lIdPart), cExtHls) or ((lSource <> nil) and lSource.ForceHls) or
+            if SameText(lReqExt, cExtHls) or ((lSource <> nil) and lSource.ForceHls) or
                SameText(UrlExt(lUpstream), cExtHls) then
               lHlsUrl := LiveUpstreamUrl(lStore, lStream, cExtHls);
           finally
@@ -504,6 +726,7 @@ begin
         end;
       end;
       lSrcId := lStream.SourceId;
+      lContentType := lStream.ContentType;
     finally
       FreeAndNil(lStream);
     end;
@@ -515,7 +738,7 @@ begin
   if lHlsUrl <> '' then
   begin
     if Assigned(FLog) then
-      FLog(Format('proxy relay %s: HLS -> 302 to the provider %s', [lIdPart, MaskCreds(lHlsUrl)]));
+      FLog(Format('proxy relay %s: HLS -> 302 to the provider %s', [lLogId, MaskCreds(lHlsUrl)]));
     AResponseInfo.Redirect(lHlsUrl);
     Exit;
   end;
@@ -545,7 +768,12 @@ begin
   // and corrupt the stream), a TRelaySession writes our own header straight to
   // the socket from the upstream's final status — mirroring 200 vs 206 — right
   // before the body streams. Then TForwardStream pumps the body to the socket.
+  // the configured source servers: a LAN address is only reachable for a provider
+  // whose configured server is on the LAN itself (never from playlist content alone)
+  lConfiguredHosts := ConfiguredSourceHosts(lStore);
   lIO := AContext.Connection.IOHandler;
+  // a stalled box ends the relay; a paused VOD / archive player gets far longer
+  SetSendTimeout(AContext, RelaySendTimeoutMs(lContentType, lIsTimeshift));
   for lIdx := 0 to High(lCandidates) do
   begin
     lSession := nil;
@@ -563,6 +791,15 @@ begin
       // don't raise on 4xx/5xx; TRelaySession maps the status to the client
       lUp.HTTPOptions := lUp.HTTPOptions + [hoNoProtocolErrorException];
       lUp.OnHeadersAvailable := lSession.HeadersAvailable;
+      lAllowInternal := IsConfiguredInternalHost(UrlHostOf(lCandidates[lIdx]), lConfiguredHosts, ResolveHostIp);
+      lSession.AllowInternal := lAllowInternal;
+      // the redirect guard treats an empty original host as public: internal hops refused
+      if lAllowInternal then
+        lSession.OriginalHost := UrlHostOf(lCandidates[lIdx])
+      else
+        lSession.OriginalHost := '';
+      lUp.OnRedirect := lSession.Redirect; // no hop to an internal address
+      lUp.OnConnected := lSession.Connected; // checks the address really connected to
       lSession.AllowFailover := lIdx < High(lCandidates);
       // Attach a TLS IOHandler unconditionally (Indy keeps it in PassThrough for
       // plain-http legs and only negotiates TLS for https) — a plain-http upstream
@@ -579,16 +816,19 @@ begin
         lUp.Request.CustomHeaders.AddValue(cHeaderIfRange, ARequestInfo.RawHeaders.Values[cHeaderIfRange]);
       if Assigned(FLog) then
         FLog(Format('proxy relay %s -> provider "%s" %s%s',
-          [lIdPart, ProviderName(lStore, lSrcId), MaskCreds(lCandidates[lIdx]),
+          [lLogId, ProviderName(lStore, lSrcId), MaskCreds(lCandidates[lIdx]),
            IfThen(lIdx > 0, ' (failover)', '')]));
       try
+        // never fetch a loopback address (our own services), not even as the first URL
+        if not IsRelayUpstreamAllowed(lCandidates[lIdx], ResolveHostIp) then
+          raise ERelayRedirectRefused.Create('upstream URL refused (loopback address or not http/https)');
         lUp.Get(lCandidates[lIdx], lFwd); // blocks, pumping bytes until upstream ends / client closes
         if lSession.FailedCode > 0 then
         begin
           // upstream said 4xx/5xx and nothing reached the box: try the next source
           if Assigned(FLog) then
             FLog(Format('proxy relay %s: provider answered HTTP %d - trying next source',
-              [lIdPart, lSession.FailedCode]));
+              [lLogId, lSession.FailedCode]));
           Continue;
         end;
         Break; // returned normally: streamed, or an upstream-error header was written
@@ -601,12 +841,13 @@ begin
           begin
             if Assigned(FLog) then
               FLog(Format('proxy relay %s: source unreachable (%s) — trying next source',
-                [lIdPart, E.Message]));
+                [lLogId, MaskUrlSecrets(E.Message)]));
           end
           else
           begin
             if Assigned(FLog) then
-              FLog(Format('proxy relay %s closed (%d bytes): %s', [lIdPart, lFwd.Bytes, E.Message]));
+              FLog(Format('proxy relay %s closed (%d bytes): %s', [lLogId, lFwd.Bytes,
+                MaskUrlSecrets(E.Message)]));
             // nothing sent yet: a real status instead of an empty reply
             if (lFwd.Bytes = 0) and not lSession.Wrote then
               try

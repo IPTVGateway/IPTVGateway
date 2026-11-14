@@ -133,7 +133,6 @@ uses
   System.Generics.Defaults,
   System.StrUtils,
   System.Math,
-  System.RegularExpressions,
   System.Net.URLClient,
   System.NetEncoding,
   System.DateUtils,
@@ -152,6 +151,8 @@ uses
   IPTV.Core.Utils,
   IPTV.Source.Xtream,
   IPTV.Api.AuthThrottle,
+  IPTV.Api.Security,
+  IPTV.Api.Server,
   IPTV.Api.Serializers;
 
 const
@@ -303,6 +304,7 @@ var
   lUserInfo, lServerInfo: TJSONObject;
   lFormats: TJSONArray;
   lPortNo: Integer;
+  lNowUtc: TDateTime;
 begin
   Result := TJSONObject.Create;
   lUserInfo := TJSONObject.Create;
@@ -356,6 +358,11 @@ begin
   else
     lServerInfo.AddPair('server_protocol', PublicScheme);
   lServerInfo.AddPair('timezone', cServerTimezone);
+  // the panel clock, as real panels send it (a box / we derive its offset from these):
+  // Unix seconds, and the wall time in the advertised timezone (UTC)
+  lNowUtc := NowUtc;
+  lServerInfo.AddPair('timestamp_now', TJSONNumber.Create(DateTimeToUnix(lNowUtc, cTimesAreUtc)));
+  lServerInfo.AddPair('time_now', FormatDateTime(cEpgDateTimeFormat, lNowUtc, TFormatSettings.Invariant));
   Result.AddPair('server_info', lServerInfo);
 end;
 
@@ -682,7 +689,7 @@ begin
             on E: Exception do
             begin
               FreeAndNil(lJson);
-              App.Log(Format('  get_series_info %d: %s', [lStream.Id, E.Message]));
+              App.Log(Format('  get_series_info %d: %s', [lStream.Id, MaskUrlSecrets(E.Message)]));
               Exit(TJSONArray.Create);
             end;
           end;
@@ -871,7 +878,7 @@ procedure DoRedirect(const AResponse: IMARSResponse; const AUser, APass, AId: st
 var
   lList: TCustomList;
   lStream: TStreamItem;
-  lTarget, lMasked, lProvider, lExt: string;
+  lTarget, lMasked, lProvider, lExt, lRelayExt: string;
   lHls: Boolean;
 begin
   if ServiceDown(AResponse) then
@@ -894,40 +901,52 @@ begin
     try
       // Boxes build the live URL against us. In proxy mode bounce them to the
       // relay port; otherwise 302 straight to the raw provider URL.
-      // A source with ForceHls hands LIVE out as .m3u8 whatever the box asked for
-      // (some providers drop .ts connections every ~20 s; HLS segments survive
-      // that). HLS can't be relayed meaningfully, so it always 302s direct.
-      // only LIVE follows the box's requested container (.ts/.m3u8): a movie or
-      // episode exists in ONE container upstream (.mkv stays .mkv)
+      // only LIVE follows the box's requested container, and only .ts / .m3u8 (a
+      // movie or episode exists in ONE container upstream: .mkv stays .mkv)
       if ALive then
-        lExt := RequestedExt(AId)
+        lExt := LiveRequestExt(RequestedExt(AId))
       else
         lExt := '';
-      lHls := ALive and SourceForcesHls(lStream.SourceId);
-      if lHls then
-        lExt := cExtM3u8;
-      if App.Config.ProxyStreams and not lHls then
-      begin
-        lTarget := Format('http://%s:%d/live/%s/%s/%s', [PublicHost, App.Config.ProxyPort,
-          PathCred(lList.OutputUsername), PathCred(lList.OutputPassword), AId]);
-      end
+      // the container named in our relay URL: the validated live one, or the box's own
+      // token for a movie/episode (RelayStreamFileName only keeps a plain alphanumeric one)
+      if ALive then
+        lRelayExt := lExt
       else
-        // only an Xtream LIVE .ts/.m3u8 URL follows the box's container choice
-        lTarget := LiveUpstreamUrl(App.Store, lStream, lExt);
-      // mask both path-style (/live/u/p/) AND query-style (?username=&password=)
-      // credentials before logging — upstream M3U URLs often carry query creds
-      lMasked := TRegEx.Replace(lTarget, '(/(live|movie|series)/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
-      lMasked := TRegEx.Replace(lMasked, '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*', '$1***',
-        [roIgnoreCase]);
+        lRelayExt := RequestedExt(AId);
+      // A source with ForceHls hands LIVE out as .m3u8 whatever the box asked for
+      // (some providers drop .ts connections every ~20 s; HLS segments survive
+      // that). HLS can't be relayed meaningfully, so it 302s direct - but only when
+      // the upstream URL really becomes a playlist (an Xtream live .ts); an M3U
+      // source's .ts or a radio item takes the normal path (the relay in proxy mode)
+      lHls := False;
+      if ALive and SourceForcesHls(lStream.SourceId) then
+      begin
+        lTarget := LiveUpstreamUrl(App.Store, lStream, cExtM3u8);
+        lHls := IsHlsUrl(lTarget);
+      end;
+      // (lHls: lTarget already is the provider's playlist)
+      if not lHls then
+      begin
+        if App.Config.ProxyStreams then
+          // rebuilt from the RESOLVED id (+ the validated container), never the raw path token
+          lTarget := Format('http://%s:%d/live/%s/%s/%s', [PublicHost, App.Config.ProxyPort,
+            PathCred(lList.OutputUsername), PathCred(lList.OutputPassword),
+            RelayStreamFileName(lStream.Id, lRelayExt)])
+        else
+          // only an Xtream LIVE .ts/.m3u8 URL follows the box's container choice
+          lTarget := LiveUpstreamUrl(App.Store, lStream, lExt);
+      end;
+      // path-style (/live/u/p/, host/u/p/123.ts) AND query-style credentials masked
+      lMasked := MaskUrlSecrets(lTarget);
       // always name the upstream provider being routed to (in proxy mode Target is
       // our own relay URL, so the provider would otherwise be invisible in the log)
       lProvider := ProviderLabel(lStream.SourceId, lStream.UpstreamUrl);
       if App.Config.ProxyStreams and not lHls then
-        App.Log(Format('  proxy stream %s "%s" -> provider %s  [relay %s]',
-          [AId, lStream.Name, lProvider, lMasked]))
+        App.Log(Format('  proxy stream %d "%s" -> provider %s  [relay %s]',
+          [lStream.Id, lStream.Name, lProvider, lMasked]))
       else
-        App.Log(Format('  redirect stream %s "%s" -> provider %s  [%s]%s',
-          [AId, lStream.Name, lProvider, lMasked, System.StrUtils.IfThen(lHls, '  (HLS forced)', '')]));
+        App.Log(Format('  redirect stream %d "%s" -> provider %s  [%s]%s',
+          [lStream.Id, lStream.Name, lProvider, lMasked, System.StrUtils.IfThen(lHls, '  (HLS forced)', '')]));
       AResponse.RedirectTo(lTarget);
     finally
       FreeAndNil(lStream);
@@ -972,7 +991,8 @@ begin
       Exit;
     end;
     try
-      lExt := RequestedExt(AId);
+      // only .ts / .m3u8 are passed on ('' = the provider's default container)
+      lExt := LiveRequestExt(RequestedExt(AId));
       if App.Config.ProxyStreams then
       begin
         lTarget := Format('http://%s:%d/timeshift/%s/%s/%d/%s/%d.%s',
@@ -988,7 +1008,7 @@ begin
         AResponse.StatusCode := cHttpNotFound;
         Exit;
       end;
-      lMasked := TRegEx.Replace(lTarget, '(/timeshift/)[^/]+/[^/]+/', '$1***/***/', [roIgnoreCase]);
+      lMasked := MaskUrlSecrets(lTarget);
       App.Log(Format('  timeshift stream %d "%s" %s UTC +%d min -> provider %s  [%s]',
         [lStream.Id, lStream.Name, FormatTimeshiftStart(lStartUtc), lDuration,
          ProviderLabel(lStream.SourceId, lStream.UpstreamUrl), lMasked]));
@@ -1011,21 +1031,23 @@ var
 begin
   if ServiceDown(Response) then
     Exit(TJSONObject.Create);
-  lThrottleKey := GAuthThrottle.ClientKey(cSurfaceBox, Request.RemoteIP,
-    Request.GetHeaderParamValue(cHeaderForwardedFor));
+  lThrottleKey := GAuthThrottle.ClientKey(cSurfaceBox, Request.RemoteIP, RequestForwardedFor(Request));
   lList := ResolveList(AUser, APass);
   if lList = nil then
   begin
     // counts towards the lockout like a 401 does - but not the server's own
     // warm-up request (username=warmup)
-    if Request.GetHeaderParamValue(cWarmupHeader) = '' then
+    if not IsWarmupRequest(Request.GetHeaderParamValue(cWarmupHeader)) then
       GAuthThrottle.RegisterFailure(lThrottleKey);
     // 200 + auth:0, like real panels: some boxes show a 401 as "network error"
     // instead of "wrong username/password"
     Exit(TJSONObject.Create.AddPair('user_info',
       TJSONObject.Create.AddPair('auth', TJSONNumber.Create(0))));
   end;
-  GAuthThrottle.RegisterSuccess(lThrottleKey);
+  // only a real login clears the counter: a login-free hit on the default list
+  // proves nothing about the guesses made before it
+  if (AUser.Trim <> '') and (lList.OutputUsername <> '') then
+    GAuthThrottle.RegisterSuccess(lThrottleKey);
   try
     if AAction = cActGetShortEpg then
       Result := BuildEpgListings(lList, AStreamId,

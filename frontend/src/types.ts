@@ -7,10 +7,16 @@ export interface Source {
   id: number
   name: string
   kind: SourceKind
+  /** secret query values may come back masked as *** - send them back unchanged */
   url: string
   username?: string
+  /** write-only: GET always returns '' (see hasPassword); on save, missing or '' keeps the stored one */
   password?: string
-  epgUrl?: string
+  /** write-only: true on save removes the stored password */
+  clearPassword?: boolean
+  /** read-only: the backend has a stored password for this source */
+  hasPassword?: boolean
+  epgUrl?: string // may hold *** masked secret query values, like `url`
   userAgent?: string // per-provider User-Agent override (empty => built-in default)
   referer?: string   // per-provider Referer header (some portals require it)
   forceHls?: boolean // live always handed to the box as .m3u8 (provider drops .ts)
@@ -176,7 +182,12 @@ export interface MirrorCredential {
   sourceId: number
   url: string
   username: string
-  password: string
+  /** write-only: GET returns '' (see hasPassword); on save, missing or '' keeps the stored one */
+  password?: string
+  /** write-only: true on save removes the stored password */
+  clearPassword?: boolean
+  /** read-only: a password is stored for this source */
+  hasPassword?: boolean
 }
 
 /** Runtime settings (subset of config.json) exposed via /api/config. */
@@ -195,11 +206,13 @@ export interface AppConfig {
   plexTunerCount?: number
   plexListId?: number // bouquet served to Plex/Jellyfin; 0 = first enabled
   plexServerUrl?: string // optional Plex server for the "rescan Plex" button
-  plexToken?: string     // X-Plex-Token
+  plexToken?: string     // X-Plex-Token; write-only: GET returns '', missing or '' on save keeps it
+  clearPlexToken?: boolean // write-only: true on save removes the stored token
+  hasPlexToken?: boolean // read-only: a Plex token is stored
   // media servers: global group filter + base URL (now editable) + dummy EPG
   visibleGroups?: string[] // only these group-titles are published (empty = all)
-  extraEpgUrls?: string[]  // extra (third-party) XMLTV guides, first = highest priority
-  mediaAllowedClients?: string[] // Plex/HDHomeRun endpoints: allowed IPs or "a.b.c." prefixes; empty = all
+  extraEpgUrls?: string[]  // extra (third-party) XMLTV guides, first = highest priority; *** = masked secret, send back unchanged
+  mediaAllowedClients?: string[] // Plex/HDHomeRun endpoints: allowed IPs or "a.b.c." prefixes; empty = local network only
   publicBaseUrl: string    // base URL boxes use; empty => request Host header
   dummyEpgEnabled?: boolean
   dummyEpgBlockMinutes?: number

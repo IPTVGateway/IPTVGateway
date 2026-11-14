@@ -84,6 +84,26 @@ describe('QualityProbeModal', () => {
   })
 })
 
+describe('QualityProbeModal — stop', () => {
+  it('puts the in-flight row on "stopped" (not "measuring…") and measures no further', async () => {
+    vi.mocked(api.streamVariants).mockResolvedValue([V(1, 'A HD', 'HD'), V(2, 'A UHD', 'UHD')])
+    let release: (r: ProbeResult) => void = () => {}
+    vi.mocked(api.probeStream).mockClear()
+    vi.mocked(api.probeStream).mockImplementation(
+      () => new Promise<ProbeResult>((res) => { release = res }),
+    )
+    render(<QualityProbeModal streamId={1} title="A" sources={SOURCES} onClose={() => {}} />)
+    expect(await screen.findByText('measuring…')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(screen.queryByText('measuring…')).toBeNull()
+    expect(screen.getByText('stopped')).toBeInTheDocument()
+    release(R(1)) // the late result is discarded
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Measure again' })).toBeInTheDocument())
+    expect(api.probeStream).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('stopped')).toBeInTheDocument()
+  })
+})
+
 describe('probe helpers', () => {
   it('flags upscales, buffering and slow starts', () => {
     expect(probeHints(R(1, { height: 2160, bitrateKbps: 6000 }))).toContain('possibly upscaled')

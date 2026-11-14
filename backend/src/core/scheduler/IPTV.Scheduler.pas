@@ -13,9 +13,16 @@ uses
   // RTL
   System.Classes,
   System.SysUtils,
-  System.SyncObjs;
+  System.SyncObjs,
+  // own units
+  IPTV.Storage.Intf;
 
 type
+  /// Reads the persisted date of the last scheduled run (0 = never).
+  TLoadLastRunDate = reference to function: TDate;
+  /// Persists the date of a scheduled run that just started.
+  TSaveLastRunDate = reference to procedure(ADate: TDate);
+
   /// Background thread that calls OnFire once a day at Hour:Minute (local time).
   TDailyScheduler = class(TThread)
   private
@@ -23,18 +30,34 @@ type
     FMinute: Word;
     FOnFire: TThreadProcedure;
     FLastRunDate: TDate;
+    FLoadLastRun: TLoadLastRunDate;
+    FSaveLastRun: TSaveLastRunDate;
     FWake: TEvent; // signalled by Terminate so shutdown doesn't wait out the slice
     function DueNow: Boolean;
+    procedure LoadLastRun;
+    procedure SaveLastRun;
   protected
     procedure Execute; override;
     procedure TerminatedSet; override;
   public
     /// Starts the thread right away; AOnFire runs on the scheduler thread.
-    constructor Create(AHour, AMinute: Word; const AOnFire: TThreadProcedure);
+    /// ALoadLastRun / ASaveLastRun (optional, called on the scheduler thread) keep
+    /// the last run date across restarts, so a restart inside the run window does
+    /// not refresh a second time that day.
+    constructor Create(AHour, AMinute: Word; const AOnFire: TThreadProcedure;
+      const ALoadLastRun: TLoadLastRunDate = nil; const ASaveLastRun: TSaveLastRunDate = nil);
     destructor Destroy; override;
     property Hour: Word read FHour write FHour;
     property Minute: Word read FMinute write FMinute;
   end;
+
+const
+  /// app state key holding the local date (yyyy-mm-dd) of the last scheduled refresh
+  cStateLastScheduledRun = 'scheduler.last_run_date';
+
+/// Loader/saver pair that keeps the last run date in the store's app state.
+function StoreLastRunLoader(const AStore: IStore): TLoadLastRunDate;
+function StoreLastRunSaver(const AStore: IStore): TSaveLastRunDate;
 
 implementation
 
@@ -49,16 +72,48 @@ const
   cCreateSuspended = False;       // the thread starts right away
   // the thread re-checks the clock at least this often
   cWakeSliceMs = 30000;
+  cStateDateFormat = 'yyyy-mm-dd';
+  cStateDateSeparator = '-';
 
-constructor TDailyScheduler.Create(AHour, AMinute: Word; const AOnFire: TThreadProcedure);
+function StoreLastRunLoader(const AStore: IStore): TLoadLastRunDate;
+begin
+  Result :=
+    function: TDate
+    var
+      lSettings: TFormatSettings;
+      lValue: TDateTime;
+    begin
+      lSettings := TFormatSettings.Invariant;
+      lSettings.ShortDateFormat := cStateDateFormat;
+      lSettings.DateSeparator := cStateDateSeparator;
+      if TryStrToDate(AStore.GetState(cStateLastScheduledRun), lValue, lSettings) then
+        Result := DateOf(lValue)
+      else
+        Result := 0;
+    end;
+end;
+
+function StoreLastRunSaver(const AStore: IStore): TSaveLastRunDate;
+begin
+  Result :=
+    procedure(ADate: TDate)
+    begin
+      AStore.SetState(cStateLastScheduledRun, FormatDateTime(cStateDateFormat, ADate));
+    end;
+end;
+
+constructor TDailyScheduler.Create(AHour, AMinute: Word; const AOnFire: TThreadProcedure;
+  const ALoadLastRun: TLoadLastRunDate; const ASaveLastRun: TSaveLastRunDate);
 begin
   FWake := TEvent.Create(nil, cAutoReset, cInitiallyNonSignaled, '');
-  inherited Create(cCreateSuspended);
-  FreeOnTerminate := False;
   FHour := AHour;
   FMinute := AMinute;
   FOnFire := AOnFire;
+  FLoadLastRun := ALoadLastRun;
+  FSaveLastRun := ASaveLastRun;
   FLastRunDate := 0;
+  inherited Create(cCreateSuspended);
+  FreeOnTerminate := False;
 end;
 
 destructor TDailyScheduler.Destroy;
@@ -96,13 +151,38 @@ begin
     (lNow < lTarget + cFireWindow);
 end;
 
+// a failing store must not stop the scheduler: then it simply runs from memory
+procedure TDailyScheduler.LoadLastRun;
+begin
+  if not Assigned(FLoadLastRun) then
+    Exit;
+  try
+    FLastRunDate := FLoadLastRun();
+  except
+    FLastRunDate := 0;
+  end;
+end;
+
+procedure TDailyScheduler.SaveLastRun;
+begin
+  if not Assigned(FSaveLastRun) then
+    Exit;
+  try
+    FSaveLastRun(FLastRunDate);
+  except
+    // swallowed on purpose: the in-memory date still guards this run
+  end;
+end;
+
 procedure TDailyScheduler.Execute;
 begin
+  LoadLastRun;
   while not Terminated do
   begin
     if DueNow then
     begin
       FLastRunDate := DateOf(Now);
+      SaveLastRun;
       // an escaping exception would end this thread for good (no more daily
       // refreshes until a restart) - the callback logs its own errors
       if Assigned(FOnFire) then

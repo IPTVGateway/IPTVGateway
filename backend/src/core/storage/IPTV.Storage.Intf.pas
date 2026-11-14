@@ -159,11 +159,13 @@ type
     function CountStreams(const AFilter: TCatalogFilter): Integer; // total ignoring Limit/Offset
     /// Mark categories as seen (clears the "new" badge), together with the new streams in them.
     procedure MarkCategoriesSeen(const AIds: TArray<Integer>);
-    /// Number of new categories and streams (incl. hidden ones) of one source / content type;
-    /// only SourceId (0 = all) and HasContentType/ContentType of AFilter are used.
+    /// Number of new categories and streams of one source / content type; only SourceId
+    /// (0 = all), HasContentType/ContentType and UseHiddenFlag of AFilter are used. With
+    /// UseHiddenFlag only the rows the catalog shows (hidden=0) count.
     function CountNew(const AFilter: TCatalogFilter): TNewCounts;
-    /// Marks every new category and stream (incl. hidden ones) of one source / content type
-    /// as seen, in one transaction; same filter fields as CountNew. Returns what was cleared.
+    /// Marks every new category and stream of one source / content type as seen - ALWAYS
+    /// incl. the hidden ones (UseHiddenFlag is ignored) - in one transaction; SourceId and
+    /// HasContentType/ContentType as in CountNew. Returns what was cleared (incl. hidden).
     function MarkAllSeen(const AFilter: TCatalogFilter): TNewCounts;
     /// Mark streams as seen (clears the "new" badge).
     procedure MarkStreamsSeen(const AIds: TArray<Integer>);

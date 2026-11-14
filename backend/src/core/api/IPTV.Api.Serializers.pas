@@ -24,6 +24,8 @@ const
   cHttpUnauthorized = 401;
   cHttpForbidden = 403;
   cHttpNotFound = 404;
+  cHttpLengthRequired = 411;
+  cHttpPayloadTooLarge = 413;
   cHttpInternalServerError = 500;
   cHttpServiceUnavailable = 503;
 
@@ -33,9 +35,17 @@ const
   // what the media servers (Plex/Jellyfin tuner surfaces) publish: linear channels only
   cLinearContentTypes = [ctLive, ctRadio];
 
-/// <summary>Source config as JSON.</summary>
+/// <summary>Source config as JSON, password included (settings export = a backup).</summary>
 function SourceToJson(const ASource: TSourceConfig): TJSONObject;
-/// <summary>Applies JSON fields onto an existing source config.</summary>
+/// <summary>Source config as the admin API returns it: the provider password is
+/// write-only ("password" is always '', "hasPassword" tells whether one is stored) and
+/// secret query values in "url" / "epgUrl" are masked ('***', see MaskUrlQuerySecrets).</summary>
+function SourceToAdminJson(const ASource: TSourceConfig): TJSONObject;
+/// <summary>Source configs as the admin API returns them (see SourceToAdminJson).</summary>
+function SourcesToAdminJson(const AList: TObjectList<TSourceConfig>): TJSONArray;
+/// <summary>Applies JSON fields onto an existing source config. A missing or empty
+/// "password" keeps the stored password, a non-empty one replaces it and
+/// "clearPassword": true clears it.</summary>
 procedure SourceFromJson(const AJson: TJSONObject; const ASource: TSourceConfig);
 /// <summary>Source configs as a JSON array.</summary>
 function SourcesToJson(const AList: TObjectList<TSourceConfig>): TJSONArray;
@@ -61,12 +71,14 @@ procedure ListFromJson(const AJson: TJSONObject; const AList: TCustomList);
 /// <summary>Custom lists as a JSON array.</summary>
 function ListsToJson(const AList: TObjectList<TCustomList>): TJSONArray;
 
-/// <summary>A mirror bouquet's provider credentials as
-/// [ { sourceId, url, username, password } ].</summary>
+/// <summary>A mirror bouquet's provider credentials as the admin API returns them:
+/// [ { sourceId, url, username, password: '', hasPassword } ] (password write-only).</summary>
 function MirrorCredentialsToJson(const ACredentials: TArray<TMirrorCredential>): TJSONArray;
 /// <summary>Mirror credentials from such a JSON array (non-objects skipped; missing
-/// fields '' / 0).</summary>
-function MirrorCredentialsFromJson(const AArray: TJSONArray): TArray<TMirrorCredential>;
+/// fields '' / 0). A row with a missing or empty "password" keeps that source's
+/// password from AStored, a non-empty one sets it and "clearPassword": true clears it.</summary>
+function MirrorCredentialsFromJson(const AArray: TJSONArray;
+  const AStored: TArray<TMirrorCredential> = nil): TArray<TMirrorCredential>;
 
 /// <summary>Custom group as JSON.</summary>
 function GroupToJson(const AGroup: TCustomGroup): TJSONObject;
@@ -96,6 +108,14 @@ uses
   System.SysUtils,
   // own units
   IPTV.Core.Utils;
+
+const
+  // write-only secrets: the key and its "is one stored?" companion
+  cFieldPassword = 'password';
+  cFieldHasPassword = 'hasPassword';
+  cFieldClearPassword = 'clearPassword';
+  cFieldUrl = 'url';
+  cFieldEpgUrl = 'epgUrl';
 
 { helpers }
 
@@ -175,6 +195,44 @@ begin
   Result.AddPair('maxConnections', TJSONNumber.Create(ASource.MaxConnections));
 end;
 
+function SourceToAdminJson(const ASource: TSourceConfig): TJSONObject;
+begin
+  Result := SourceToJson(ASource);
+  // write-only: the browser never gets the provider password back
+  Result.RemovePair(cFieldPassword).Free;
+  Result.AddPair(cFieldPassword, '');
+  Result.AddPair(cFieldHasPassword, TJSONBool.Create(ASource.Password <> ''));
+  // an M3U URL often carries the account in its query: hide those values too
+  Result.RemovePair(cFieldUrl).Free;
+  Result.AddPair(cFieldUrl, MaskUrlQuerySecrets(ASource.Url));
+  Result.RemovePair(cFieldEpgUrl).Free;
+  Result.AddPair(cFieldEpgUrl, MaskUrlQuerySecrets(ASource.EpgUrl));
+end;
+
+// a write-only password from an admin body: "clearPassword": true clears it, a
+// non-empty "password" sets it, a missing or empty one keeps AStored
+function WriteOnlyPassword(const AJson: TJSONObject; const AStored: string): string;
+var
+  lGiven: string;
+begin
+  if AJson.GetValue<Boolean>(cFieldClearPassword, False) then
+    Exit('');
+  lGiven := AJson.GetValue<string>(cFieldPassword, '');
+  if lGiven <> '' then
+    Result := lGiven
+  else
+    Result := AStored;
+end;
+
+function SourcesToAdminJson(const AList: TObjectList<TSourceConfig>): TJSONArray;
+var
+  lSource: TSourceConfig;
+begin
+  Result := TJSONArray.Create;
+  for lSource in AList do
+    Result.Add(SourceToAdminJson(lSource));
+end;
+
 procedure SourceFromJson(const AJson: TJSONObject; const ASource: TSourceConfig);
 begin
   ASource.Id := AJson.GetValue<Integer>('id', ASource.Id);
@@ -182,7 +240,8 @@ begin
   ASource.Kind := SourceKindFromString(AJson.GetValue<string>('kind', SourceKindNames[ASource.Kind]));
   ASource.Url := AJson.GetValue<string>('url', ASource.Url);
   ASource.Username := AJson.GetValue<string>('username', ASource.Username);
-  ASource.Password := AJson.GetValue<string>('password', ASource.Password);
+  // write-only in the admin API: missing/'' = keep the stored password
+  ASource.Password := WriteOnlyPassword(AJson, ASource.Password);
   ASource.EpgUrl := AJson.GetValue<string>('epgUrl', ASource.EpgUrl);
   ASource.UserAgent := AJson.GetValue<string>('userAgent', ASource.UserAgent);
   ASource.Referer := AJson.GetValue<string>('referer', ASource.Referer);
@@ -324,15 +383,19 @@ begin
     lEntry.AddPair('sourceId', TJSONNumber.Create(lCredential.SourceId));
     lEntry.AddPair('url', lCredential.Url);
     lEntry.AddPair('username', lCredential.Username);
-    lEntry.AddPair('password', lCredential.Password);
+    lEntry.AddPair(cFieldPassword, ''); // write-only
+    lEntry.AddPair(cFieldHasPassword, TJSONBool.Create(lCredential.Password <> ''));
     Result.AddElement(lEntry);
   end;
 end;
 
-function MirrorCredentialsFromJson(const AArray: TJSONArray): TArray<TMirrorCredential>;
+function MirrorCredentialsFromJson(const AArray: TJSONArray;
+  const AStored: TArray<TMirrorCredential>): TArray<TMirrorCredential>;
 var
   lValue: TJSONValue;
   lCredential: TMirrorCredential;
+  lStored: TMirrorCredential;
+  lStoredPassword: string;
 begin
   Result := nil;
   if AArray = nil then
@@ -343,7 +406,12 @@ begin
       lCredential.SourceId := TJSONObject(lValue).GetValue<Integer>('sourceId', 0);
       lCredential.Url := TJSONObject(lValue).GetValue<string>('url', '');
       lCredential.Username := TJSONObject(lValue).GetValue<string>('username', '');
-      lCredential.Password := TJSONObject(lValue).GetValue<string>('password', '');
+      // missing/'': keep what is stored for that source (the GET never returns it)
+      lStoredPassword := '';
+      for lStored in AStored do
+        if lStored.SourceId = lCredential.SourceId then
+          lStoredPassword := lStored.Password;
+      lCredential.Password := WriteOnlyPassword(TJSONObject(lValue), lStoredPassword);
       Result := Result + [lCredential];
     end;
 end;

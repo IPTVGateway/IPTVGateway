@@ -118,9 +118,37 @@ describe('api client — admin password', () => {
     expect(onUnauth).toHaveBeenCalled()
   })
 
-  it('appends ?pw= to export download URLs when locked', () => {
+  it('download links carry a path-bound token (?dt=), never the password', async () => {
     adminAuth.set('p w&x')
-    expect(api.exportM3uUrl(3)).toBe(`/api/lists/3/export.m3u?pw=${encodeURIComponent('p w&x')}`)
+    const fn = mockFetch(ok({ token: 'tok/1' }))
+    const url = await api.tokenUrl('/lists/3/export.m3u')
+    expect(url).toBe(`/api/lists/3/export.m3u?dt=${encodeURIComponent('tok/1')}`)
+    expect(url).not.toContain('pw=')
+    // the token itself is fetched with the normal header auth
+    expect(fn.mock.calls[0][0]).toBe('/api/download-token')
+    const init = fn.mock.calls[0][1] as RequestInit
+    expect(init.method).toBe('POST')
+    expect((init.headers as Record<string, string>)['X-Admin-Password']).toBe('p w&x')
+    // the token is bound to the exact path that will be fetched
+    expect(JSON.parse(init.body as string)).toEqual({ path: '/api/lists/3/export.m3u' })
+  })
+
+  it('a download fetches a fresh token and opens the URL with it', async () => {
+    adminAuth.clear() // no admin password: the token call still works
+    mockFetch(ok({ token: 'abc' }))
+    const clicked: string[] = []
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push(this.getAttribute('href') ?? '')
+    })
+    await api.downloadExportXmltv(4)
+    expect(clicked).toEqual(['/api/lists/4/export.xmltv?dt=abc'])
+    spy.mockRestore()
+  })
+
+  it('appends the token with & when the path already has a query', async () => {
+    const fn = mockFetch(ok({ token: 'x' }))
+    expect(await api.tokenUrl('/logs?since=3')).toBe('/api/logs?since=3&dt=x')
+    expect(JSON.parse((fn.mock.calls[0][1] as RequestInit).body as string)).toEqual({ path: '/api/logs' })
   })
 })
 

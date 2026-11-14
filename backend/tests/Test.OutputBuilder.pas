@@ -62,6 +62,9 @@ type
     [Test] procedure FindListForPathReadsSpaceAsPlus;
     /// <summary>The media-server base URL follows publicBaseUrl's scheme and port.</summary>
     [Test] procedure MediaServerBaseUrlFollowsPublicBaseUrl;
+    /// <summary>The curated EPG preview reads ids like BuildXmltv: an extra guide on a channel
+    /// without tvg-id, and one upstream id feeding two override ids.</summary>
+    [Test] procedure ListEpgProgrammesMatchesPublishedIds;
   end;
 
 implementation
@@ -1223,6 +1226,75 @@ begin
     'scheme of publicBaseUrl');
   Assert.AreEqual('https://localhost:7777', MediaServerBaseUrl('', True, 7777), 'no publicBaseUrl: config');
   Assert.AreEqual('http://localhost:7777', MediaServerBaseUrl('', False, 7777), 'no publicBaseUrl, no TLS');
+end;
+
+procedure TOutputBuilderTests.ListEpgProgrammesMatchesPublishedIds;
+var
+  lStore: IStore;
+  lProgs, lResult: TEpgProgrammeList;
+  lChannels: TOutputChannelList;
+  lChannel: TOutputChannel;
+  lInfo: TEpgChannelInfo;
+  lProg: TEpgProgramme;
+  lIds: string;
+
+  procedure Add(AList: TEpgProgrammeList; const ATvg, ATitle: string);
+  var
+    lNew: TEpgProgramme;
+  begin
+    lNew := TEpgProgramme.Create;
+    lNew.ChannelTvgId := ATvg;
+    lNew.StartUtc := IncHour(NowUtc, 1);
+    lNew.StopUtc := IncHour(lNew.StartUtc, 1);
+    lNew.Title := ATitle;
+    AList.Add(lNew);
+  end;
+
+  function AddChannel(AStreamId: Integer; const ATvg, AUpstreamTvg, AExtra: string): TOutputChannel;
+  begin
+    Result := TOutputChannel.Create;
+    Result.StreamItemId := AStreamId;
+    Result.ContentType := ctLive;
+    Result.TvgId := ATvg;
+    Result.UpstreamTvgId := AUpstreamTvg;
+    Result.ExtraGuideId := AExtra;
+    lChannels.Add(Result);
+  end;
+
+begin
+  lStore := NewStore(FDbPath);
+  lProgs := TEpgProgrammeList.Create(True);
+  Add(lProgs, 'up1', 'Provider show');
+  lStore.ReplaceEpg(1, lProgs);
+  FreeAndNil(lProgs);
+  lProgs := TEpgProgrammeList.Create(True);
+  Add(lProgs, EXTRA_EPG_PREFIX + 'G1', 'Guide show');
+  lInfo.Id := 'G1';
+  lInfo.Name := 'Guide 1';
+  lStore.ReplaceExtraEpg(-1, [lInfo], lProgs);
+  FreeAndNil(lProgs);
+
+  lResult := nil;
+  lChannels := TOutputChannelList.Create(True);
+  try
+    AddChannel(1, 'ovA', 'up1', '');                    // override A on up1
+    AddChannel(2, 'ovB', 'up1', '');                    // override B on the SAME up1
+    AddChannel(7, '', '', EXTRA_EPG_PREFIX + 'G1');     // no tvg-id, name-matched extra guide
+    lResult := ListEpgProgrammes(lStore, lChannels, 0);
+    lIds := '';
+    for lProg in lResult do
+      lIds := lIds + lProg.ChannelTvgId + '=' + lProg.Title + ';';
+    Assert.AreEqual<Integer>(3, lResult.Count, lIds);
+    Assert.IsTrue(lIds.Contains('ovA=Provider show;'), 'first override keeps the programme: ' + lIds);
+    Assert.IsTrue(lIds.Contains('ovB=Provider show;'), 'second override too (no last-wins): ' + lIds);
+    Assert.IsTrue(lIds.Contains('iptv-7=Guide show;'), 'extra guide under the published synthetic id: ' + lIds);
+    // the same published ids as the XMLTV
+    for lChannel in lChannels do
+      Assert.IsTrue(lIds.Contains(ChannelGuideId(lChannel) + '='), ChannelGuideId(lChannel));
+  finally
+    FreeAndNil(lResult);
+    FreeAndNil(lChannels);
+  end;
 end;
 
 initialization

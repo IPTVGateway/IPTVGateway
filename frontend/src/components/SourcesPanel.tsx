@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
 import type { ContentType, IngestStatus, PrefixCount, Source, SourceKind } from '../types'
 import { CONTENT_LIVE, CONTENT_TYPES } from '../lib/ordering'
+import { MASKED_SECRET } from '../lib/constants'
+import { describeError } from '../lib/errors'
 
 // how often ingest progress is polled
 const REFRESH_STATUS_POLL_MS = 2000
@@ -9,6 +11,7 @@ const MS_PER_DAY = 86_400_000
 // an account expiring within this many days is flagged "soon"
 const EXPIRY_WARN_DAYS = 14
 import { Modal } from './Modal'
+import { SECRET_KEEP, SecretField, secretPayload, type SecretEdit } from './SecretField'
 import { useT } from '../i18n'
 
 type FilterKind = 'include' | 'exclude'
@@ -26,7 +29,10 @@ interface SourceForm {
   kind: SourceKind
   url: string
   username: string
-  password: string
+  /** write-only: typed in = set, explicit clear = remove, else the stored one is kept */
+  password: SecretEdit
+  /** the backend has a stored password (never sent to us) */
+  hasPassword: boolean
   epgUrl: string
   userAgent: string
   referer: string
@@ -49,12 +55,18 @@ function parseTokens(raw: string): string[] {
     .filter((s) => s.length > 0)
 }
 
+// the backend masks secret query values of a URL (e.g. password=***); sent back
+// unchanged it restores them, a newly typed value replaces them
+const MASKED_URL_HINT = '*** hides a stored secret; it is kept on save. Type the full value to change it.'
+const hasMaskedSecret = (url: string) => url.includes(MASKED_SECRET)
+
 const EMPTY_FORM: SourceForm = {
   name: '',
   kind: 'xtream',
   url: '',
   username: '',
-  password: '',
+  password: SECRET_KEEP,
+  hasPassword: false,
   epgUrl: '',
   userAgent: '',
   referer: '',
@@ -75,7 +87,8 @@ function toForm(s: Source): SourceForm {
     kind: s.kind,
     url: s.url,
     username: s.username ?? '',
-    password: s.password ?? '',
+    password: SECRET_KEEP, // the backend never returns it (write-only)
+    hasPassword: s.hasPassword ?? false,
     epgUrl: s.epgUrl ?? '',
     userAgent: s.userAgent ?? '',
     referer: s.referer ?? '',
@@ -117,6 +130,12 @@ export function SourcesPanel({ onChanged }: Props) {
   // (the first render's closure would reload a stale/empty active list)
   const onChangedRef = useRef(onChanged)
   onChangedRef.current = onChanged
+  // the latest loaded sources: a quick type toggle builds on these, never on the
+  // (possibly stale) row it was rendered from
+  const sourcesRef = useRef<Source[]>([])
+  sourcesRef.current = sources
+  // sources with a content-type save in flight (their toggles are disabled)
+  const [typeBusy, setTypeBusy] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     let cancelled = false
@@ -211,17 +230,31 @@ export function SourcesPanel({ onChanged }: Props) {
     setForm(EMPTY_FORM)
   }
 
-  async function toggleType(s: Source, t: ContentType) {
+  async function toggleType(row: Source, t: ContentType) {
+    if (typeBusy.has(row.id)) return
+    const s = sourcesRef.current.find((x) => x.id === row.id) ?? row
     const next = s.contentTypes.includes(t)
       ? s.contentTypes.filter((x) => x !== t)
       : [...s.contentTypes, t]
+    setTypeBusy((prev) => new Set(prev).add(s.id))
+    // optimistic, so the checkbox (and a next toggle) reflects this change at once
+    setSources((prev) => prev.map((x) => (x.id === s.id ? { ...x, contentTypes: next } : x)))
     try {
-      // send the WHOLE source — a partial body would reset the other columns
-      await api.saveSource({ ...s, contentTypes: next })
+      // send the WHOLE source — a partial body would reset the other columns —
+      // but never the password: it is write-only ('' here), omitted = keep it
+      const { password: _pw, hasPassword: _has, ...rest } = s
+      await api.saveSource({ ...rest, contentTypes: next })
       await load()
       notify()
     } catch (e) {
       setError((e as Error).message)
+      await load() // undo the optimistic change
+    } finally {
+      setTypeBusy((prev) => {
+        const n = new Set(prev)
+        n.delete(s.id)
+        return n
+      })
     }
   }
 
@@ -303,7 +336,9 @@ export function SourcesPanel({ onChanged }: Props) {
         kind: form.kind,
         url: form.url.trim(),
         username: form.username.trim(), // '' clears it (undefined would keep the old value)
-        password: form.password.trim(), // '' clears it (undefined would keep the old value)
+        // write-only: sent when typed in, clearPassword on an explicit clear;
+        // omitted (also typed and deleted again) keeps the stored one
+        ...secretPayload(form.password, 'password', 'clearPassword'),
         epgUrl: form.epgUrl.trim(), // '' clears it (undefined would keep the old value)
         userAgent: form.userAgent.trim(), // '' clears it (undefined would keep the old value)
         referer: form.referer.trim(), // '' clears it (undefined would keep the old value)
@@ -321,7 +356,7 @@ export function SourcesPanel({ onChanged }: Props) {
       await load()
       notify()
     } catch (e) {
-      setError((e as Error).message)
+      setError(describeError(e, t))
     } finally {
       setBusy(null)
     }
@@ -416,6 +451,7 @@ export function SourcesPanel({ onChanged }: Props) {
                       <input
                         type="checkbox"
                         checked={s.contentTypes.includes(ct)}
+                        disabled={typeBusy.has(s.id)}
                         onChange={() => toggleType(s, ct)}
                       />
                       {t(TYPE_LABEL[ct])}
@@ -485,6 +521,7 @@ export function SourcesPanel({ onChanged }: Props) {
             placeholder={form.kind === 'stalker' ? t('http://portal/c/ or …/portal.php') : undefined}
             onChange={(e) => setForm({ ...form, url: e.target.value })}
           />
+          {hasMaskedSecret(form.url) && <span className="hint">{t(MASKED_URL_HINT)}</span>}
         </label>
         <label>
           {form.kind === 'stalker' ? t('MAC (Username)') : t('Username')}
@@ -497,10 +534,11 @@ export function SourcesPanel({ onChanged }: Props) {
         </label>
         <label>
           {t('Password')}
-          <input
-            type="password"
-            value={form.password}
-            onChange={(e) => setForm({ ...form, password: e.target.value })}
+          <SecretField
+            edit={form.password}
+            hasStored={form.hasPassword}
+            clearTitle={t('Remove the stored password')}
+            onChange={(password) => setForm({ ...form, password })}
           />
         </label>
         <label>
@@ -509,6 +547,7 @@ export function SourcesPanel({ onChanged }: Props) {
             value={form.epgUrl}
             onChange={(e) => setForm({ ...form, epgUrl: e.target.value })}
           />
+          {hasMaskedSecret(form.epgUrl) && <span className="hint">{t(MASKED_URL_HINT)}</span>}
         </label>
         <label>
           {t('User-Agent')}

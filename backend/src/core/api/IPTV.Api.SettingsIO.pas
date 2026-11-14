@@ -3,12 +3,16 @@ unit IPTV.Api.SettingsIO;
 (* Portable settings bundle (export / import) as plain store operations, with NO
    MARS/web dependency so it is unit-testable against a temp store.
 
-   The bundle is { version, sources[], lists[ {..., groups[], items[]} ] }. A mirror
-   bouquet carries mirrorOfListId (the master's id IN THE BUNDLE; an import maps it
-   to the new id via the master's name, masters are created first) and
-   mirrorCredentials[ {sourceName, url, username, password} ] (mapped to the new
-   source ids by name; unknown sources are dropped). Each
-   item carries its upstream stream (sourceName + upstreamId + url + metadata) so
+   The bundle is { version, sources[], lists[ {..., groups[], items[]} ] }. Every
+   source, list and group carries its id IN THE BUNDLE, and every reference to one
+   carries that id too (item groupId, stream sourceId, mirror credential sourceId,
+   mirrorOfListId): an import maps references by those bundle ids, so two sources,
+   lists or groups with the same name (a Live and a Movies group "Kids") stay apart.
+   Older bundles without the reference ids fall back to the names (groupName,
+   sourceName, the master's name). A mirror bouquet carries mirrorOfListId (masters
+   are created first) and mirrorCredentials[ {sourceId, sourceName, url, username,
+   password} ] (unknown sources are dropped). Each
+   item carries its upstream stream (sourceId + sourceName + upstreamId + url + metadata) so
    importing onto a fresh instance recreates the catalog rows for the chosen
    channels and re-links the items by upstream URL - a 1:1 clone without needing a
    refresh first. A later refresh matches those rows by source+content+upstreamId.
@@ -25,9 +29,18 @@ uses
   IPTV.Storage.Intf;
 
 type
-  /// How many sources, lists, groups and items an import created.
+  /// A list of the bundle (by its id there) and the id the import gave it.
+  TImportedListId = record
+    BundleId, NewId: Integer;
+  end;
+
+  /// How many sources, lists, groups and items an import created, and the new id of
+  /// every imported list (mirrors too) that carried an id in the bundle.
   TImportCounts = record
     Sources, Lists, Groups, Items: Integer;
+    ListIds: TArray<TImportedListId>;
+    /// The new id of the bundle's list ABundleId; 0 when no list had that id.
+    function NewListId(ABundleId: Integer): Integer;
   end;
 
 /// Build the store-backed bundle (version + sources + lists[groups,items]).
@@ -52,12 +65,31 @@ uses
 
 const
   cBundleVersion = 1;   // the 'version' an export writes
-  cStreamKeySep = '|';  // joins sourceName|contentType|upstreamId|upstreamUrl into a dedupe key
+  cStreamKeySep = '|';  // joins newSourceId|contentType|upstreamId|upstreamUrl into a dedupe key
   cNoMirror = 0;        // TCustomList.MirrorOfListId of a normal list
   // bundle fields of a mirror bouquet
   cFieldMirrorOf = 'mirrorOfListId';
   cFieldMirrorCredentials = 'mirrorCredentials';
   cFieldSourceName = 'sourceName';
+  // bundle ids of the referenced source / group (0 or absent = an older bundle: match by name)
+  cFieldSourceId = 'sourceId';
+  cFieldGroupId = 'groupId';
+  cFieldGroupName = 'groupName';
+  cFieldId = 'id';
+  cNoBundleId = 0;
+
+// the new source id for a reference carrying sourceId (bundle id) and/or sourceName;
+// the bundle id wins, the name is the fallback for older bundles
+function ResolveSourceId(const AJson: TJSONObject; const ASrcIdByOldId: TDictionary<Integer, Integer>;
+  const ASrcIdByName: TDictionary<string, Integer>; out ANewId: Integer): Boolean;
+var
+  lOldId: Integer;
+begin
+  lOldId := AJson.GetValue<Integer>(cFieldSourceId, cNoBundleId);
+  Result := (lOldId <> cNoBundleId) and ASrcIdByOldId.TryGetValue(lOldId, ANewId);
+  if not Result then
+    Result := ASrcIdByName.TryGetValue(AJson.GetValue<string>(cFieldSourceName, ''), ANewId);
+end;
 
 // a mirror's credentials for the bundle: keyed by source NAME (ids differ per install)
 function MirrorCredentialsExportJson(const ACredentials: TArray<TMirrorCredential>;
@@ -70,6 +102,7 @@ begin
   for lCredential in ACredentials do
     if ASrcNames.TryGetValue(lCredential.SourceId, lName) then
       Result.AddElement(TJSONObject.Create
+        .AddPair(cFieldSourceId, TJSONNumber.Create(lCredential.SourceId))
         .AddPair(cFieldSourceName, lName)
         .AddPair('url', lCredential.Url)
         .AddPair('username', lCredential.Username)
@@ -77,7 +110,7 @@ begin
 end;
 
 // the bundle's mirror credentials on the new source ids (unknown source names dropped)
-function MirrorCredentialsImport(const AListJson: TJSONObject;
+function MirrorCredentialsImport(const AListJson: TJSONObject; const ASrcIdByOldId: TDictionary<Integer, Integer>;
   const ASrcIdByName: TDictionary<string, Integer>): TArray<TMirrorCredential>;
 var
   lValue: TJSONValue;
@@ -88,7 +121,7 @@ begin
     Exit;
   for lValue in TJSONArray(AListJson.GetValue(cFieldMirrorCredentials)) do
     if (lValue is TJSONObject) and
-      ASrcIdByName.TryGetValue(TJSONObject(lValue).GetValue<string>(cFieldSourceName, ''), lCredential.SourceId) then
+      ResolveSourceId(TJSONObject(lValue), ASrcIdByOldId, ASrcIdByName, lCredential.SourceId) then
     begin
       lCredential.Url := TJSONObject(lValue).GetValue<string>('url', '');
       lCredential.Username := TJSONObject(lValue).GetValue<string>('username', '');
@@ -100,7 +133,8 @@ end;
 function StreamExportJson(const ASourceName: string; const AStream: TStreamItem): TJSONObject;
 begin
   Result := TJSONObject.Create;
-  Result.AddPair('sourceName', ASourceName);
+  Result.AddPair(cFieldSourceId, TJSONNumber.Create(AStream.SourceId));
+  Result.AddPair(cFieldSourceName, ASourceName);
   Result.AddPair('contentType', ContentTypeNames[AStream.ContentType]);
   Result.AddPair('upstreamId', AStream.UpstreamId);
   Result.AddPair('name', AStream.Name);
@@ -125,6 +159,20 @@ begin
   Result.TvgId := AJson.GetValue<string>('tvgId', '');
   Result.TvgName := AJson.GetValue<string>('tvgName', '');
   Result.UpstreamUrl := AJson.GetValue<string>('upstreamUrl', '');
+end;
+
+{ TImportCounts }
+
+function TImportCounts.NewListId(ABundleId: Integer): Integer;
+var
+  lMapped: TImportedListId;
+begin
+  Result := 0;
+  if ABundleId = cNoBundleId then
+    Exit;
+  for lMapped in ListIds do
+    if lMapped.BundleId = ABundleId then
+      Exit(lMapped.NewId);
 end;
 
 function ExportStoreSettings(const AStore: IStore): TJSONObject;
@@ -197,9 +245,15 @@ begin
                 lItemObj.AddPair('tvgIdOverride', lItem.TvgIdOverride);
                 lItemObj.AddPair('channelNumber', TJSONNumber.Create(lItem.ChannelNumber));
                 if (lItem.CustomGroupId <> 0) and lGrpNames.TryGetValue(lItem.CustomGroupId, lGName) then
-                  lItemObj.AddPair('groupName', lGName)
+                begin
+                  lItemObj.AddPair(cFieldGroupId, TJSONNumber.Create(lItem.CustomGroupId));
+                  lItemObj.AddPair(cFieldGroupName, lGName);
+                end
                 else
-                  lItemObj.AddPair('groupName', '');
+                begin
+                  lItemObj.AddPair(cFieldGroupId, TJSONNumber.Create(cNoBundleId));
+                  lItemObj.AddPair(cFieldGroupName, '');
+                end;
                 if not lSrcNames.TryGetValue(lStream.SourceId, lGName) then
                   lGName := '';
                 lItemObj.AddPair('stream', StreamExportJson(lGName, lStream));
@@ -241,12 +295,13 @@ var
   lItem: TCustomItem;
   lValue, lGroupValue, lItemValue: TJSONValue;
   lStreamObj: TJSONObject;
-  lNewListId, lNewSrcId, lStreamId, lGroupId: Integer;
+  lNewListId, lNewSrcId, lStreamId, lGroupId, lOldId: Integer;
   lGrpOrder: TList<Integer>;
   lSrcIdByName, lGrpIdByName, lStreamIdByUrl: TDictionary<string, Integer>;
-  lSnaps: TObjectDictionary<string, TSourceSnapshot>;
+  lSrcIdByOldId, lGrpIdByOldId, lListIdByOldId: TDictionary<Integer, Integer>;
+  lSnaps: TObjectDictionary<Integer, TSourceSnapshot>;
   lSeenStream: TDictionary<string, Boolean>;
-  lSrcName, lUrl, lGName, lKey: string;
+  lUrl, lGName, lKey: string;
   lSnap: TSourceSnapshot;
   lFilter: TCatalogFilter;
   lListValues: TList<TJSONValue>;
@@ -255,10 +310,13 @@ var
   lPass, lMasterId: Integer;
   lMasterName: string;
   lIsMirror: Boolean;
+  lMapped: TImportedListId;
 begin
   Result := Default(TImportCounts);
 
   lSrcIdByName := nil;
+  lSrcIdByOldId := nil;
+  lListIdByOldId := nil;
   lStreamIdByUrl := nil;
   lSnaps := nil;
   lSeenStream := nil;
@@ -267,8 +325,10 @@ begin
   lListIdByName := nil;
   try
     lSrcIdByName := TDictionary<string, Integer>.Create;
+    lSrcIdByOldId := TDictionary<Integer, Integer>.Create;
+    lListIdByOldId := TDictionary<Integer, Integer>.Create;
     lStreamIdByUrl := TDictionary<string, Integer>.Create;
-    lSnaps := TObjectDictionary<string, TSourceSnapshot>.Create([doOwnsValues]);
+    lSnaps := TObjectDictionary<Integer, TSourceSnapshot>.Create([doOwnsValues]);
     lSeenStream := TDictionary<string, Boolean>.Create;
     lListValues := TList<TJSONValue>.Create;
     lListNameById := TDictionary<Integer, string>.Create;
@@ -294,7 +354,7 @@ begin
       FreeAndNil(lExisting);
     end;
 
-    // 1) recreate sources, remember name -> new id
+    // 1) recreate sources, remember bundle id -> new id (and name -> new id for older bundles)
     if ABody.GetValue('sources') is TJSONArray then
       for lValue in TJSONArray(ABody.GetValue('sources')) do
         if lValue is TJSONObject then
@@ -302,8 +362,11 @@ begin
           lSource := TSourceConfig.Create;
           try
             SourceFromJson(TJSONObject(lValue), lSource);
+            lOldId := lSource.Id;
             lSource.Id := 0;
             lNewSrcId := AStore.SaveSource(lSource);
+            if lOldId <> cNoBundleId then
+              lSrcIdByOldId.AddOrSetValue(lOldId, lNewSrcId);
             lSrcIdByName.AddOrSetValue(lSource.Name, lNewSrcId);
             Inc(Result.Sources);
           finally
@@ -319,31 +382,31 @@ begin
             if (lItemValue is TJSONObject) and (TJSONObject(lItemValue).GetValue('stream') is TJSONObject) then
             begin
               lStreamObj := TJSONObject(TJSONObject(lItemValue).GetValue('stream'));
-              lSrcName := lStreamObj.GetValue<string>('sourceName', '');
-              if not lSrcIdByName.TryGetValue(lSrcName, lNewSrcId) then
+              if not ResolveSourceId(lStreamObj, lSrcIdByOldId, lSrcIdByName, lNewSrcId) then
                 Continue;
-              lKey := lSrcName + cStreamKeySep + lStreamObj.GetValue<string>('contentType', '') + cStreamKeySep +
+              lKey := IntToStr(lNewSrcId) + cStreamKeySep +
+                     lStreamObj.GetValue<string>('contentType', '') + cStreamKeySep +
                      lStreamObj.GetValue<string>('upstreamId', '') + cStreamKeySep +
                      lStreamObj.GetValue<string>('upstreamUrl', '');
               if lSeenStream.ContainsKey(lKey) then
                 Continue;
               lSeenStream.Add(lKey, True);
-              if not lSnaps.TryGetValue(lSrcName, lSnap) then
+              if not lSnaps.TryGetValue(lNewSrcId, lSnap) then
               begin
                 lSnap := TSourceSnapshot.Create(lNewSrcId);
-                lSnaps.Add(lSrcName, lSnap);
+                lSnaps.Add(lNewSrcId, lSnap);
               end;
               lSnap.Streams.Add(StreamFromExportJson(lStreamObj, lNewSrcId));
             end;
 
-    // 3) merge those streams into the catalog, then map upstream URL -> new id
+    // 3) merge those streams into the catalog, then map (new source, upstream URL) -> new id
     for lSnap in lSnaps.Values do
       AStore.MergeSnapshot(lSnap);
     lFilter := Default(TCatalogFilter);
     lAllStreams := AStore.LoadStreams(lFilter);
     try
       for lStream in lAllStreams do
-        lStreamIdByUrl.AddOrSetValue(lStream.UpstreamUrl, lStream.Id);
+        lStreamIdByUrl.AddOrSetValue(IntToStr(lStream.SourceId) + cStreamKeySep + lStream.UpstreamUrl, lStream.Id);
     finally
       FreeAndNil(lAllStreams);
     end;
@@ -355,7 +418,7 @@ begin
         if lValue is TJSONObject then
         begin
           lListValues.Add(lValue);
-          lListNameById.AddOrSetValue(TJSONObject(lValue).GetValue<Integer>('id', 0),
+          lListNameById.AddOrSetValue(TJSONObject(lValue).GetValue<Integer>(cFieldId, cNoBundleId),
             TJSONObject(lValue).GetValue<string>('name', ''));
         end;
     for lPass := 0 to 1 do
@@ -367,15 +430,31 @@ begin
           lList := TCustomList.Create;
           try
             ListFromJson(TJSONObject(lValue), lList);
+            lOldId := lList.Id;
             lList.Id := 0;
-            // the master by name among the lists created in the first pass; unknown -> 0
+            // the master by its bundle id among the lists created in the first pass,
+            // else by its name (a bundle without list ids); unknown -> 0
             lMasterId := cNoMirror;
-            if lIsMirror and lListNameById.TryGetValue(lList.MirrorOfListId, lMasterName) then
-              lListIdByName.TryGetValue(lMasterName, lMasterId);
+            if lIsMirror and not lListIdByOldId.TryGetValue(lList.MirrorOfListId, lMasterId) then
+            begin
+              lMasterId := cNoMirror;
+              if lListNameById.TryGetValue(lList.MirrorOfListId, lMasterName) then
+                lListIdByName.TryGetValue(lMasterName, lMasterId);
+            end;
             lList.MirrorOfListId := lMasterId;
             lNewListId := AStore.SaveList(lList);
+            if lOldId <> cNoBundleId then
+            begin
+              lMapped.BundleId := lOldId;
+              lMapped.NewId := lNewListId;
+              Result.ListIds := Result.ListIds + [lMapped];
+            end;
             if not lIsMirror then
+            begin
+              if lOldId <> cNoBundleId then
+                lListIdByOldId.AddOrSetValue(lOldId, lNewListId);
               lListIdByName.AddOrSetValue(lList.Name, lNewListId);
+            end;
             Inc(Result.Lists);
           finally
             FreeAndNil(lList);
@@ -383,14 +462,17 @@ begin
           if lMasterId <> cNoMirror then
           begin
             // a mirror has no groups/items of its own, only its provider account
-            AStore.SaveMirrorCredentials(lNewListId, MirrorCredentialsImport(TJSONObject(lValue), lSrcIdByName));
+            AStore.SaveMirrorCredentials(lNewListId, MirrorCredentialsImport(TJSONObject(lValue), lSrcIdByOldId,
+              lSrcIdByName));
             Continue;
           end;
 
           lGrpIdByName := nil;
+          lGrpIdByOldId := nil;
           lGrpOrder := nil;
           try
             lGrpIdByName := TDictionary<string, Integer>.Create;
+            lGrpIdByOldId := TDictionary<Integer, Integer>.Create;
             lGrpOrder := TList<Integer>.Create;
             if TJSONObject(lValue).GetValue('groups') is TJSONArray then
               for lGroupValue in TJSONArray(TJSONObject(lValue).GetValue('groups')) do
@@ -399,9 +481,12 @@ begin
                   lGroup := TCustomGroup.Create;
                   try
                     GroupFromJson(TJSONObject(lGroupValue), lGroup);
+                    lOldId := lGroup.Id;
                     lGroup.Id := 0;
                     lGroup.ListId := lNewListId;
                     lGroupId := AStore.SaveGroup(lGroup);
+                    if lOldId <> cNoBundleId then
+                      lGrpIdByOldId.AddOrSetValue(lOldId, lGroupId);
                     lGrpIdByName.AddOrSetValue(lGroup.Name, lGroupId);
                     lGrpOrder.Add(lGroupId);
                     Inc(Result.Groups);
@@ -422,7 +507,8 @@ begin
                 begin
                   lStreamObj := TJSONObject(TJSONObject(lItemValue).GetValue('stream'));
                   lUrl := lStreamObj.GetValue<string>('upstreamUrl', '');
-                  if not lStreamIdByUrl.TryGetValue(lUrl, lStreamId) then
+                  if not ResolveSourceId(lStreamObj, lSrcIdByOldId, lSrcIdByName, lNewSrcId) or
+                    not lStreamIdByUrl.TryGetValue(IntToStr(lNewSrcId) + cStreamKeySep + lUrl, lStreamId) then
                     Continue;
                   lItem := TCustomItem.Create;
                   try
@@ -435,8 +521,12 @@ begin
                     lItem.LogoOverride := TJSONObject(lItemValue).GetValue<string>('logoOverride', '');
                     lItem.TvgIdOverride := TJSONObject(lItemValue).GetValue<string>('tvgIdOverride', '');
                     lItem.ChannelNumber := TJSONObject(lItemValue).GetValue<Integer>('channelNumber', 0);
-                    lGName := TJSONObject(lItemValue).GetValue<string>('groupName', '');
-                    if (lGName <> '') and lGrpIdByName.TryGetValue(lGName, lGroupId) then
+                    // the group by its bundle id; older bundles only carry its name
+                    lOldId := TJSONObject(lItemValue).GetValue<Integer>(cFieldGroupId, cNoBundleId);
+                    lGName := TJSONObject(lItemValue).GetValue<string>(cFieldGroupName, '');
+                    if (lOldId <> cNoBundleId) and lGrpIdByOldId.TryGetValue(lOldId, lGroupId) then
+                      lItem.CustomGroupId := lGroupId
+                    else if (lGName <> '') and lGrpIdByName.TryGetValue(lGName, lGroupId) then
                       lItem.CustomGroupId := lGroupId
                     else
                       lItem.CustomGroupId := 0;
@@ -448,11 +538,14 @@ begin
                 end;
           finally
             FreeAndNil(lGrpIdByName);
+            FreeAndNil(lGrpIdByOldId);
             FreeAndNil(lGrpOrder);
           end;
         end;
   finally
     FreeAndNil(lSrcIdByName);
+    FreeAndNil(lSrcIdByOldId);
+    FreeAndNil(lListIdByOldId);
     FreeAndNil(lStreamIdByUrl);
     FreeAndNil(lSnaps);
     FreeAndNil(lSeenStream);

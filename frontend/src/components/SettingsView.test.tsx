@@ -198,7 +198,7 @@ describe('SettingsView — mirror bouquets', () => {
     await userEvent.selectOptions(screen.getByLabelText('Mirror of'), '2')
     await userEvent.type(await screen.findByLabelText('Username for ProvA'), 'u2')
     await userEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(await screen.findByText('400 empty the bouquet first')).toBeInTheDocument()
+    expect(await screen.findByText('Refused by the server: empty the bouquet first')).toBeInTheDocument()
     expect(api.saveMirrorCredentials).not.toHaveBeenCalled()
   })
 
@@ -227,16 +227,156 @@ describe('SettingsView — mirror bouquets', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add list' }))
     await waitFor(() =>
       expect(api.saveMirrorCredentials).toHaveBeenCalledWith(9, [
-        { sourceId: 8, url: 'http://b2', username: '', password: '' },
+        { sourceId: 8, url: 'http://b2', username: '' },
       ]),
     )
     expect(api.saveList).toHaveBeenCalledWith(expect.objectContaining({ name: 'New', mirrorOfListId: 1 }))
+  })
+
+  it('saving a mirror without touching its accounts never replaces them', async () => {
+    vi.mocked(api.getMirrorCredentials).mockResolvedValue([
+      { sourceId: 8, url: 'http://b2', username: 'x', password: '', hasPassword: true },
+    ])
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    await waitFor(() => expect(screen.getByLabelText('Server URL for ProvB')).toHaveValue('http://b2'))
+    await userEvent.type(screen.getByLabelText('Name'), '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveList).toHaveBeenCalled())
+    expect(api.saveMirrorCredentials).not.toHaveBeenCalled()
+  })
+
+  it('shows an error and never saves the accounts when loading them failed', async () => {
+    vi.mocked(api.getMirrorCredentials).mockRejectedValue(new Error('500 db busy'))
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    expect(await screen.findByText(/Could not load the provider accounts: 500 db busy/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Username for ProvA')).toBeNull()
+    await userEvent.type(screen.getByLabelText('Name'), '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveList).toHaveBeenCalled())
+    expect(api.saveMirrorCredentials).not.toHaveBeenCalled()
+  })
+
+  it('keeps Save disabled while the accounts are loading', async () => {
+    let resolve: (v: never[]) => void = () => {}
+    vi.mocked(api.getMirrorCredentials).mockReturnValue(new Promise((r) => { resolve = r }))
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    await userEvent.type(await screen.findByLabelText('Name'), '2')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    resolve([])
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled())
+  })
+
+  it('a stored mirror password is write-only: "(unchanged)", omitted unless typed in or cleared', async () => {
+    vi.mocked(api.getMirrorCredentials).mockResolvedValue([
+      { sourceId: 7, url: '', username: 'a', password: '', hasPassword: true },
+      { sourceId: 8, url: '', username: '', password: '', hasPassword: true },
+    ])
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    const pwA = await screen.findByLabelText('Password for ProvA')
+    await waitFor(() => expect(pwA).toHaveAttribute('placeholder', '(unchanged)'))
+    // edit ProvA's username only; clear ProvB's password explicitly
+    await userEvent.type(screen.getByLabelText('Username for ProvA'), '2')
+    await userEvent.click(screen.getByRole('button', { name: 'Clear password for ProvB' }))
+    expect(screen.getByText('Will be removed on save')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveMirrorCredentials).toHaveBeenCalled())
+    // ProvA keeps its stored password (no key); ProvB is now empty -> dropped
+    expect(api.saveMirrorCredentials).toHaveBeenCalledWith(3, [{ sourceId: 7, url: '', username: 'a2' }])
+  })
+
+  it('a cleared password on a row that keeps a username sends clearPassword; undo keeps it', async () => {
+    vi.mocked(api.getMirrorCredentials).mockResolvedValue([
+      { sourceId: 7, url: '', username: 'a', password: '', hasPassword: true },
+    ])
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    await screen.findByLabelText('Password for ProvA')
+    await userEvent.click(screen.getByRole('button', { name: 'Clear password for ProvA' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Undo removal of Password for ProvA' }))
+    expect(screen.queryByText('Will be removed on save')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Clear password for ProvA' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveMirrorCredentials).toHaveBeenCalled())
+    expect(api.saveMirrorCredentials).toHaveBeenCalledWith(3, [
+      { sourceId: 7, url: '', username: 'a', clearPassword: true },
+    ])
+  })
+
+  it('a typed-then-deleted mirror password counts as untouched', async () => {
+    vi.mocked(api.getMirrorCredentials).mockResolvedValue([
+      { sourceId: 7, url: '', username: 'a', password: '', hasPassword: true },
+    ])
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    const pw = await screen.findByLabelText('Password for ProvA')
+    await userEvent.type(screen.getByLabelText('Username for ProvA'), '2')
+    await userEvent.type(pw, 'x')
+    await userEvent.clear(pw)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveMirrorCredentials).toHaveBeenCalled())
+    expect(api.saveMirrorCredentials).toHaveBeenCalledWith(3, [{ sourceId: 7, url: '', username: 'a2' }])
+  })
+
+  it('after saving only the accounts the editor reloads the stored rows and is clean again', async () => {
+    vi.mocked(api.getMirrorCredentials).mockResolvedValueOnce([
+      { sourceId: 7, url: '', username: 'a', password: '', hasPassword: false },
+    ])
+    render(<SettingsView lists={[MIRROR, ...LISTS]} onListsChanged={() => {}} />)
+    const pw = await screen.findByLabelText('Password for ProvA')
+    await userEvent.type(pw, 'secret')
+    // the backend now has the password stored
+    vi.mocked(api.getMirrorCredentials).mockResolvedValue([
+      { sourceId: 7, url: '', username: 'a', password: '', hasPassword: true },
+    ])
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.getMirrorCredentials).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByLabelText('Password for ProvA')).toHaveValue(''))
+    expect(screen.getByLabelText('Password for ProvA')).toHaveAttribute('placeholder', '(unchanged)')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled() // not dirty anymore
   })
 
   it('a list that others mirror cannot become a mirror itself', async () => {
     render(<SettingsView lists={[...LISTS, MIRROR]} onListsChanged={() => {}} />)
     expect(await screen.findByLabelText('Mirror of')).toBeDisabled()
     expect(screen.getByText(/Mirrored by “Kids”/)).toBeInTheDocument()
+  })
+})
+
+describe('SettingsView — readable server errors', () => {
+  it('shows a 413 on import readably', async () => {
+    vi.mocked(api.importSettings).mockRejectedValueOnce(new Error('413 Request Entity Too Large'))
+    render(<SettingsView lists={LISTS} onListsChanged={() => {}} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const json = JSON.stringify({ sources: [], lists: [] })
+    const file = new File([json], 'big.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(json) }) // jsdom
+    await userEvent.upload(input, file)
+    await userEvent.click(await screen.findByRole('button', { name: 'Replace everything' }))
+    expect(await screen.findByText(/at most 64 MB per request/)).toBeInTheDocument()
+  })
+
+  it('refuses an import file over 64 MB before uploading it', async () => {
+    render(<SettingsView lists={LISTS} onListsChanged={() => {}} />)
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['{}'], 'huge.json', { type: 'application/json' })
+    Object.defineProperty(file, 'size', { value: 65 * 1024 * 1024 })
+    await userEvent.upload(input, file)
+    expect(await screen.findByText(/at most 64 MB per request/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Replace everything' })).toBeNull()
+    expect(api.importSettings).not.toHaveBeenCalled()
+  })
+
+  it('shows a 400 of a settings save readably', async () => {
+    vi.mocked(api.saveConfig).mockRejectedValueOnce(new Error('400 this allowedHosts change would lock out the current host'))
+    render(<SettingsView lists={LISTS} onListsChanged={() => {}} />)
+    await userEvent.click(await screen.findByRole('button', { name: /Save settings/ }))
+    expect(
+      await screen.findByText('Refused by the server: this allowedHosts change would lock out the current host'),
+    ).toBeInTheDocument()
+  })
+
+  it('the media-clients hint says empty = local network only', async () => {
+    render(<SettingsView lists={LISTS} onListsChanged={() => {}} />)
+    expect(await screen.findByText(/Empty = only devices on your local network\./)).toBeInTheDocument()
+    expect(screen.queryByText(/Empty = every client/)).toBeNull()
   })
 })
 

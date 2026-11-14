@@ -9,6 +9,7 @@ import {
 import { SEARCH_DEBOUNCE_MS, useDebounced } from '../hooks/useDebounced'
 import { readSortMode, SORT_MODE_EVENT } from '../lib/storage'
 import { useT } from '../i18n'
+import { mirrorMaster } from '../lib/mirror'
 
 // re-render cadence that keeps the "on now" highlight current
 const NOW_TICK_MS = 60_000
@@ -102,6 +103,17 @@ export function EpgView({ lists, activeListId }: Props) {
       )}
     </section>
   )
+}
+
+/** Prefix of the guide id the backend publishes for a channel without any tvg-id
+ *  (IPTV.Output.Builder cSyntheticGuideIdPrefix), e.g. one matched to an extra EPG by name. */
+const SYNTHETIC_GUIDE_ID_PREFIX = 'iptv-'
+
+/** The guide id a bouquet channel is published under: override, upstream tvg-id, or the
+ *  synthetic id of its stream. */
+function guideIdOf(it: CustomItem): string {
+  const tvg = (it.tvgIdOverride || it.streamTvgId || '').trim()
+  return tvg || (it.streamItemId ? SYNTHETIC_GUIDE_ID_PREFIX + it.streamItemId : '')
 }
 
 /** SOURCE mode: pick a live channel that has a tvgId, then show its source EPG. */
@@ -279,15 +291,22 @@ function OwnEpg({
   // so the guide grid can show the channel — logo + name — instead of a bare tvg-id.
   // A list switch drops the previous list's labels/lanes at once (runs before the
   // fetch below); a reload of the SAME list keeps them until the new rows arrive.
+  // A mirror bouquet has no channels of its own: its labels and lane order come
+  // from its master (the guide itself, listEpg, stays on the mirror)
+  const channelListId = useMemo(() => {
+    if (listId === '') return ''
+    const sel = lists.find((l) => l.id === listId)
+    return mirrorMaster(sel, lists)?.id ?? listId
+  }, [listId, lists])
   useEffect(() => {
     setItems([])
     setGroups([])
-  }, [listId])
+  }, [channelListId])
   useEffect(() => {
-    if (listId === '') return
+    if (channelListId === '') return
     let cancelled = false
     api
-      .listItems(listId)
+      .listItems(channelListId)
       .then((rows) => {
         if (!cancelled) setItems(rows)
       })
@@ -296,7 +315,7 @@ function OwnEpg({
       })
     // groups give the lanes the bouquet's order (favorites first, then A→Z / drag order)
     api
-      .listGroups(listId)
+      .listGroups(channelListId)
       .then((rows) => {
         if (!cancelled) setGroups(rows ?? [])
       })
@@ -306,12 +325,12 @@ function OwnEpg({
     return () => {
       cancelled = true
     }
-  }, [listId, reloadKey])
+  }, [channelListId, reloadKey])
 
   const chInfo = useMemo(() => {
     const m = new Map<string, { name: string; logo: string }>()
     for (const it of items) {
-      const tvg = (it.tvgIdOverride || it.streamTvgId || '').trim()
+      const tvg = guideIdOf(it)
       if (!tvg || m.has(tvg)) continue
       m.set(tvg, {
         name: it.displayName || it.streamName || tvg,
@@ -349,7 +368,7 @@ function OwnEpg({
   const laneRank = useMemo(() => {
     const m = new Map<string, number>()
     for (const it of bouquetOrder(groups, items, sortMode)) {
-      const tvg = (it.tvgIdOverride || it.streamTvgId || '').trim()
+      const tvg = guideIdOf(it)
       if (tvg && !m.has(tvg)) m.set(tvg, m.size)
     }
     return m

@@ -154,6 +154,10 @@ type
     /// Reverse proxies (exact IPs) whose X-Forwarded-For header is believed for the
     /// failed-login lockout, so clients behind them are not all one key. Empty = none.
     TrustedProxies: TArray<string>;
+    /// Extra host names the admin API accepts in the Host header while NO admin
+    /// password is set (DNS-rebinding guard; IP literals, localhost, single-label and
+    /// .local/.lan/.home.arpa/.internal names and the publicBaseUrl host always pass).
+    AllowedHosts: TArray<string>;
     // Dummy EPG: when a channel has NO real guide data, emit filler programmes so
     // Plex/Jellyfin show a proper line-up instead of "Unknown airing". Channels
     // WITH real EPG are untouched. Applied to the tuner + Plex/root XMLTV output.
@@ -281,6 +285,7 @@ const
   cKeyExtraEpgUrls = 'extraEpgUrls';
   cKeyMediaAllowedClients = 'mediaAllowedClients';
   cKeyTrustedProxies = 'trustedProxies';
+  cKeyAllowedHosts = 'allowedHosts';
 
 var
   GConfigSaveLock: TCriticalSection;
@@ -348,6 +353,7 @@ begin
   Result.ExtraEpgUrls := [];
   Result.MediaAllowedClients := [];
   Result.TrustedProxies := [];
+  Result.AllowedHosts := [];
   Result.DummyEpgEnabled := True;
   Result.DummyEpgBlockMinutes := cDefaultDummyEpgBlockMinutes;
   Result.DummyEpgHoursBack := cDefaultDummyEpgHoursBack;
@@ -443,6 +449,10 @@ begin
     for lItem in TrustedProxies do
       lGroupArr.Add(lItem);
     lJson.AddPair(cKeyTrustedProxies, lGroupArr);
+    lGroupArr := TJSONArray.Create;
+    for lItem in AllowedHosts do
+      lGroupArr.Add(lItem);
+    lJson.AddPair(cKeyAllowedHosts, lGroupArr);
     // atomic-ish: write a temp file, then swap it in, so a crash or a concurrent
     // save never leaves a truncated config.json (which would load as defaults:
     // admin open, Plex token gone); one save at a time
@@ -630,6 +640,20 @@ begin
           if (lItem is TJSONString) and (TJSONString(lItem).Value.Trim <> '') then
             lGroups.Add(TJSONString(lItem).Value.Trim);
         Result.TrustedProxies := lGroups.ToArray;
+      finally
+        FreeAndNil(lGroups);
+      end;
+    end;
+    // allowedHosts[] - Host names accepted by the admin API without a password
+    lGroupsVal := lJson.GetValue(cKeyAllowedHosts);
+    if lGroupsVal is TJSONArray then
+    begin
+      lGroups := TList<string>.Create;
+      try
+        for lItem in TJSONArray(lGroupsVal) do
+          if (lItem is TJSONString) and (TJSONString(lItem).Value.Trim <> '') then
+            lGroups.Add(TJSONString(lItem).Value.Trim);
+        Result.AllowedHosts := lGroups.ToArray;
       finally
         FreeAndNil(lGroups);
       end;

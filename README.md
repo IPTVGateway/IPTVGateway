@@ -151,8 +151,9 @@ actually chose.
 - An XMLTV guide restricted to your chosen channels, with optional dummy EPG for
   channels that have no guide.
 - **Plex Live TV & DVR**: an HDHomeRun emulation with SSDP discovery, or an M3U
-  tuner with XMLTV. These addresses have no login, so they can be limited to known
-  clients (Settings → "Media servers: allowed clients").
+  tuner with XMLTV. These addresses have no login: by default they only answer
+  devices on your local network, and they can be limited further to known clients
+  (Settings → "Media servers: allowed clients").
 - An optional stream proxy and cross-provider failover.
 - Optional HTTPS and an admin password.
 

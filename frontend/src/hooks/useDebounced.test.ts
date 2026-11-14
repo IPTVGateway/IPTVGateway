@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
-import { useDebounced } from './useDebounced'
+import { isBlank, useDebounced } from './useDebounced'
 
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
@@ -36,5 +36,17 @@ describe('useDebounced', () => {
     expect(result.current).toBe('a') // still within the reset window
     tick(100)
     expect(result.current).toBe('c') // settles on the latest
+  })
+
+  it('a reset value applies at once and the old value never comes back', () => {
+    const { result, rerender } = renderHook(({ v }) => useDebounced(v, 300, isBlank), {
+      initialProps: { v: 'old' },
+    })
+    rerender({ v: '' }) // cleared: follows immediately
+    expect(result.current).toBe('')
+    rerender({ v: 'n' }) // typed again within the window
+    expect(result.current).toBe('') // never 'old'
+    tick(300)
+    expect(result.current).toBe('n')
   })
 })

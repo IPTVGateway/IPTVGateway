@@ -1,7 +1,10 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
 import { api, type SettingsBundle } from '../api/client'
 import type { AppConfig, CustomList, MirrorCredential, Source } from '../types'
 import { isMirror } from '../lib/mirror'
+import { MASKED_SECRET } from '../lib/constants'
+import { MAX_REQUEST_BODY_BYTES, describeError } from '../lib/errors'
+import { SECRET_KEEP, SecretField, secretValue, type SecretEdit } from './SecretField'
 import { useI18n, useT } from '../i18n'
 
 // valid TCP port range for the relay (proxy) port
@@ -108,6 +111,11 @@ function SettingsIO({ onChanged }: { onChanged: () => void }) {
     const file = e.target.files?.[0]
     e.target.value = '' // allow re-picking the same file
     if (!file) return
+    // the backend refuses bodies over its cap (413): say so before uploading
+    if (file.size > MAX_REQUEST_BODY_BYTES) {
+      setError(t('Too large for the server (413): it accepts at most 64 MB per request.'))
+      return
+    }
     try {
       const bundle = JSON.parse(await file.text()) as SettingsBundle
       if (!bundle || (!bundle.sources && !bundle.lists)) {
@@ -134,7 +142,7 @@ function SettingsIO({ onChanged }: { onChanged: () => void }) {
       setPending(null)
       onChanged()
     } catch (e) {
-      setError((e as Error).message)
+      setError(describeError(e, t))
     } finally {
       setBusy(false)
     }
@@ -258,7 +266,7 @@ function ServiceSettings() {
       setOrig(next)
       setSaved(true)
     } catch (err) {
-      setError((err as Error).message)
+      setError(describeError(err, t))
     } finally {
       setBusy(false)
     }
@@ -321,6 +329,11 @@ function ServiceSettings() {
               value={(cfg.extraEpgUrls ?? []).join('\n')}
               onChange={(e) => patch({ extraEpgUrls: e.target.value.split('\n') })}
             />
+            {(cfg.extraEpgUrls ?? []).some((u) => u.includes(MASKED_SECRET)) && (
+              <span className="hint">
+                {t('*** hides a stored secret; it is kept on save. Type the full value to change it.')}
+              </span>
+            )}
             <span className="hint">
               {t('One XMLTV address per line (.xml or .xml.gz), e.g. a country guide. Channels are matched by name or tvg-id and get these programmes instead of the provider’s own guide, unless that source has “Own EPG before the extra EPG source”. Channel ids and numbers stay the same. Fetched with every refresh or “Update EPG”. The first line wins when guides overlap.')}
             </span>
@@ -336,7 +349,7 @@ function ServiceSettings() {
               onChange={(e) => patch({ mediaAllowedClients: e.target.value.split('\n') })}
             />
             <span className="hint">
-              {t('The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = every client.')}
+              {t('The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = only devices on your local network.')}
             </span>
           </fieldset>
 
@@ -436,23 +449,27 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
 
   // A mirror's own provider accounts are stored separately, AFTER the list: the
   // backend only accepts them once the list is (saved as) a mirror.
+  // resolves true when everything sent (list + accounts) was stored
   async function saveExisting(
     patch: Partial<CustomList> & { id: number },
     credentials?: MirrorCredential[],
-  ) {
+  ): Promise<boolean> {
     setError(null)
     try {
       await api.saveList(patch)
     } catch (err) {
-      setError((err as Error).message)
-      return
+      setError(describeError(err, t))
+      return false
     }
+    let ok = true
     try {
       if (credentials) await api.saveMirrorCredentials(patch.id, credentials)
     } catch (err) {
-      setError((err as Error).message)
+      setError(describeError(err, t))
+      ok = false
     }
     onChanged()
+    return ok
   }
 
   async function createList(draft: Partial<CustomList>, credentials?: MirrorCredential[]) {
@@ -467,14 +484,14 @@ function ListManager({ lists, onChanged }: ListManagerProps) {
         mirrorOfListId: draft.mirrorOfListId ?? 0,
       })
     } catch (err) {
-      setError((err as Error).message)
+      setError(describeError(err, t))
       throw err // the editor keeps the typed values on failure
     }
     try {
       if (credentials && saved?.id) await api.saveMirrorCredentials(saved.id, credentials)
     } catch (err) {
       // the list exists now; only its accounts failed - edit it to retry
-      setError((err as Error).message)
+      setError(describeError(err, t))
     }
     onChanged()
   }
@@ -546,28 +563,56 @@ interface ListEditorProps {
   list?: CustomList
   /** Every list (the "Mirror of" choices). */
   lists: CustomList[]
-  onSave?: (patch: Partial<CustomList> & { id: number }, credentials?: MirrorCredential[]) => void
+  /** resolves true when the list (and the accounts sent with it) were stored */
+  onSave?: (patch: Partial<CustomList> & { id: number }, credentials?: MirrorCredential[]) => Promise<boolean>
   onDelete?: (l: CustomList) => void
   onCreate?: (draft: Partial<CustomList>, credentials?: MirrorCredential[]) => Promise<void>
   onCreated?: () => void
 }
 
-/** A mirror's per-source account as edited in the form ('' = the source's own value). */
-type CredForm = Record<number, { url: string; username: string; password: string }>
-const EMPTY_CRED = { url: '', username: '', password: '' }
+/** A mirror's per-source account as edited in the form ('' = the source's own value).
+ *  The password is write-only: `hasPassword` = one is stored; the edit is typed in
+ *  (sent), an explicit clear (clearPassword) or untouched (omitted = kept). */
+interface CredRow {
+  url: string
+  username: string
+  password: SecretEdit
+  hasPassword: boolean
+}
+type CredForm = Record<number, CredRow>
+const EMPTY_CRED: CredRow = { url: '', username: '', password: SECRET_KEEP, hasPassword: false }
+type CredField = 'url' | 'username'
+
+/** The stored rows as form rows (the password itself is never returned). */
+function credsToForm(rows: MirrorCredential[] | undefined): CredForm {
+  const next: CredForm = {}
+  for (const r of rows ?? [])
+    next[r.sourceId] = {
+      url: r.url ?? '',
+      username: r.username ?? '',
+      password: SECRET_KEEP,
+      hasPassword: r.hasPassword ?? false,
+    }
+  return next
+}
 
 /** The rows worth storing: trimmed, and only sources with at least one value. */
 function credentialsToSave(sources: Source[], creds: CredForm): MirrorCredential[] {
   const out: MirrorCredential[] = []
   for (const src of sources) {
     const c = creds[src.id] ?? EMPTY_CRED
-    const row = {
-      sourceId: src.id,
-      url: c.url.trim(),
-      username: c.username.trim(),
-      password: c.password.trim(),
-    }
-    if (row.url || row.username || row.password) out.push(row)
+    const url = c.url.trim()
+    const username = c.username.trim()
+    const password = secretValue(c.password)
+    // the password counts when typed in, or when a stored one is kept (no clear)
+    const hasPw = password !== undefined || (c.hasPassword && !c.password.clear)
+    // a row left empty (also by clearing its only value) is dropped = removed
+    if (!url && !username && !hasPw) continue
+    const row: MirrorCredential = { sourceId: src.id, url, username }
+    // typed in = set; explicit clear = clearPassword; else omitted (= kept)
+    if (password !== undefined) row.password = password
+    else if (c.password.clear && c.hasPassword) row.clearPassword = true
+    out.push(row)
   }
   return out
 }
@@ -584,7 +629,11 @@ function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: List
   const [enabled, setEnabled] = useState(list?.enabled ?? true)
   const [mirrorOf, setMirrorOf] = useState(list?.mirrorOfListId ?? 0)
   const [sources, setSources] = useState<Source[] | null>(null)
+  const [sourcesError, setSourcesError] = useState<string | null>(null)
   const [creds, setCreds] = useState<CredForm>({})
+  // the stored accounts of an existing mirror: only a loaded set may be replaced
+  const [credsLoaded, setCredsLoaded] = useState(!isMirror(list))
+  const [credsError, setCredsError] = useState<string | null>(null)
   const [credsDirty, setCredsDirty] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -604,39 +653,60 @@ function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: List
       .then((s) => {
         if (!cancelled) setSources(s)
       })
-      .catch(() => {
-        if (!cancelled) setSources([])
+      .catch((e) => {
+        if (cancelled) return
+        setSources([])
+        setSourcesError((e as Error).message)
       })
     return () => {
       cancelled = true
     }
   }, [mirroring, sources])
 
-  // the stored accounts of an existing mirror
+  // the stored accounts of an existing mirror (on open, and again after a save:
+  // the editor then shows what is stored and is clean again)
   const listId = list?.id
   const storedMirror = isMirror(list)
+  const loadCreds = useCallback(
+    (isCancelled: () => boolean = () => false) => {
+      if (listId == null) return
+      api
+        .getMirrorCredentials(listId)
+        .then((rows) => {
+          if (isCancelled()) return
+          setCreds(credsToForm(rows))
+          setCredsDirty(false)
+          setCredsError(null)
+          setCredsLoaded(true)
+        })
+        .catch((e) => {
+          if (!isCancelled()) setCredsError((e as Error).message)
+        })
+    },
+    [listId],
+  )
   useEffect(() => {
-    if (listId == null || !storedMirror) return
+    if (!storedMirror) return
     let cancelled = false
-    api
-      .getMirrorCredentials(listId)
-      .then((rows) => {
-        if (cancelled) return
-        const next: CredForm = {}
-        for (const r of rows ?? [])
-          next[r.sourceId] = { url: r.url ?? '', username: r.username ?? '', password: r.password ?? '' }
-        setCreds(next)
-      })
-      .catch(() => {})
+    loadCreds(() => cancelled)
     return () => {
       cancelled = true
     }
-  }, [listId, storedMirror])
+  }, [storedMirror, loadCreds])
 
-  function setCred(sourceId: number, field: keyof typeof EMPTY_CRED, value: string) {
+  function setCred(sourceId: number, field: CredField, value: string) {
     setCreds((prev) => ({ ...prev, [sourceId]: { ...(prev[sourceId] ?? EMPTY_CRED), [field]: value } }))
     setCredsDirty(true)
   }
+
+  function setCredPassword(sourceId: number, password: SecretEdit) {
+    setCreds((prev) => ({ ...prev, [sourceId]: { ...(prev[sourceId] ?? EMPTY_CRED), password } }))
+    setCredsDirty(true)
+  }
+
+  // the account table is usable (and may be saved) only when both fetches loaded
+  const credsReady = sources != null && sourcesError == null && credsLoaded && credsError == null
+  const credsLoading = mirroring && (sources == null || (!credsLoaded && credsError == null))
 
   const dirty =
     !list ||
@@ -651,19 +721,30 @@ function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: List
     e.preventDefault()
     if (!name.trim()) return
     // only a mirror has accounts of its own (the backend refuses them otherwise)
-    const credentials = mirroring ? credentialsToSave(sources ?? [], creds) : undefined
+    // ...and only when the user edited them on a fully loaded table: a table that
+    // failed to load (or hasn't yet) would otherwise wipe the stored accounts
+    const credentials =
+      mirroring && credsDirty && credsReady ? credentialsToSave(sources ?? [], creds) : undefined
     if (list) {
-      onSave?.(
-        {
-          id: list.id,
-          name: name.trim(),
-          outputUsername: username.trim(),
-          outputPassword: password.trim(),
-          enabled,
-          mirrorOfListId: mirrorOf,
-        },
-        credentials,
-      )
+      setBusy(true)
+      try {
+        const ok = await onSave?.(
+          {
+            id: list.id,
+            name: name.trim(),
+            outputUsername: username.trim(),
+            outputPassword: password.trim(),
+            enabled,
+            mirrorOfListId: mirrorOf,
+          },
+          credentials,
+        )
+        // accounts stored: re-read them, so the table shows what is stored and is
+        // clean again (saving only the accounts changes no list field: no remount)
+        if (ok && credentials) loadCreds()
+      } finally {
+        setBusy(false)
+      }
       return
     }
     setBusy(true)
@@ -679,6 +760,7 @@ function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: List
       setMirrorOf(0)
       setCreds({})
       setCredsDirty(false)
+      setSourcesError(null)
       onCreated?.()
     } catch {
       // the parent shows the error; keep the form values for a retry
@@ -738,7 +820,14 @@ function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: List
 
       {mirroring && (
         <div className="mirror-creds">
-          {sources == null ? (
+          {sourcesError || credsError ? (
+            <p className="error">
+              {t('Could not load the provider accounts: {error}').replace(
+                '{error}',
+                sourcesError ?? credsError ?? '',
+              )}
+            </p>
+          ) : credsLoading || sources == null ? (
             <p className="muted">{t('Loading…')}</p>
           ) : sources.length === 0 ? (
             <p className="muted">{t('No sources yet.')}</p>
@@ -776,11 +865,15 @@ function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: List
                           />
                         </td>
                         <td>
-                          <input
-                            aria-label={t('Password for {source}').replace('{source}', src.name)}
+                          <SecretField
+                            type="text"
+                            ariaLabel={t('Password for {source}').replace('{source}', src.name)}
                             placeholder={t('(same as the source)')}
-                            value={c.password}
-                            onChange={(e) => setCred(src.id, 'password', e.target.value)}
+                            edit={c.password}
+                            hasStored={c.hasPassword}
+                            clearTitle={t('Remove the stored password')}
+                            clearAriaLabel={t('Clear password for {source}').replace('{source}', src.name)}
+                            onChange={(e) => setCredPassword(src.id, e)}
                           />
                         </td>
                       </tr>
@@ -797,7 +890,7 @@ function ListEditor({ list, lists, onSave, onDelete, onCreate, onCreated }: List
       )}
 
       <div className="form-actions">
-        <button type="submit" disabled={busy || !name.trim() || !dirty}>
+        <button type="submit" disabled={busy || !name.trim() || !dirty || credsLoading}>
           {list ? t('Save') : busy ? t('Adding…') : t('Add list')}
         </button>
         {list &&

@@ -101,6 +101,20 @@ type
     [Test] procedure RewriteProviderUrl_UnrecognisedUnchanged;
     /// <summary>Credentials in URLs are masked.</summary>
     [Test] procedure MaskUrlSecrets_HidesCredentials;
+    /// <summary>The short Xtream form host/USER/PASS/123.ext is masked too (also in a message).</summary>
+    [Test] procedure MaskUrlSecrets_HidesShortXtreamPath;
+    /// <summary>MaskUrlQuerySecrets hides only the values of the secret query keys.</summary>
+    [Test] procedure MaskUrlQuerySecrets_HidesSecretValues;
+    /// <summary>RestoreMaskedUrlSecrets puts the stored values back for '***' and drops unknown ones.</summary>
+    [Test] procedure RestoreMaskedUrlSecrets_RestoresStored;
+    /// <summary>Only ts/m3u8 may be swapped into a live URL; anything else is ''.</summary>
+    [Test] procedure LiveRequestExt_OnlyTsAndHls;
+    /// <summary>The relay file name is rebuilt from the stream id + a safe extension.</summary>
+    [Test] procedure RelayStreamFileName_FromResolvedId;
+    /// <summary>Forced HLS only counts when the URL really is a playlist.</summary>
+    [Test] procedure IsHlsUrl_ByPathExtension;
+    /// <summary>The strict content-type parse rejects unknown names.</summary>
+    [Test] procedure TryContentTypeFromString_Strict;
   end;
 
 implementation
@@ -399,6 +413,94 @@ begin
   Assert.AreEqual('http://p.tv/xmltv.php?USERNAME=***&Password=***',
     MaskUrlSecrets('http://p.tv/xmltv.php?USERNAME=bob&Password=x'), 'case-insensitive');
   Assert.AreEqual('http://p.tv/guide.xml', MaskUrlSecrets('http://p.tv/guide.xml'), 'nothing to hide');
+end;
+
+procedure TUtilsTests.MaskUrlQuerySecrets_HidesSecretValues;
+begin
+  Assert.AreEqual('http://p/get.php?username=bob&password=***&type=m3u_plus',
+    MaskUrlQuerySecrets('http://p/get.php?username=bob&password=s3&type=m3u_plus'), 'username stays');
+  Assert.AreEqual('http://p/x?PASS=***&Pwd=***&TOKEN=***&key=***&ApiKey=***&api_key=***#frag',
+    MaskUrlQuerySecrets('http://p/x?PASS=a&Pwd=b&TOKEN=c&key=d&ApiKey=e&api_key=f#frag'), 'all keys, any case');
+  Assert.AreEqual('http://p/x?password=&monkey=1&keyword=k',
+    MaskUrlQuerySecrets('http://p/x?password=&monkey=1&keyword=k'), 'empty value + look-alike keys stay');
+  Assert.AreEqual('http://p/live/bob/pw/1.ts', MaskUrlQuerySecrets('http://p/live/bob/pw/1.ts'), 'no query');
+  Assert.AreEqual('http://p/a#x?token=1', MaskUrlQuerySecrets('http://p/a#x?token=1'), '? inside the fragment');
+  Assert.AreEqual('', MaskUrlQuerySecrets(''));
+end;
+
+procedure TUtilsTests.RestoreMaskedUrlSecrets_RestoresStored;
+const
+  cStored = 'http://p/get.php?username=bob&password=s%26cret&token=t1';
+begin
+  Assert.AreEqual(cStored, RestoreMaskedUrlSecrets(MaskUrlQuerySecrets(cStored), cStored), 'round trip');
+  Assert.AreEqual('http://q/get.php?username=ann&password=s%26cret&token=t1',
+    RestoreMaskedUrlSecrets('http://q/get.php?username=ann&password=***&token=***', cStored),
+    'other parts edited, secrets kept');
+  Assert.AreEqual('http://p/get.php?username=bob&password=new&token=t1',
+    RestoreMaskedUrlSecrets('http://p/get.php?username=bob&password=new&token=***', cStored), 'a new value wins');
+  Assert.AreEqual('http://p/get.php?username=bob&PASSWORD=s%26cret',
+    RestoreMaskedUrlSecrets('http://p/get.php?username=bob&PASSWORD=%2A%2A%2A&key=***', cStored),
+    'case-insensitive, encoded mask, a param absent in the stored URL is dropped');
+  Assert.AreEqual('http://p/xmltv.php#f', RestoreMaskedUrlSecrets('http://p/xmltv.php?apikey=***#f', ''),
+    'nothing left: no "?"');
+  Assert.AreEqual('http://p/x?a=1', RestoreMaskedUrlSecrets('http://p/x?a=1', cStored), 'nothing masked');
+end;
+
+procedure TUtilsTests.MaskUrlSecrets_HidesShortXtreamPath;
+begin
+  Assert.AreEqual('http://p.tv:8080/***/***/123.ts', MaskUrlSecrets('http://p.tv:8080/bob/s3cr3t/123.ts'));
+  Assert.AreEqual('http://p.tv/***/***/123.m3u8', MaskUrlSecrets('http://p.tv/bob/s3cr3t/123.m3u8'));
+  Assert.AreEqual('http://p.tv/***/***/123', MaskUrlSecrets('http://p.tv/bob/s3cr3t/123'), 'no extension');
+  Assert.AreEqual('http://p.tv/***/***/77.mp4?token=***', MaskUrlSecrets('http://p.tv/bob/pw/77.mp4?token=abc'));
+  Assert.AreEqual('HTTP 403 fetching http://p.tv/***/***/5.ts (x)',
+    MaskUrlSecrets('HTTP 403 fetching http://p.tv/bob/pw/5.ts (x)'), 'inside a message');
+  Assert.AreEqual('http://p.tv/stream/***/***/5.ts', MaskUrlSecrets('http://p.tv/stream/bob/pw/5.ts'));
+  Assert.AreEqual('http://p.tv/movie/***/***/9.mkv', MaskUrlSecrets('http://p.tv/movie/bob/pw/9.mkv'),
+    'typed path once, not twice');
+  Assert.AreEqual('http://p.tv/logos/nl/npo1.png', MaskUrlSecrets('http://p.tv/logos/nl/npo1.png'),
+    'a non-numeric file name is no Xtream stream');
+end;
+
+procedure TUtilsTests.LiveRequestExt_OnlyTsAndHls;
+begin
+  Assert.AreEqual('ts', LiveRequestExt('ts'));
+  Assert.AreEqual('ts', LiveRequestExt('TS'));
+  Assert.AreEqual('m3u8', LiveRequestExt('M3U8'));
+  Assert.AreEqual('', LiveRequestExt('mp4'));
+  Assert.AreEqual('', LiveRequestExt('ts/../x'));
+  Assert.AreEqual('', LiveRequestExt(''));
+end;
+
+procedure TUtilsTests.RelayStreamFileName_FromResolvedId;
+begin
+  Assert.AreEqual('42.ts', RelayStreamFileName(42, 'ts'));
+  Assert.AreEqual('42.m3u8', RelayStreamFileName(42, 'm3u8'));
+  Assert.AreEqual('42.mkv', RelayStreamFileName(42, 'mkv'), 'a movie container');
+  Assert.AreEqual('42.ts', RelayStreamFileName(42, ''), 'none -> ts');
+  Assert.AreEqual('42.ts', RelayStreamFileName(42, 'ts/../../x'), 'path junk -> ts');
+  Assert.AreEqual('42.ts', RelayStreamFileName(42, 'ts%0d%0aX'), 'header junk -> ts');
+end;
+
+procedure TUtilsTests.IsHlsUrl_ByPathExtension;
+begin
+  Assert.IsTrue(IsHlsUrl('http://p/live/u/p/1.m3u8'));
+  Assert.IsTrue(IsHlsUrl('http://p/live/u/p/1.M3U8?token=x'));
+  Assert.IsFalse(IsHlsUrl('http://p/1.ts'), 'an M3U source''s .ts stays .ts');
+  Assert.IsFalse(IsHlsUrl('http://p/radio.mp3'));
+  Assert.IsFalse(IsHlsUrl('http://p/play.php?f=x.m3u8'), 'only the path counts');
+end;
+
+procedure TUtilsTests.TryContentTypeFromString_Strict;
+var
+  lType: TContentType;
+begin
+  Assert.IsTrue(TryContentTypeFromString('Movie', lType));
+  Assert.AreEqual(Ord(ctMovie), Ord(lType));
+  Assert.IsTrue(TryContentTypeFromString('radio', lType));
+  Assert.AreEqual(Ord(ctRadio), Ord(lType));
+  Assert.IsFalse(TryContentTypeFromString('films', lType), 'unknown');
+  Assert.IsFalse(TryContentTypeFromString('', lType), 'empty');
+  Assert.AreEqual(Ord(ctLive), Ord(ContentTypeFromString('films')), 'the lenient parse is unchanged');
 end;
 
 procedure TUtilsTests.EpgIdKey_StripsOnlyCountryCodes;

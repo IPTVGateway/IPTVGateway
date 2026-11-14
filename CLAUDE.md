@@ -224,7 +224,7 @@ $BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
 $DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (213 tests as of 1.2.39+seen-all)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (281 tests as of 1.2.40+hunt2)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -236,7 +236,7 @@ small scratch console program that uses `TSQLiteStore` on a COPY of it.
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
-npx vitest run     # 149 tests as of 1.2.39+seen-all
+npx vitest run     # 195 tests as of 1.2.40+hunt2
 npm run build      # tsc -b && vite build
 ```
 
@@ -466,6 +466,45 @@ compose therefore only need the data volume.
   `api/client.ts` sends it); checked in `BeforeHandleRequest`.
 - **Settings import** runs inside `IStore.RunInTransaction` (the locking store calls
   the underlying store under its write lock - no re-entrant locking).
+
+## Hardening 2 (after 1.2.40)
+
+Pure helpers live in `IPTV.Api.Security` (tests `Test.Security`) and, for the relay,
+`IPTV.Api.RelayRules` (tests `Test.Relay`).
+- **No admin password = LAN only:** `/api` then needs a local client (`IsLocalClient`, via
+  `trustedProxies` + XFF) AND a LAN-style Host (`IsAllowedAdminHost`: IP literal,
+  localhost, single label, .local/.lan/.home/.box/.localdomain/.home.arpa/.internal/
+  .ts.net/.myunraid.net, the `publicBaseUrl` host, `config.json` `allowedHosts`). A
+  config change/import that would lock out the current Host is refused / keeps it.
+- **Login-free surfaces** (Plex/HDHR always; box routes with an empty or `-` login): the
+  same Host rule; Plex/HDHR with an empty `mediaAllowedClients` only for private/local
+  clients (incl. 100.64/10), resolved through `trustedProxies`.
+- **Pre-auth:** `BeforeHandleRequest` checks the admin header (or a path-bound `?dt=`)
+  for `/api` (except health) before MARS parses the body; JSON nesting > 64 → 400.
+- **Body cap:** `OnHeadersAvailable`: 1 MB, 64 MB for `/api/import` (`MaxBodyBytesFor`),
+  chunked → 411; read timeout 30 s per connection. The relay refuses any body.
+- **Write-only secrets:** GET sources `password` "" + `hasPassword`, config `plexToken` ""
+  + `hasPlexToken`, mirror rows `password` "" + `hasPassword`; URLs (source url/epgUrl,
+  `extraEpgUrls`) go through `MaskUrlQuerySecrets` (`***`) and back through
+  `RestoreMaskedUrlSecrets`. POST: missing or "" keeps, `clearPassword` /
+  `clearPlexToken: true` clears. Export (`SourceToJson`, `ConfigToJson(cWithSecrets)`)
+  stays complete.
+- **Download tokens:** `POST /api/download-token {path}` → CSPRNG token, valid 60 s for
+  that one export path (`/api/lists/{id}/export.m3u|xmltv`), reusable in the window; a
+  bad `dt` never counts as a failed login. `?pw=` is gone.
+- **Lockout:** warm-up only with the real per-start token (`IsWarmupRequest`); a real
+  login (`IsRealLoginName`) is needed to `RegisterSuccess`; XFF lines joined, walked
+  right-to-left; IPv6 keyed per /64; a full table evicts counting entries, never lockouts.
+- **Relay:** never loopback; LAN targets only when the candidate's host is a configured
+  source server on the LAN (`IsConfiguredInternalHost`), checked on the CONNECTED peer
+  of every hop (`OnConnected` → `IsRelayPeerAllowed`) and on redirects; send timeout 30 s
+  live / 10 min VOD + catch-up (`RelaySendTimeoutMs`); catch-up id digits only, ext
+  ts/m3u8 (m3u8 → 302); portal paths 302 to the `publicBaseUrl` address.
+- **Settings changes** are serialised (`TAppContext.FConfigLock`, then `TApiServer`
+  `FSyncLock`); a relay rebind binds the new port first (400 "Port N is in use");
+  failing Plex/media steps roll back (400). SSDP only answers private addresses.
+- **Extra EPG slots** are recorded per URL (`extra_epg.slot_url.N`); a changed slot is
+  settled by its next download (`ApplyExtraEpgDownload`), removed URLs go at once.
 
 ## Log tab (1.2.34)
 

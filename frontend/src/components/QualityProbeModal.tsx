@@ -19,7 +19,10 @@ interface Props {
   onClose: () => void
 }
 
-type RowState = ProbeResult | 'busy' | undefined
+// 'stopped' = the run was stopped while this row was being measured
+type RowState = ProbeResult | 'busy' | 'stopped' | undefined
+const ROW_BUSY = 'busy'
+const ROW_STOPPED = 'stopped'
 
 const SECONDS = [5, 8, 15] as const
 
@@ -79,7 +82,7 @@ export function QualityProbeModal({ streamId, title, sources, listId, item, onRe
       setRunning(true)
       for (const v of vs) {
         if (runToken.current !== token) return // stopped / closed / restarted
-        setResults((r) => ({ ...r, [v.streamId]: 'busy' }))
+        setResults((r) => ({ ...r, [v.streamId]: ROW_BUSY }))
         let res: ProbeResult
         try {
           res = await api.probeStream(v.streamId, secs)
@@ -133,6 +136,12 @@ export function QualityProbeModal({ streamId, title, sources, listId, item, onRe
   function stop() {
     runToken.current++
     setRunning(false)
+    // the in-flight measurement's result is discarded: don't leave it on "measuring…"
+    setResults((r) => {
+      const next: Record<number, RowState> = {}
+      for (const [k, v] of Object.entries(r)) next[Number(k)] = v === ROW_BUSY ? ROW_STOPPED : v
+      return next
+    })
   }
 
   async function applyVariant(v: StreamVariant) {
@@ -160,7 +169,7 @@ export function QualityProbeModal({ streamId, title, sources, listId, item, onRe
     let best = 0
     let id = 0
     for (const [k, r] of Object.entries(results))
-      if (r && r !== 'busy' && r.ok && r.bitrateKbps > best) {
+      if (r && typeof r === 'object' && r.ok && r.bitrateKbps > best) {
         best = r.bitrateKbps
         id = Number(k)
       }
@@ -232,7 +241,7 @@ export function QualityProbeModal({ streamId, title, sources, listId, item, onRe
             <tbody>
               {variants.map((v) => {
                 const r = results[v.streamId]
-                const done = r && r !== 'busy' ? r : null
+                const done = r && typeof r === 'object' ? r : null
                 const hints = done ? probeHints(done) : []
                 const m = done && done.ok ? done : null // media cells only for a good result
                 return (
@@ -268,7 +277,8 @@ export function QualityProbeModal({ streamId, title, sources, listId, item, onRe
                     <td>{m && m.firstByteMs > 0 ? `${(m.firstByteMs / 1000).toFixed(1)} s` : ''}</td>
                     <td>{m && m.realtime > 0 ? `×${m.realtime.toFixed(1)}` : ''}</td>
                     <td className="small">
-                      {r === 'busy' && <span className="muted">{t('measuring…')}</span>}
+                      {r === ROW_BUSY && <span className="muted">{t('measuring…')}</span>}
+                      {r === ROW_STOPPED && <span className="muted">{t('stopped')}</span>}
                       {r === undefined && running && <span className="muted">{t('waiting')}</span>}
                       {done && !done.ok && <span className="error">❌ {done.error || t('failed')}</span>}
                       {done && done.ok && hints.length === 0 && '✅'}

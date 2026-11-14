@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ListPanel } from './ListPanel'
-import type { CustomGroup, CustomItem, CustomList } from '../types'
+import type { CustomGroup, CustomItem, CustomList, Source } from '../types'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -20,16 +20,16 @@ vi.mock('../api/client', () => ({
     replaceItems: vi.fn().mockResolvedValue({ replaced: 0 }),
     restripGroup: vi.fn().mockResolvedValue([]),
     tvgIds: vi.fn().mockResolvedValue([]),
-    listSources: vi.fn().mockResolvedValue([
-      { id: 1, name: 'ProviderA', kind: 'xtream', url: '', enabled: true, contentTypes: ['live'] },
-      { id: 2, name: 'ProviderB', kind: 'xtream', url: '', enabled: true, contentTypes: ['live'] },
-    ]),
-    exportM3uUrl: () => '/api/lists/1/export.m3u',
-    exportXmltvUrl: () => '/api/lists/1/export.xmltv',
+    downloadExportM3u: vi.fn().mockResolvedValue(undefined),
+    downloadExportXmltv: vi.fn().mockResolvedValue(undefined),
   },
 }))
 import { api } from '../api/client'
 
+const SOURCES: Source[] = [
+  { id: 1, name: 'ProviderA', kind: 'xtream', url: '', enabled: true, contentTypes: ['live'] },
+  { id: 2, name: 'ProviderB', kind: 'xtream', url: '', enabled: true, contentTypes: ['live'] },
+]
 const LISTS: CustomList[] = [
   { id: 1, name: 'L', outputUsername: '', outputPassword: '', enabled: true },
 ]
@@ -47,6 +47,7 @@ function renderPanel(over: Partial<Parameters<typeof ListPanel>[0]> = {}) {
   return render(
     <ListPanel
       lists={LISTS}
+      sources={SOURCES}
       activeListId={1}
       onSelectList={() => {}}
       groups={GROUPS}
@@ -62,6 +63,43 @@ function renderPanel(over: Partial<Parameters<typeof ListPanel>[0]> = {}) {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear() // sort-mode is persisted; isolate tests
+})
+
+describe('ListPanel — sources + downloads', () => {
+  it('downloads are buttons (no credential-less href) and fetch a token on click', async () => {
+    renderPanel()
+    const btn = screen.getByTitle('Download playlist as M3U')
+    expect(btn.tagName).toBe('BUTTON')
+    expect(btn.getAttribute('href')).toBeNull()
+    await userEvent.click(btn)
+    expect(api.downloadExportM3u).toHaveBeenCalledWith(1)
+  })
+
+  it('shows why a download failed', async () => {
+    vi.mocked(api.downloadExportXmltv).mockRejectedValueOnce(new Error('503 down'))
+    renderPanel()
+    await userEvent.click(screen.getByTitle('Download EPG as XMLTV'))
+    expect(await screen.findByText('503 down')).toBeInTheDocument()
+  })
+
+  it('re-fetches the guide ids when the app sources change', async () => {
+    const { rerender } = renderPanel()
+    await waitFor(() => expect(api.tvgIds).toHaveBeenCalledTimes(1))
+    rerender(
+      <ListPanel
+        lists={LISTS}
+        sources={[...SOURCES, { id: 3, name: 'ProviderC', kind: 'm3u', url: '', enabled: true, contentTypes: ['live'] }]}
+        activeListId={1}
+        onSelectList={() => {}}
+        groups={GROUPS}
+        items={ITEMS}
+        loading={false}
+        error={null}
+        onRefresh={() => {}}
+      />,
+    )
+    await waitFor(() => expect(api.tvgIds).toHaveBeenCalledTimes(2))
+  })
 })
 
 describe('ListPanel', () => {
@@ -408,6 +446,7 @@ describe('ListPanel', () => {
     rerender(
       <ListPanel
         lists={lists}
+        sources={SOURCES}
         activeListId={2}
         onSelectList={() => {}}
         groups={[]}

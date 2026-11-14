@@ -5,6 +5,119 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+### Security
+- **Without an admin password, the admin part (web app and API) only answers your local
+  network.** Clients are checked by address (through `trustedProxies` behind a reverse
+  proxy) and by host name: an IP address, `localhost`, a name without a dot, or one
+  ending in `.local`, `.lan`, `.home`, `.box` (e.g. `fritz.box`), `.localdomain`,
+  `.home.arpa`, `.internal`, `.ts.net` (Tailscale) or `.myunraid.net`, plus the host of
+  `publicBaseUrl`. This stops access from the internet when the port is forwarded, and
+  DNS rebinding from a malicious website. Add other names to the new `allowedHosts` list
+  in config.json, or set an admin password. A settings change or import that would lock
+  you out is refused / keeps your current host.
+- **Plex/HDHomeRun endpoints answer only your local network by default** (Tailscale
+  addresses count as local). They have no login and hand out the bouquet's box login
+  (and, without the relay, provider URLs). With "Allowed media clients" empty, only
+  private/local addresses get an answer; a filled list works as before. Behind a reverse
+  proxy the real client from `trustedProxies` is checked. The same host-name rule now
+  protects these endpoints and login-free box requests; boxes without a login that use a
+  public DNS name need it as the `publicBaseUrl` host or in `allowedHosts`.
+- **Provider passwords, the Plex token, mirror account passwords and secrets in source /
+  EPG URLs are no longer sent to the browser.** Passwords show as "(unchanged)"; URL
+  secrets as `***` (saved back unchanged). Leaving a field empty keeps the stored value;
+  only "clear" removes it ("will be removed on save", with undo). Settings export/import
+  still contain everything (it is a backup). Box logins of the bouquets stay visible.
+- **Download links (.m3u / EPG) use a random token bound to that one file and valid for
+  60 seconds** instead of the admin password in the URL. `?pw=` is no longer accepted.
+- **Admin requests are authenticated before their body is read and parsed**; bodies are
+  capped at 1 MB (64 MB for the settings import), chunked uploads get 411, very deeply
+  nested JSON is refused, and slow clients time out after 30 seconds.
+- **Failed-login lockout:** a fake warm-up header no longer bypasses it; a request
+  without a real login (also `username=-`) no longer resets the counter; behind a reverse
+  proxy the real client is taken from X-Forwarded-For (all header lines, right to left);
+  IPv6 clients count per /64; a flood of new addresses can no longer wipe active lockouts.
+- **Relay:** never connects to this machine itself; reaches LAN addresses only for a
+  provider whose configured server is on the LAN, checked against the address actually
+  connected to on every hop (redirects included); refuses request bodies; catch-up
+  requests only accept a numeric id with `.ts` / `.m3u8` (HLS catch-up is redirected);
+  portal paths on the relay port are redirected to the `publicBaseUrl` address.
+- **The HDHomeRun discovery responder (SSDP) only answers the local network.**
+- **Logs hide provider credentials** in short Xtream-style URLs
+  (`http://host:port/USER/PASS/123.ts`) and in error messages.
+- IP addresses written with leading zeros are no longer treated as addresses; proxy
+  redirect URLs are built from the resolved channel id; series episode links escape odd
+  characters from the provider.
+
+### Fixed
+- **A single malformed character in a provider's playlist or guide made the whole
+  refresh of that source fail** ("No mapping for the Unicode character"). It now shows
+  as a replacement character.
+- **The relay dropped a paused movie or episode after 30 seconds** (introduced during
+  this round): the timeout for a box that stops reading is 30 s for live channels and
+  10 minutes for movies, series and catch-up.
+- **The first refresh after an upgrade emptied the extra EPG guides** (introduced during
+  this round). A changed extra EPG URL keeps its guide until the new one has
+  downloaded (emptied if that fails); removed URLs disappear immediately.
+- **Simultaneous settings saves could interfere**, and a failed media-server change is
+  now fully rolled back.
+- **Catalog:** the "Mark all as seen" bar refreshes with the sources and never shows the
+  previous source's counts; a failed page stays on the requested page with its error; a
+  search typed right after clearing no longer brings back the old term.
+- **Bouquet exports are buttons** (no 401 from a middle-click / new tab).
+- **The web app explains a refused admin API** (no admin password / host not allowed) on
+  a full page, and shows 413/411/400 errors readably.
+- **Mirror bouquets:** after saving only the provider accounts the editor reloads them.
+- **Media Servers:** "Rescan Plex" / "Set up in Plex" follow the saved Plex settings and
+  ask to save first; the allowed-clients hint now says an empty list means local network.
+- **Importing settings restores the Plex bouquet by its id** (two bouquets with the same
+  name no longer get mixed up).
+- **The Docker build rebuilds the web app** when `frontend\dist` is older than its
+  sources, so an outdated web app can't end up in the image.
+- **Changing the relay port to a port that is in use stopped the running relay.** The
+  relay keeps running and the setting is refused with "Port N is in use".
+- **Saving settings is all-or-nothing when the Plex relay can't start**: a clear 400
+  instead of settings that were half applied.
+- **Proxy mode with "Live always as HLS"** sent M3U-source and radio streams straight to
+  the provider; they now go through the relay when they have no HLS form.
+- **Saving a mirror bouquet could wipe its provider accounts** when they were still
+  loading or failed to load.
+- **Catalog: after deleting the group picked as "Add to" target**, added channels got
+  lost in the bouquet; they now go to the upstream group.
+- **Settings import mixed up groups, providers or bouquets that share a name** (e.g. a
+  Live and a Movies group both called "Kids"). Exports now carry the original ids;
+  older export files still import by name. `allowedHosts` is restored too.
+- **A double quote typed in a source's filter or strip rules** was removed on every
+  restart.
+- **Plex discovery (SSDP)** advertises the new address right after `publicBaseUrl`
+  changes.
+- **Removing or reordering extra EPG sources** could leave a channel with another
+  source's old guide.
+- **Restarting the service shortly after the daily refresh** started a second full
+  refresh that day.
+- **Relay port:** boxes that call player_api.php / xmltv.php / get.php on the relay port
+  are redirected to the API port. `server_info` now carries `timestamp_now` and
+  `time_now`, like real Xtream panels.
+- Box requests for unsupported containers (e.g. `/live/…/123.mp4`) get the provider's
+  own container instead of a rewritten URL.
+- Removing duplicate channels keeps the copy from an active provider, not one from a
+  disabled provider or content type.
+- Turning a bouquet on or off, changing what it mirrors or a mirror's provider account
+  now also shows the "Plex rescan" reminder.
+- The catalog's "new" counters no longer include channels and groups the source's
+  filters hide.
+- The catalog API returns 400 for an unknown content type instead of silently using Live.
+- EPG view: shows channels matched to an extra EPG source by name (labelled with the
+  channel name), every channel when two overrides share one provider guide id, and the
+  names, logos and order of a mirror bouquet.
+- Bouquet panel: new sources show up straight away in "Replace by provider", in source
+  names and in "Suggest EPG-ids".
+- Catalog: a page that fails to load no longer leaves the previous rows and selection;
+  "← Back to groups" also works from a search.
+- Sources: clicking several content-type switches quickly no longer undoes earlier
+  clicks.
+- Quality probe: "Stop" marks the channel being measured as stopped.
+- Small memory leaks when a database read fails.
+
 ## [1.2.40] - 2026-11-14
 
 Catalog: "Only new" keeps groups with new channels, a "+N new" badge per group and

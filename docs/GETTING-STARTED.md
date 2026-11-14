@@ -37,7 +37,11 @@ it with your own server's IP and port.
    Unraid template (or `adminPassword` in `config.json` in the data folder) and restart
    the container.
    The web app then asks for it once. Do this whenever the gateway can be reached
-   from outside your home.
+   from outside your home. Without a password the admin part (the web app and its
+   API) only answers devices on your local network, opened by IP address or by a
+   local name (`tower`, `tower.local`, `nas.fritz.box`, a Tailscale or myunraid.net
+   name). To use another name without a password, add it to `allowedHosts` in
+   `config.json`.
 
 The web app has five tabs: **Workbench** (sources, catalog, bouquet), **EPG**,
 **Media Servers** (Plex/Jellyfin), **Settings** and **Log**.
@@ -343,9 +347,12 @@ the guide for up to a day.
   (the database also writable), or set `PUID=0`.
 - A port below 1024 (e.g. `httpPort` 80/443 with host networking) can't be opened by
   an ordinary user: use a port above 1024, or set `PUID=0`.
-- The tuner and guide addresses have no login. To keep other devices on your network
-  out, list your Plex server's IP under **Settings → Media servers: allowed clients**
-  (or a prefix such as `192.168.1.` for the whole network). Movies and series are
+- The tuner and guide addresses have no login. With the allowed-clients list empty
+  they only answer devices on your local network (and Tailscale addresses). To keep
+  other devices on your network out as well, list your Plex server's IP under
+  **Settings → Media servers: allowed clients** (or a prefix such as `192.168.1.`).
+  Behind a reverse proxy, add the proxy to `trustedProxies` in `config.json` so the
+  real client address is checked. Movies and series are
   not part of the Plex lineup; it carries live and radio channels only.
 
 ---

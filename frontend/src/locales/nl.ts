@@ -577,8 +577,8 @@ export const nl: Record<string, string> = {
   '“Set up in Plex” needs the HDHomeRun tuner enabled and saved. It re-uses a tuner or DVR Plex already has, so running it again is safe.':
     '“Instellen in Plex” vraagt een ingeschakelde en opgeslagen HDHomeRun-tuner. Een tuner of DVR die Plex al kent wordt hergebruikt, dus opnieuw uitvoeren kan geen kwaad.',
   'Media servers: allowed clients': 'Mediaservers: toegestane clients',
-  'The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = every client.':
-    'De Plex/Jellyfin-tuner en de HDHomeRun-adressen hebben geen login. Eén IP-adres per regel (bijv. je Plex-server), of een voorvoegsel dat op een punt eindigt zoals 192.168.1. voor een heel netwerk. Leeg = elke client.',
+  'The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = only devices on your local network.':
+    'De Plex/Jellyfin-tuner en de HDHomeRun-adressen hebben geen login. Eén IP-adres per regel (bijv. je Plex-server), of een voorvoegsel dat op een punt eindigt zoals 192.168.1. voor een heel netwerk. Leeg = alleen apparaten in je lokale netwerk.',
 
   // ── Mirror bouquets ───────────────────────────────────────────────────────
   'Mirror of': 'Spiegel van',
@@ -599,4 +599,39 @@ export const nl: Record<string, string> = {
   'Open “{name}”': '“{name}” openen',
   'Its box login, provider accounts and on/off switch are under Settings → Output lists.':
     'De box-login, provideraccounts en aan/uit-schakelaar staan onder Instellingen → Uitvoerlijsten.',
+  // ── write-only secrets / probe stop ───────────────────────────────────────
+  '(unchanged)': '(ongewijzigd)',
+  'clear': 'wissen',
+  'Remove the stored password': 'Het opgeslagen wachtwoord verwijderen',
+  'Remove the stored token': 'Het opgeslagen token verwijderen',
+  'Clear password for {source}': 'Wachtwoord voor {source} wissen',
+  'Could not load the provider accounts: {error}': 'De provideraccounts konden niet worden geladen: {error}',
+  'stopped': 'gestopt',
+
+  // ── Write-only secrets, readable server errors, access block ─────────────
+  'Will be removed on save': 'Wordt bij opslaan verwijderd',
+  'undo': 'ongedaan maken',
+  'Undo removal of {field}': 'Verwijderen van {field} ongedaan maken',
+  '*** hides a stored secret; it is kept on save. Type the full value to change it.':
+    '*** verbergt een opgeslagen geheim; het blijft bij opslaan behouden. Typ de volledige waarde om het te wijzigen.',
+  'Save first': 'Eerst opslaan',
+  'Unsaved Plex changes: save first to use these buttons.':
+    'Niet-opgeslagen Plex-wijzigingen: sla eerst op om deze knoppen te gebruiken.',
+  'Too large for the server (413): it accepts at most 64 MB per request.':
+    'Te groot voor de server (413): die accepteert maximaal 64 MB per verzoek.',
+  'Refused by the server (411): the request has no size (Content-Length).':
+    'Geweigerd door de server (411): het verzoek heeft geen grootte (Content-Length).',
+  'Refused by the server: {detail}': 'Geweigerd door de server: {detail}',
+  'Access refused by the server: {detail}': 'Toegang geweigerd door de server: {detail}',
+  'The admin API refused this browser': 'De beheer-API weigert deze browser',
+  'What you can do:': 'Wat je kunt doen:',
+  'Set an admin password (adminPassword in config.json, or the ADMIN_PASSWORD environment variable) and sign in with it.':
+    'Stel een beheerwachtwoord in (adminPassword in config.json, of de omgevingsvariabele ADMIN_PASSWORD) en log daarmee in.',
+  'Or open the app via a local-network address of the server, e.g. http://192.168.1.10:7777.':
+    'Of open de app via een adres van de server in het lokale netwerk, bijv. http://192.168.1.10:7777.',
+  'Or add the host “{host}” to allowedHosts in config.json.':
+    'Of voeg de host “{host}” toe aan allowedHosts in config.json.',
+  'Or add this host name to allowedHosts in config.json.':
+    'Of voeg deze hostnaam toe aan allowedHosts in config.json.',
+  'Try again': 'Opnieuw proberen',
 }

@@ -45,7 +45,7 @@ beforeEach(() => {
 describe('MediaServersView', () => {
   it('sets the gateway up in Plex and lists the steps', async () => {
     vi.mocked(api.getConfig).mockResolvedValue({
-      ...CONFIG, plexHdhrEnabled: true, plexServerUrl: 'http://plex:32400', plexToken: 'tok',
+      ...CONFIG, plexHdhrEnabled: true, plexServerUrl: 'http://plex:32400', plexToken: '', hasPlexToken: true,
     })
     vi.mocked(api.plexSetup).mockResolvedValue({
       dvr: '7', channels: 28,
@@ -59,7 +59,7 @@ describe('MediaServersView', () => {
 
   it('keeps "Set up in Plex" disabled while the HDHomeRun tuner is off', async () => {
     vi.mocked(api.getConfig).mockResolvedValue({
-      ...CONFIG, plexServerUrl: 'http://plex:32400', plexToken: 'tok',
+      ...CONFIG, plexServerUrl: 'http://plex:32400', plexToken: '', hasPlexToken: true,
     })
     render(<MediaServersView />)
     expect(await screen.findByRole('button', { name: /Set up in Plex/ })).toBeDisabled()
@@ -129,5 +129,78 @@ describe('MediaServersView', () => {
     const copyButtons = screen.getAllByRole('button', { name: 'Copy' })
     await userEvent.click(copyButtons[0])
     expect(writeText).toHaveBeenCalledWith('http://gw:7777/discover.json')
+  })
+
+  it('never sends the write-only Plex token back unless it was typed in or cleared', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, plexToken: '', hasPlexToken: true })
+    render(<MediaServersView />)
+    const token = await screen.findByLabelText(/Plex token/)
+    expect(token).toHaveAttribute('placeholder', '(unchanged)')
+    expect(token).toHaveValue('')
+    await userEvent.click(screen.getByRole('button', { name: /Save settings/ }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalled())
+    expect(vi.mocked(api.saveConfig).mock.calls[0][0]).not.toHaveProperty('plexToken')
+    // typing sends it
+    await userEvent.type(token, 'newtok')
+    await userEvent.click(screen.getByRole('button', { name: /Save settings/ }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.saveConfig).mock.calls[1][0]).toMatchObject({ plexToken: 'newtok' })
+  })
+
+  it('clears the stored Plex token explicitly', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, plexToken: '', hasPlexToken: true })
+    render(<MediaServersView />)
+    await userEvent.click(await screen.findByRole('button', { name: 'clear' }))
+    expect(screen.getByText('Will be removed on save')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Save settings/ }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalled())
+    const body = vi.mocked(api.saveConfig).mock.calls[0][0]
+    expect(body).toMatchObject({ clearPlexToken: true })
+    expect(body).not.toHaveProperty('plexToken')
+  })
+
+  it('typing a token and deleting it again keeps the stored one', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, plexToken: '', hasPlexToken: true })
+    render(<MediaServersView />)
+    const token = await screen.findByLabelText(/Plex token/)
+    await userEvent.type(token, 'x')
+    await userEvent.clear(token)
+    await userEvent.click(screen.getByRole('button', { name: /Save settings/ }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalled())
+    const body = vi.mocked(api.saveConfig).mock.calls[0][0]
+    expect(body).not.toHaveProperty('plexToken')
+    expect(body).not.toHaveProperty('clearPlexToken')
+  })
+
+  it('the Plex buttons follow the SAVED token: an unsaved one needs a save first', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({
+      ...CONFIG, plexHdhrEnabled: true, plexServerUrl: 'http://plex:32400', plexToken: '', hasPlexToken: false,
+    })
+    vi.mocked(api.saveConfig).mockResolvedValue({
+      ...CONFIG, plexHdhrEnabled: true, plexServerUrl: 'http://plex:32400', plexToken: '', hasPlexToken: true,
+    })
+    render(<MediaServersView />)
+    const rescan = await screen.findByRole('button', { name: 'Rescan Plex' })
+    expect(rescan).toBeDisabled() // nothing stored
+    await userEvent.type(screen.getByLabelText(/Plex token/), 'newtok')
+    expect(rescan).toBeDisabled() // typed but not saved
+    expect(screen.getByText(/save first/)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Save settings/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rescan Plex' })).not.toBeDisabled())
+    expect(screen.getByRole('button', { name: /Set up in Plex/ })).not.toBeDisabled()
+    expect(screen.queryByText(/save first/)).toBeNull()
+  })
+
+  it('a pending token clear disables the Plex buttons until saved', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({
+      ...CONFIG, plexHdhrEnabled: true, plexServerUrl: 'http://plex:32400', plexToken: '', hasPlexToken: true,
+    })
+    render(<MediaServersView />)
+    const rescan = await screen.findByRole('button', { name: 'Rescan Plex' })
+    expect(rescan).not.toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'clear' }))
+    expect(rescan).toBeDisabled()
+    await userEvent.click(screen.getByRole('button', { name: 'undo' }))
+    expect(rescan).not.toBeDisabled()
   })
 })

@@ -15,8 +15,12 @@ unit IPTV.Api.Server;
 interface
 
 uses
+  // Indy
+  IdContext,
+  IdHeaderList,
   // MARS
   MARS.Core.Engine.Interfaces,
+  MARS.Core.RequestAndResponse.Interfaces,
   MARS.http.Server.Indy,
   // own
   IPTV.App.Config,
@@ -38,12 +42,30 @@ type
     FProxyActivePort: Integer; // port the relay is bound to (0 = not running)
     FSsdp: TSsdpServer; // HDHomeRun discovery for Plex (UDP 1900); nil when off
     FWebRoot: string; // static admin-UI files (SPA); '' => not bundled, API only
+    // serialises the runtime changes of the relay / SSDP / our config copy (settings
+    // saves, Plex toggles, start/stop). A TMonitor: re-entrant on every platform
+    // (SyncPlex -> SyncProxyServer). Lock order: TAppContext's config lock first.
+    FSyncLock: TObject;
+    FStopping: Boolean; // Stop began: a late settings save must not start a relay/SSDP again
     /// The configured HTTP(S) port.
     function GetPort: Integer;
     // the relay is needed by the global stream proxy OR by a Plex surface set to relay
     function NeedsProxyServer: Boolean;
     procedure SyncProxyServer; // start/stop/rebind the relay to match what's enabled
-    procedure SyncSsdp; // start/stop SSDP to match FConfig.PlexHdhrEnabled
+    procedure SyncSsdp; // start/stop/re-advertise SSDP to match FConfig (HDHR flag, location)
+    /// The discover.json URL SSDP advertises for the current FConfig.
+    function SsdpLocation: string;
+    /// Indy hook, before any request body is read: a body above MaxBodyBytesFor (1 MB,
+    /// 64 MB for the settings import) is refused with 413, a chunked one (size unknown)
+    /// with 411.
+    procedure DoHeadersAvailable(AContext: TIdContext; const AUri: string; AHeaders: TIdHeaderList;
+      var VContinueProcessing: Boolean);
+    /// The status/text of a request refused by DoHeadersAvailable.
+    procedure DoHeadersBlocked(AContext: TIdContext; AHeaders: TIdHeaderList; var VResponseNo: Integer;
+      var VResponseText, VContentText: string);
+    /// Indy hook per new connection: a read timeout, so a client that sends its headers
+    /// (or body) byte by byte can't hold one of the worker threads forever.
+    procedure DoConnect(AContext: TIdContext);
   public
     /// Stops the server (if running) and frees it.
     destructor Destroy; override;
@@ -55,15 +77,29 @@ type
     /// Stops SSDP, the relay and the listener and releases the engine.
     procedure Stop;
     /// Start/stop (or rebind) the stream-relay server at runtime — backs the
-    /// settings toggle. Recreates the relay if the port changed while running.
+    /// settings toggle. Transactional: a new port is bound BEFORE the old relay is
+    /// stopped; when it can't bind, the running relay and our settings stay as they
+    /// were and a 400 "Port N is in use" (EMARSHttpException) is raised.
     procedure SetProxy(AEnabled: Boolean; APort: Integer);
-    /// Apply Plex settings live (re-reads the toggles; starts/stops SSDP).
+    /// Apply Plex settings live (re-reads the toggles; starts/stops SSDP and the relay a
+    /// Plex surface needs). On failure our copy of the config is restored and a 400 raised.
     procedure SyncPlex(const AConfig: TAppConfig);
     /// The configured HTTP(S) port.
     property Port: Integer read GetPort;
     /// True between Start and Stop.
     property Running: Boolean read FRunning;
   end;
+
+/// <summary>All X-Forwarded-For header lines of ARequest joined in order (see
+/// IPTV.Api.AuthThrottle.JoinForwardedFor); '' when there is none.</summary>
+function RequestForwardedFor(const ARequest: IMARSRequest): string;
+
+/// <summary>The client address of ARequest: through a trusted proxy its
+/// X-Forwarded-For client, else the socket peer (GAuthThrottle.ClientAddress).</summary>
+function RequestClientIp(const ARequest: IMARSRequest): string;
+
+/// <summary>Is ARequest from the local network (GAuthThrottle.IsLocalClient)?</summary>
+function RequestIsLocal(const ARequest: IMARSRequest): Boolean;
 
 implementation
 
@@ -84,11 +120,11 @@ uses
   MARS.Core.Engine,
   MARS.Core.Application.Interfaces,
   MARS.Core.URL,
-  MARS.Core.RequestAndResponse.Interfaces,
   MARS.Core.Activation.InjectionService, // registers [Context] injection (Request/Response/URL)
   MARS.Core.MessageBodyWriter,
   MARS.Core.MessageBodyWriters,
   MARS.Core.MessageBodyReaders,
+  MARS.Core.Exceptions,
   // MARS always injects a JWT token during activation, so a Token implementation
   // must be linked even though we don't authenticate (mORMot on Windows, JOSE on Linux).
 {$IFDEF MSWINDOWS}
@@ -98,6 +134,9 @@ uses
 {$ENDIF}
   // own
   IPTV.Core.Utils,
+  IPTV.App.Context,
+  IPTV.Api.Security,
+  IPTV.Api.Serializers,
   IPTV.Api.AuthThrottle,
   IPTV.Api.Mars.Admin,
   IPTV.Api.Mars.Xtream,
@@ -105,6 +144,7 @@ uses
 
 threadvar
   GReqStart: Int64;     // request start (TStopwatch ticks), per Indy worker thread
+  GBlockStatus: Integer; // why DoHeadersAvailable refused this thread's request (411/413)
 
 var
   GErrorLog: TLogProc;  // target for the MARS invoke-error hook (registered once)
@@ -117,8 +157,7 @@ var
   // thread-safe. So the server first runs a few requests to itself, one at a time,
   // and external backend requests wait (no lock held; max cWarmupWaitMs) until that
   // is done.
-  GWarmGate: TEvent;
-  GWarmToken: string;
+  GWarmGate: TEvent; // (the warm-up token itself: IPTV.Api.Security.GWarmToken)
 
 const
   // CSRF guard: state-changing /api calls must carry this header (the web app sends it)
@@ -132,6 +171,18 @@ const
   cMimeTextPlain = 'text/plain';
   cHttpStatusForbidden = 403;
   cHttpStatusUnauthorized = 401;
+  cMsgUnauthorized = 'Unauthorized';
+  // the admin API without an admin password answers only the local network
+  cMsgAdminLanOnly = 'Without an admin password the admin API only answers the local network - ' +
+    'set an admin password';
+  // DNS rebinding on the login-free box / Plex surfaces
+  cMsgBoxHostNotAllowed = 'Host "%s" is not allowed for login-free access: use a login, the server''s ' +
+    'address or add this host to allowedHosts';
+  // admin request body nested deeper than cMaxJsonDepth (checked before MARS parses it)
+  cMsgJsonTooDeep = 'JSON body nested too deeply (max %d levels)';
+  // /api/health: liveness, needs no login
+  cApiHealthSeg = 'health';
+  cApiSegIndex = 1;
   cHttpStatusSuccessMin = 200;
   cHttpStatusSuccessMax = 299;
   cHttpStatusRedirectMax = 399;
@@ -147,9 +198,33 @@ const
   cBoxQueryLoginRoutes: array[0..2] of string = ('get.php', 'xmltv.php', 'streaming');
   // box routes that carry the login in the path; a good one is answered with a 302
   cBoxPathLoginRoutes: array[0..3] of string = ('live', 'movie', 'series', 'timeshift');
-  // the admin password as the web app / download links send it
+  // every box route that may carry a login in ?username= (player_api.php too); without
+  // one it serves the login-free default list - then the Host rule applies
+  cBoxQueryRoutes: array[0..3] of string = ('player_api.php', 'get.php', 'xmltv.php', 'streaming');
+  // Plex / HDHomeRun routes: no login at all (they carry the bouquet login) - the Host
+  // rule always applies
+  cMediaRoutes: array[0..4] of string = ('plex', 'discover.json', 'lineup.json', 'lineup_status.json',
+    'lineup.post');
+  // the admin password as the web app sends it, and the single-use token of a
+  // download link (POST /api/download-token)
   cAdminPasswordHeader = 'X-Admin-Password';
-  cAdminPasswordQuery = 'pw';
+  cDownloadTokenQuery = 'dt';
+  // a path login of PathCred: token 1 = the user ('-' = the empty field, no login)
+  cPathTokenUser = 1;
+  // DNS-rebinding guard of the admin API without an admin password
+  cHeaderHost = 'Host';
+  cMsgHostNotAllowed = 'Host "%s" is not allowed: set an admin password or add this host to allowedHosts';
+  // request-body cap (Indy, before the body is read)
+  cHeaderContentLength = 'Content-Length';
+  cHeaderTransferEncoding = 'Transfer-Encoding';
+  cMsgBodyTooLarge = 'Request body too large';
+  cMsgLengthRequired = 'Length Required';
+  cMsgChunkedRefused = 'Chunked request bodies are not accepted - send a Content-Length';
+  // per-connection read timeout (slow-header / slow-body clients)
+  cConnectionReadTimeoutMs = 30000;
+  // relay (re)bind failure
+  cMsgPortInUse = 'Port %d is in use';
+  cMsgPlexRelayFailed = 'Plex relay could not be started: %s';
 
 const
   // startup warm-up (see GWarmGate); the header is IPTV.Api.AuthThrottle.cWarmupHeader
@@ -187,6 +262,7 @@ const
   cSchemeHttp = 'http';
   cSchemeHttps = 'https';
   cMethodGet = 'GET';
+  cMethodOptions = 'OPTIONS'; // a CORS preflight carries no credentials
   cIgnoreCase = True;                  // string.StartsWith AIgnoreCase
   cHttpStatusOk = 200;
   cHttpStatusErrorMin = 400;
@@ -196,7 +272,7 @@ const
   // path segments AND ?username=&password=-style query keys
   cMaskPathPattern = '(/(live|movie|series|stream|timeshift)/)[^/]+/[^/]+';
   cMaskPathReplace = '$1***/***';
-  cMaskQueryPattern = '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&]*';
+  cMaskQueryPattern = '([?&](username|password|pass|pw|dt|user|token|auth|mac)=)[^&]*';
   cMaskQueryReplace = '$1***';
 
 // warm-up requests go to our own (possibly self-signed) cert on loopback
@@ -217,6 +293,7 @@ end;
 constructor TApiServer.Create(const AConfig: TAppConfig; const ALog: TLogProc);
 begin
   inherited Create;
+  FSyncLock := TObject.Create;
   FConfig := AConfig;
   FLog := ALog;
 end;
@@ -300,6 +377,35 @@ begin
   Result := True;
 end;
 
+function RequestForwardedFor(const ARequest: IMARSRequest): string;
+var
+  lLines: TArray<string>;
+  i: Integer;
+begin
+  // RawHeaders.Values (GetHeaderParamValue by name) only returns the FIRST line of a
+  // repeated header: read every X-Forwarded-For line
+  lLines := nil;
+  try
+    for i := 0 to ARequest.GetHeaderParamCount - 1 do
+      if SameText(ARequest.GetHeaderParamName(i).Trim, cHeaderForwardedFor) then
+        lLines := lLines + [ARequest.GetHeaderParamValue(i)];
+  except
+    // a request type without indexed headers: the single value
+    lLines := [ARequest.GetHeaderParamValue(cHeaderForwardedFor)];
+  end;
+  Result := JoinForwardedFor(lLines);
+end;
+
+function RequestClientIp(const ARequest: IMARSRequest): string;
+begin
+  Result := GAuthThrottle.ClientAddress(ARequest.RemoteIP, RequestForwardedFor(ARequest));
+end;
+
+function RequestIsLocal(const ARequest: IMARSRequest): Boolean;
+begin
+  Result := GAuthThrottle.IsLocalClient(ARequest.RemoteIP, RequestForwardedFor(ARequest));
+end;
+
 // the failed-login lockout key of a request: /api counts per admin surface, every
 // other backend route per box surface (a box's wrong login can't lock the web app out)
 function ThrottleKey(const AFirstSeg: string; const ARequest: IMARSRequest): string;
@@ -310,8 +416,38 @@ begin
     lSurface := cSurfaceAdmin
   else
     lSurface := cSurfaceBox;
-  Result := GAuthThrottle.ClientKey(lSurface, ARequest.RemoteIP,
-    ARequest.GetHeaderParamValue(cHeaderForwardedFor));
+  Result := GAuthThrottle.ClientKey(lSurface, ARequest.RemoteIP, RequestForwardedFor(ARequest));
+end;
+
+function IsRouteIn(const AFirstSeg: string; const ARoutes: array of string): Boolean;
+var
+  lRoute: string;
+begin
+  for lRoute in ARoutes do
+    if SameText(AFirstSeg, lRoute) then
+      Exit(True);
+  Result := False;
+end;
+
+// a box request WITHOUT a real login (the login-free default list): no ?username= on
+// the query routes, '-' / '' / no path login on the path routes
+function IsLoginFreeBoxRequest(const AFirstSeg: string; const AURL: TMARSURL;
+  const ARequest: IMARSRequest): Boolean;
+begin
+  if IsRouteIn(AFirstSeg, cBoxQueryRoutes) then
+    Result := not IsRealLoginName(ARequest.GetQueryParamValue(cBoxUserQuery))
+  else if IsRouteIn(AFirstSeg, cBoxPathLoginRoutes) then
+    Result := not AURL.HasPathTokens(cBoxPathLoginTokens) or not IsRealLoginName(AURL.PathTokens[cPathTokenUser])
+  else
+    Result := False;
+end;
+
+// answer a request from BeforeHandleRequest (MARS dispatch stops)
+procedure Refuse(const AResponse: IMARSResponse; AStatus: Integer; const AText: string);
+begin
+  AResponse.SetStatusCode(AStatus);
+  AResponse.SetContentType(cMimeTextPlain);
+  AResponse.SetContent(AText);
 end;
 
 function IsBoxPathLoginRoute(const AFirstSeg: string): Boolean;
@@ -345,18 +481,78 @@ begin
     Exit(False);
   if SameText(AFirstSeg, cApiRoot) then
     Result := (AStatus <= cHttpStatusSuccessMax) and (AAdminPassword <> '') and
-      (IsSamePassword(ARequest.GetHeaderParamValue(cAdminPasswordHeader), AAdminPassword) or
-       IsSamePassword(ARequest.GetQueryParamValue(cAdminPasswordQuery), AAdminPassword))
+      IsSamePassword(ARequest.GetHeaderParamValue(cAdminPasswordHeader), AAdminPassword)
   else if IsBoxPathLoginRoute(AFirstSeg) then
-    Result := (AStatus <= cHttpStatusRedirectMax) and AURL.HasPathTokens(cBoxPathLoginTokens)
+    // only a real login: /live/-/-/{id} (the login-free default list) proves nothing
+    Result := (AStatus <= cHttpStatusRedirectMax) and AURL.HasPathTokens(cBoxPathLoginTokens) and
+      IsRealLoginName(AURL.PathTokens[cPathTokenUser])
   else
+    // same rule: ?username=- (the '-' placeholder) is the login-free default list too
     Result := (AStatus <= cHttpStatusSuccessMax) and IsBoxQueryLoginRoute(AFirstSeg) and
-      (ARequest.GetQueryParamValue(cBoxUserQuery) <> '');
+      IsRealLoginName(ARequest.GetQueryParamValue(cBoxUserQuery));
 end;
 
 function TApiServer.GetPort: Integer;
 begin
   Result := FConfig.HttpPort;
+end;
+
+// the live admin password / Host-rule settings (App's config once it runs; until then
+// our copy - the warm-up runs before App is set)
+function LiveAdminPassword(const AFallback: TAppConfig): string;
+begin
+  if App <> nil then
+    Result := App.Config.AdminPassword
+  else
+    Result := AFallback.AdminPassword;
+end;
+
+function IsAdminHostAccepted(const AHostHeader: string; const AFallback: TAppConfig): Boolean;
+begin
+  if App <> nil then
+    Result := IsAllowedAdminHost(AHostHeader, App.Config.PublicBaseUrl, App.Config.AllowedHosts)
+  else
+    Result := IsAllowedAdminHost(AHostHeader, AFallback.PublicBaseUrl, AFallback.AllowedHosts);
+end;
+
+procedure TApiServer.DoHeadersAvailable(AContext: TIdContext; const AUri: string;
+  AHeaders: TIdHeaderList; var VContinueProcessing: Boolean);
+begin
+  // MARS's Indy server buffers the whole body BEFORE any of our hooks (auth, CSRF)
+  // run: refuse a size-less (chunked) or oversized body here, unread. The cap is
+  // cMaxRequestBodyBytes (1 MB); only the settings import may send cMaxImportBodyBytes.
+  GBlockStatus := 0;
+  if AHeaders.Values[cHeaderTransferEncoding].Trim <> '' then
+    GBlockStatus := cHttpLengthRequired
+  else if ContentLengthExceeds(AHeaders.Values[cHeaderContentLength], MaxBodyBytesFor(AUri)) then
+    GBlockStatus := cHttpPayloadTooLarge;
+  if GBlockStatus <> 0 then
+    VContinueProcessing := False;
+end;
+
+procedure TApiServer.DoHeadersBlocked(AContext: TIdContext; AHeaders: TIdHeaderList;
+  var VResponseNo: Integer; var VResponseText, VContentText: string);
+begin
+  if GBlockStatus = cHttpLengthRequired then
+  begin
+    VResponseNo := cHttpLengthRequired;
+    VResponseText := cMsgLengthRequired;
+    VContentText := cMsgChunkedRefused;
+    if Assigned(FLog) then
+      FLog(Format('%-15s refused: chunked request body (411)', [AContext.Binding.PeerIP]));
+    Exit;
+  end;
+  VResponseNo := cHttpPayloadTooLarge;
+  VContentText := cMsgBodyTooLarge;
+  if Assigned(FLog) then
+    FLog(Format('%-15s refused: request body too large (Content-Length %s)',
+      [AContext.Binding.PeerIP, AHeaders.Values[cHeaderContentLength]]));
+end;
+
+procedure TApiServer.DoConnect(AContext: TIdContext);
+begin
+  if (AContext <> nil) and (AContext.Connection <> nil) and (AContext.Connection.IOHandler <> nil) then
+    AContext.Connection.IOHandler.ReadTimeout := cConnectionReadTimeoutMs;
 end;
 
 // methods that only read (no CSRF check needed)
@@ -373,6 +569,7 @@ var
 begin
   if FRunning then
     Exit;
+  FStopping := False;
 
   FEngine := TMARSEngine.Create;
   FEngine.BasePath := ''; // mount applications at the site root
@@ -436,8 +633,9 @@ begin
       const ARequest: IMARSRequest; const AResponse: IMARSResponse;
       var AHandled: Boolean): Boolean
     var
-      lFirst, lMasked: string;
+      lFirst, lMasked, lPassword, lSent: string;
       lRetryAfter: Integer;
+      lIsApi: Boolean;
     begin
       Result := True; // continue to MARS by default
       GReqStart := TStopwatch.GetTimeStamp; // per Indy thread; read in AfterHandleRequest
@@ -456,6 +654,7 @@ begin
       lFirst := '';
       if AURL.HasPathTokens then
         lFirst := AURL.PathTokens[0];
+      lIsApi := SameText(lFirst, cApiRoot);
 
       if (FWebRoot = '') or IsBackendRoute(lFirst) then
       begin
@@ -482,11 +681,70 @@ begin
           AHandled := True;
           Exit(False);
         end;
+        // DNS rebinding: with NO admin password a page on evil.example whose name
+        // re-resolves to this LAN address could drive the API from the victim's
+        // browser. Then only LAN-style Host names are accepted (with a password the
+        // Host is not checked - reverse proxies may use any name).
+        lPassword := LiveAdminPassword(FConfig);
+        if lIsApi and (lPassword = '') and
+           not IsAdminHostAccepted(ARequest.GetHeaderParamValue(cHeaderHost), FConfig) then
+        begin
+          Refuse(AResponse, cHttpStatusForbidden, Format(cMsgHostNotAllowed,
+            [HostHeaderName(ARequest.GetHeaderParamValue(cHeaderHost))]));
+          AHandled := True;
+          Exit(False);
+        end;
+        // no admin password = no login on the admin API: then it answers only the local
+        // network (a port-forward / public reverse proxy would hand it to the internet)
+        if lIsApi and (lPassword = '') and not RequestIsLocal(ARequest) then
+        begin
+          Refuse(AResponse, cHttpStatusForbidden, cMsgAdminLanOnly);
+          AHandled := True;
+          Exit(False);
+        end;
+        // DNS rebinding on the surfaces a browser page could read without a login: the
+        // Plex/HDHomeRun endpoints and a box route without a login (the default list)
+        if (IsRouteIn(lFirst, cMediaRoutes) or IsLoginFreeBoxRequest(lFirst, AURL, ARequest)) and
+           not IsAdminHostAccepted(ARequest.GetHeaderParamValue(cHeaderHost), FConfig) then
+        begin
+          Refuse(AResponse, cHttpStatusForbidden, Format(cMsgBoxHostNotAllowed,
+            [HostHeaderName(ARequest.GetHeaderParamValue(cHeaderHost))]));
+          AHandled := True;
+          Exit(False);
+        end;
+        // with an admin password: check it BEFORE MARS parses the body ([BodyParam]), so
+        // an anonymous client can't make the server parse anything. /api/health needs no
+        // login; a download link (GET + ?dt= issued for exactly this path) passes too.
+        if lIsApi and (lPassword <> '') and not SameText(ARequest.Method, cMethodOptions) and
+           not (AURL.HasPathTokens(cApiSegIndex + 1) and SameText(AURL.PathTokens[cApiSegIndex], cApiHealthSeg)) then
+        begin
+          lSent := ARequest.GetHeaderParamValue(cAdminPasswordHeader);
+          if not IsSamePassword(lSent, lPassword) and
+             not (SameText(ARequest.Method, cMethodGet) and
+                  GDownloadTokens.IsValid(ARequest.GetQueryParamValue(cDownloadTokenQuery), ARequest.GetRawPath)) then
+          begin
+            // a guess counts; a stale download token or the web app's first probe (no
+            // password sent) is no guess
+            if (lSent <> '') and not IsWarmupRequest(ARequest.GetHeaderParamValue(cWarmupHeader)) then
+              GAuthThrottle.RegisterFailure(ThrottleKey(lFirst, ARequest));
+            Refuse(AResponse, cHttpStatusUnauthorized, cMsgUnauthorized);
+            AHandled := True;
+            Exit(False);
+          end;
+        end;
+        // a deeply nested JSON body would overflow the parser's stack: refused unparsed
+        if lIsApi and not IsSafeMethod(ARequest.Method) and
+           JsonNestingExceeds(ARequest.GetRawContent, cMaxJsonDepth) then
+        begin
+          Refuse(AResponse, cHttpBadRequest, Format(cMsgJsonTooDeep, [cMaxJsonDepth]));
+          AHandled := True;
+          Exit(False);
+        end;
       end;
 
       // hold external backend requests until the startup warm-up has run
       if (FWebRoot = '') or IsBackendRoute(lFirst) then
-        if (GWarmGate <> nil) and (ARequest.GetHeaderParamValue(cWarmupHeader) <> GWarmToken) then
+        if (GWarmGate <> nil) and not IsWarmupRequest(ARequest.GetHeaderParamValue(cWarmupHeader)) then
           GWarmGate.WaitFor(cWarmupWaitMs);
 
       if (FWebRoot = '') then
@@ -521,16 +779,16 @@ begin
       if AURL.HasPathTokens then
         lFirst := AURL.PathTokens[0];
       if ((FWebRoot = '') or IsBackendRoute(lFirst)) and
-         ((GWarmToken = '') or (ARequest.GetHeaderParamValue(cWarmupHeader) <> GWarmToken)) then
+         not IsWarmupRequest(ARequest.GetHeaderParamValue(cWarmupHeader)) then
       begin
         if AResponse.StatusCode = cHttpStatusUnauthorized then
         begin
+          // on /api only a sent password is a guess (a bad / expired ?dt= is not)
           if not SameText(lFirst, cApiRoot) or
-             (ARequest.GetHeaderParamValue(cAdminPasswordHeader) <> '') or
-             (ARequest.GetQueryParamValue(cAdminPasswordQuery) <> '') then
+             (ARequest.GetHeaderParamValue(cAdminPasswordHeader) <> '') then
             GAuthThrottle.RegisterFailure(ThrottleKey(lFirst, ARequest));
         end
-        else if IsSuccessfulLogin(lFirst, AURL, ARequest, AResponse.StatusCode, FConfig.AdminPassword) then
+        else if IsSuccessfulLogin(lFirst, AURL, ARequest, AResponse.StatusCode, LiveAdminPassword(FConfig)) then
           GAuthThrottle.RegisterSuccess(ThrottleKey(lFirst, ARequest));
       end;
       if not Assigned(FLog) then
@@ -560,10 +818,13 @@ begin
     GWarmGate := TEvent.Create(nil, cManualReset, cInitiallySignaled, '')
   else
     GWarmGate.ResetEvent;
-  GWarmToken := TGUID.NewGuid.ToString;
+  NewWarmupToken; // CSPRNG (a Linux GUID is time-based)
 
   try
     FServer := TMARShttpServerIndy.Create(FEngine);
+    FServer.OnHeadersAvailable := DoHeadersAvailable; // body cap, before the body is read
+    FServer.OnHeadersBlocked := DoHeadersBlocked;
+    FServer.OnConnect := DoConnect; // read timeout per connection
     FServer.Active := True;
 
     // warm up the MARS activation path with requests to ourselves, strictly one at a
@@ -605,8 +866,13 @@ begin
           lLog(Format('warm-up done in %d ms - API open', [lSw.ElapsedMilliseconds]));
       end).Start;
 
-    SyncProxyServer; // start the stream relay if the global proxy OR a Plex proxy needs it
-    SyncSsdp; // start the HDHomeRun discovery responder if Plex HDHR is enabled
+    TMonitor.Enter(FSyncLock);
+    try
+      SyncProxyServer; // start the stream relay if the global proxy OR a Plex proxy needs it
+      SyncSsdp; // start the HDHomeRun discovery responder if Plex HDHR is enabled
+    finally
+      TMonitor.Exit(FSyncLock);
+    end;
   except
     // e.g. the proxy port is taken: close the API listener we already opened, so
     // the process doesn't look alive while serving nothing (and a retry can bind)
@@ -617,35 +883,64 @@ begin
   FRunning := True;
 end;
 
-procedure TApiServer.SyncSsdp;
+function TApiServer.SsdpLocation: string;
 var
   lScheme: string;
 begin
-  if FConfig.PlexHdhrEnabled and not Assigned(FSsdp) then
-  begin
-    // the discover.json lives on httpPort; that port serves TLS when UseHttps is on,
-    // so the SSDP LOCATION must use https there or Plex's fetch fails
-    if FConfig.UseHttps then
-      lScheme := cSchemeHttps
-    else
-      lScheme := cSchemeHttp;
-    FSsdp := TSsdpServer.Create(
-      Format('%s://%s:%d/discover.json', [lScheme, SafeUrlHost(FConfig.PublicBaseUrl, 'localhost'),
-        FConfig.HttpPort]), FLog);
-    FSsdp.Start;
-  end
-  else if (not FConfig.PlexHdhrEnabled) and Assigned(FSsdp) then
+  // the discover.json lives on httpPort; that port serves TLS when UseHttps is on,
+  // so the SSDP LOCATION must use https there or Plex's fetch fails
+  if FConfig.UseHttps then
+    lScheme := cSchemeHttps
+  else
+    lScheme := cSchemeHttp;
+  Result := Format('%s://%s:%d/discover.json', [lScheme, SafeUrlHost(FConfig.PublicBaseUrl, 'localhost'),
+    FConfig.HttpPort]);
+end;
+
+procedure TApiServer.SyncSsdp;
+var
+  lLocation: string;
+begin
+  if FStopping then
+    Exit;
+  lLocation := SsdpLocation;
+  // a changed publicBaseUrl must be advertised: the responder's LOCATION is fixed
+  // per instance, so replace it
+  if Assigned(FSsdp) and ((not FConfig.PlexHdhrEnabled) or (FSsdp.Location <> lLocation)) then
   begin
     FSsdp.Stop;
     FreeAndNil(FSsdp);
   end;
+  if FConfig.PlexHdhrEnabled and not Assigned(FSsdp) then
+  begin
+    FSsdp := TSsdpServer.Create(lLocation, FLog);
+    FSsdp.Start; // best-effort: logs and stays off when UDP 1900 can't bind
+  end;
 end;
 
 procedure TApiServer.SyncPlex(const AConfig: TAppConfig);
+var
+  lOld: TAppConfig;
 begin
-  FConfig := AConfig; // refresh our copy (SSDP location/host); endpoints read App.Config
-  SyncSsdp;
-  SyncProxyServer; // a Plex M3U/HDHR "relay" toggle may now need (or release) the relay
+  TMonitor.Enter(FSyncLock);
+  try
+    lOld := FConfig;
+    FConfig := AConfig; // refresh our copy (SSDP location/host); endpoints read App.Config
+    try
+      // a Plex M3U/HDHR "relay" toggle may now need (or release) the relay; it can
+      // fail to bind - then nothing changes (the relay sync is transactional)
+      SyncProxyServer;
+    except
+      on E: Exception do
+      begin
+        FConfig := lOld;
+        raise EMARSHttpException.Create(Format(cMsgPlexRelayFailed, [E.Message]), cHttpBadRequest);
+      end;
+    end;
+    SyncSsdp;
+  finally
+    TMonitor.Exit(FSyncLock);
+  end;
 end;
 
 function TApiServer.NeedsProxyServer: Boolean;
@@ -657,32 +952,74 @@ begin
 end;
 
 procedure TApiServer.SyncProxyServer;
+var
+  lNew: TStreamProxyServer;
 begin
-  // stop the relay if it's no longer needed, or if the port changed while running
-  if Assigned(FProxy) and ((not NeedsProxyServer) or (FProxyActivePort <> FConfig.ProxyPort)) then
+  if FStopping then
+    Exit;
+  if not NeedsProxyServer then
+  begin
+    if Assigned(FProxy) then
+    begin
+      FProxy.Stop;
+      FreeAndNil(FProxy);
+      FProxyActivePort := 0;
+    end;
+    Exit;
+  end;
+  if Assigned(FProxy) and (FProxyActivePort = FConfig.ProxyPort) then
+    Exit; // already running on the right port
+  // transactional: bind the new port FIRST; only when that worked the old relay goes
+  // (a port that can't bind used to kill the working relay)
+  lNew := TStreamProxyServer.Create(FConfig.ProxyPort, FLog);
+  try
+    lNew.Start;
+  except
+    on E: Exception do
+    begin
+      FreeAndNil(lNew);
+      if Assigned(FLog) then
+        FLog(Format('Stream proxy: port %d could not be opened: %s', [FConfig.ProxyPort, E.Message]));
+      raise EMARSHttpException.Create(Format(cMsgPortInUse, [FConfig.ProxyPort]), cHttpBadRequest);
+    end;
+  end;
+  if Assigned(FProxy) then
   begin
     FProxy.Stop;
     FreeAndNil(FProxy);
-    FProxyActivePort := 0;
   end;
-  if NeedsProxyServer and not Assigned(FProxy) then
-  begin
-    FProxy := TStreamProxyServer.Create(FConfig.ProxyPort, FLog);
-    FProxy.Start;
-    FProxyActivePort := FConfig.ProxyPort;
-  end;
+  FProxy := lNew;
+  FProxyActivePort := FConfig.ProxyPort;
 end;
 
 procedure TApiServer.SetProxy(AEnabled: Boolean; APort: Integer);
+var
+  lOldEnabled: Boolean;
+  lOldPort: Integer;
 begin
-  FConfig.ProxyStreams := AEnabled;
-  FConfig.ProxyPort := APort;
-  SyncProxyServer; // reconcile against the global + Plex proxy flags
+  TMonitor.Enter(FSyncLock);
+  try
+    lOldEnabled := FConfig.ProxyStreams;
+    lOldPort := FConfig.ProxyPort;
+    FConfig.ProxyStreams := AEnabled;
+    FConfig.ProxyPort := APort;
+    try
+      SyncProxyServer; // reconcile against the global + Plex proxy flags
+    except
+      // the running relay is untouched: keep our settings in line with it
+      FConfig.ProxyStreams := lOldEnabled;
+      FConfig.ProxyPort := lOldPort;
+      raise;
+    end;
+  finally
+    TMonitor.Exit(FSyncLock);
+  end;
 end;
 
 destructor TApiServer.Destroy;
 begin
   Stop;
+  FreeAndNil(FSyncLock);
   inherited;
 end;
 
@@ -690,15 +1027,22 @@ procedure TApiServer.Stop;
 begin
   if not FRunning then
     Exit;
-  if Assigned(FSsdp) then
-  begin
-    FSsdp.Stop;
-    FreeAndNil(FSsdp);
-  end;
-  if Assigned(FProxy) then
-  begin
-    FProxy.Stop;
-    FreeAndNil(FProxy);
+  TMonitor.Enter(FSyncLock);
+  try
+    FStopping := True;
+    if Assigned(FSsdp) then
+    begin
+      FSsdp.Stop;
+      FreeAndNil(FSsdp);
+    end;
+    if Assigned(FProxy) then
+    begin
+      FProxy.Stop;
+      FreeAndNil(FProxy);
+      FProxyActivePort := 0;
+    end;
+  finally
+    TMonitor.Exit(FSyncLock);
   end;
   // release any request still parked at the warm-up gate so shutdown can drain
   if GWarmGate <> nil then

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '../api/client'
 import type { AppConfig, CustomList, MediaGroup, MediaStatus } from '../types'
 import { useT } from '../i18n'
+import { describeError } from '../lib/errors'
+import { SECRET_KEEP, SecretField, secretEdited, secretPayload, type SecretEdit } from './SecretField'
 
 // Input ranges + shown defaults (when the config has no value) of the numeric settings.
 const DUMMY_EPG_BLOCK_MINUTES = { min: 5, max: 720, def: 120 }
@@ -31,13 +33,24 @@ export function MediaServersView() {
   const [setupSteps, setSetupSteps] = useState<string[] | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
   const [deviceMsg, setDeviceMsg] = useState<string | null>(null)
+  // the Plex token is write-only (GET returns '' + hasPlexToken): untouched (or typed
+  // and deleted again) is omitted on save, so the backend keeps the stored one
+  const [tokenEdit, setTokenEdit] = useState<SecretEdit>(SECRET_KEEP)
+  // the config as last loaded / saved: the Plex buttons act on what the backend has
+  const [stored, setStored] = useState<AppConfig | null>(null)
 
   const refreshStatus = useCallback(() => {
     api.mediaStatus().then(setStatus).catch(() => setStatus(null))
   }, [])
 
   useEffect(() => {
-    api.getConfig().then(setCfg).catch((e) => setError((e as Error).message))
+    api
+      .getConfig()
+      .then((c) => {
+        setCfg(c)
+        setStored(c)
+      })
+      .catch((e) => setError((e as Error).message))
     api.mediaGroups().then(setGroups).catch(() => setGroups([]))
     api.listLists().then(setLists).catch(() => setLists([]))
     refreshStatus()
@@ -67,6 +80,13 @@ export function MediaServersView() {
     guide: `${base}/plex/epg.xml`,
     jellyfinM3u: `${base}/plex/playlist.m3u`,
   }
+
+  // the Plex buttons call the backend with its SAVED server + token: an unsaved
+  // token edit (or pending clear) or server change must be saved first
+  const savedPlexReady = !!stored?.plexServerUrl?.trim() && !!stored?.hasPlexToken
+  const plexUnsaved =
+    secretEdited(tokenEdit) || (cfg?.plexServerUrl ?? '').trim() !== (stored?.plexServerUrl ?? '').trim()
+  const plexSetupUnsaved = plexUnsaved || !!cfg?.plexHdhrEnabled !== !!stored?.plexHdhrEnabled
 
   function validBaseUrl(v: string): boolean {
     const s = v.trim()
@@ -101,15 +121,18 @@ export function MediaServersView() {
         plexTunerCount: cfg.plexTunerCount,
         plexListId: cfg.plexListId ?? 0,
         plexServerUrl: cfg.plexServerUrl,
-        plexToken: cfg.plexToken,
+        // typed in = set, explicit clear = clearPlexToken, else omitted (= keep)
+        ...secretPayload(tokenEdit, 'plexToken', 'clearPlexToken'),
       })
       setCfg(next)
+      setStored(next)
+      setTokenEdit(SECRET_KEEP)
       setSaved(true)
       // the group list belongs to the Plex bouquet — re-read it (it may have changed)
       api.mediaGroups().then(setGroups).catch(() => setGroups([]))
       refreshStatus() // status reflects the newly-saved filter
     } catch (err) {
-      setError((err as Error).message)
+      setError(describeError(err, t))
     } finally {
       setBusy(false)
     }
@@ -137,7 +160,7 @@ export function MediaServersView() {
       const r = await api.plexSetup()
       setSetupSteps(r.steps)
     } catch (e) {
-      setError((e as Error).message)
+      setError(describeError(e, t))
     } finally {
       setSetupBusy(false)
     }
@@ -154,7 +177,7 @@ export function MediaServersView() {
           .replace('{dvrWord}', r.dvrs === 1 ? t('DVR') : t('DVRs')),
       )
     } catch (e) {
-      setError((e as Error).message)
+      setError(describeError(e, t))
     }
   }
 
@@ -471,25 +494,43 @@ export function MediaServersView() {
             </label>
             <label>
               {t('Plex token (X-Plex-Token)')}
-              <input value={cfg.plexToken ?? ''} onChange={(e) => patch({ plexToken: e.target.value })} />
+              <SecretField
+                type="text"
+                edit={tokenEdit}
+                hasStored={!!cfg.hasPlexToken}
+                clearTitle={t('Remove the stored token')}
+                onChange={(e) => {
+                  setTokenEdit(e)
+                  setSaved(false)
+                }}
+              />
             </label>
             <div className="form-actions">
               <button
                 type="button"
                 onClick={rescanPlex}
-                disabled={!cfg.plexServerUrl?.trim() || !cfg.plexToken?.trim()}
-                title={t('Have Plex re-read its DVR guide/lineup')}
+                disabled={!savedPlexReady || plexUnsaved}
+                title={plexUnsaved ? t('Save first') : t('Have Plex re-read its DVR guide/lineup')}
               >
                 {t('Rescan Plex')}
               </button>
               <button
                 type="button"
                 onClick={setupPlex}
-                disabled={setupBusy || !cfg.plexServerUrl?.trim() || !cfg.plexToken?.trim() || !cfg.plexHdhrEnabled}
-                title={t('Register the HDHomeRun tuner and a DVR with this guide in Plex and map all channels')}
+                disabled={setupBusy || !savedPlexReady || plexSetupUnsaved || !stored?.plexHdhrEnabled}
+                title={
+                  plexSetupUnsaved
+                    ? t('Save first')
+                    : t('Register the HDHomeRun tuner and a DVR with this guide in Plex and map all channels')
+                }
               >
                 {setupBusy ? t('Setting up…') : t('Set up in Plex')}
               </button>
+              {plexSetupUnsaved && (
+                <span className="muted plex-save-first">
+                  {t('Unsaved Plex changes: save first to use these buttons.')}
+                </span>
+              )}
               {rescanMsg && <span className="muted">{rescanMsg}</span>}
             </div>
             {setupSteps && (

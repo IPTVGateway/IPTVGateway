@@ -113,6 +113,14 @@ type
     [Test] procedure MirrorValidationRules;
     /// <summary>A mirror's credentials go with the list and with the source.</summary>
     [Test] procedure MirrorCredentialsDeletedWithListAndSource;
+    /// <summary>CountNew with UseHiddenFlag skips filtered rows; MarkAllSeen clears them too.</summary>
+    [Test] procedure CountNewSkipsHiddenRows;
+    /// <summary>Dedupe keeps the copy from an active source, not one from a disabled source.</summary>
+    [Test] procedure DedupePrefersActiveSource;
+    /// <summary>Saving a bouquet or a mirror's credentials marks the Plex lineup as changed.</summary>
+    [Test] procedure SaveListAndMirrorCredentialsTouchLineup;
+    /// <summary>A provider's episode id / extension can't inject into the playback URL.</summary>
+    [Test] procedure EpisodeUrlEscapesProviderParts;
   end;
 
 implementation
@@ -3002,7 +3010,11 @@ end;
 // save (never unquoted on read) — 6 items grew to ~50M quotes each. Saving must be
 // stable now, and Init must strip quotes already stored.
 procedure TStorageTests.FilterTokensWithQuotesDoNotGrowAndAreRepaired;
+const
+  cDriverSQLite = 'SQLite';
+  cStateTokensRepaired = 'source_tokens_repaired_v1'; // TSQLiteStore's app_state flag
 var
+  lConn: TFDConnection;
   lStore: IStore;
   lSrc: TSourceConfig;
   i: Integer;
@@ -3038,7 +3050,28 @@ begin
     FreeAndNil(lL1);
   end;
 
+  // the repair is a one-time migration: a quote typed after it survives a restart
   lStore := nil;
+  lStore := NewStore(FDbPath);
+  lL2 := lStore.LoadSources;
+  try
+    Assert.AreEqual('Sonay @ Oct 18 12:"', lL2[0].ExcludeFilters[0], 'operator quote kept on a later Init');
+  finally
+    FreeAndNil(lL2);
+  end;
+
+  // a database from before the migration: Init repairs it once
+  lStore := nil;
+  lConn := TFDConnection.Create(nil);
+  try
+    lConn.DriverName := cDriverSQLite;
+    lConn.Params.Database := FDbPath;
+    lConn.Connected := True;
+    lConn.ExecSQL('DELETE FROM app_state WHERE key = :k', [cStateTokensRepaired]);
+    lConn.Connected := False;
+  finally
+    FreeAndNil(lConn);
+  end;
   lStore := NewStore(FDbPath); // Init runs RepairSourceTokens
   lL2 := lStore.LoadSources;
   try
@@ -4945,6 +4978,175 @@ begin
 
   lStore.DeleteSource(lSrcId);
   Assert.AreEqual<Integer>(0, Length(lStore.LoadMirrorCredentials(lSecond)), 'gone with the source');
+end;
+
+// -- review fixes ------------------------------------------------------------
+
+procedure TStorageTests.CountNewSkipsHiddenRows;
+var
+  lStore: IStore;
+  lSrc: TSourceConfig;
+  lSrcId: Integer;
+  lSnap: TSourceSnapshot;
+  lCat: TCategory;
+  lF: TCatalogFilter;
+  lCounts: TNewCounts;
+begin
+  lStore := NewStore(FDbPath);
+  lSrc := TSourceConfig.Create;
+  try
+    lSrc.Name := 'P';
+    lSrc.Url := 'http://x';
+    lSrc.ExcludeFilters := ['NL|'];
+    lSrcId := lStore.SaveSource(lSrc);
+  finally
+    FreeAndNil(lSrc);
+  end;
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  try
+    lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '1', 'NL| One', '', '', 'http://p/1.ts'));
+    lSnap.Streams.Add(MakeStream(lSrcId, ctLive, '2', 'UK| Two', '', '', 'http://p/2.ts'));
+    lCat := TCategory.Create;
+    lCat.ContentType := ctLive;
+    lCat.UpstreamId := 'nl';
+    lCat.Name := 'NL| General';
+    lSnap.Categories.Add(lCat);
+    lCat := TCategory.Create;
+    lCat.ContentType := ctLive;
+    lCat.UpstreamId := 'uk';
+    lCat.Name := 'UK| Sport';
+    lSnap.Categories.Add(lCat);
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+
+  lF := Default(TCatalogFilter);
+  lF.SourceId := lSrcId;
+  lCounts := lStore.CountNew(lF);
+  Assert.AreEqual<Integer>(2, lCounts.Categories, 'without the flag: every new group');
+  Assert.AreEqual<Integer>(2, lCounts.Streams, 'without the flag: every new channel');
+
+  lF.UseHiddenFlag := True;
+  lCounts := lStore.CountNew(lF);
+  Assert.AreEqual<Integer>(1, lCounts.Categories, 'hidden group not counted');
+  Assert.AreEqual<Integer>(1, lCounts.Streams, 'hidden channel not counted');
+
+  lCounts := lStore.MarkAllSeen(lF);
+  Assert.AreEqual<Integer>(2, lCounts.Categories, 'mark all seen clears hidden groups too');
+  Assert.AreEqual<Integer>(2, lCounts.Streams, 'mark all seen clears hidden channels too');
+  lCounts := lStore.CountNew(Default(TCatalogFilter));
+  Assert.AreEqual<Integer>(0, lCounts.Categories + lCounts.Streams, 'nothing new left, hidden included');
+end;
+
+procedure TStorageTests.DedupePrefersActiveSource;
+const
+  cSameUrl = 'http://p/same.ts';
+var
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lOffId, lOnId, lListId, lOnStream: Integer;
+  lItems: TCustomItemList;
+begin
+  lStore := NewStore(FDbPath);
+  lOffId := SaveTestSource(lStore, [ctLive], False);
+  lOnId := SaveTestSource(lStore, [ctLive], True);
+  lSnap := TSourceSnapshot.Create(lOffId);
+  try
+    // sorts first by name: the disabled source's copy comes first in output order
+    lSnap.Streams.Add(MakeStream(lOffId, ctLive, 'off', 'A Chan', '', '', cSameUrl));
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lSnap := TSourceSnapshot.Create(lOnId);
+  try
+    lSnap.Streams.Add(MakeStream(lOnId, ctLive, 'on', 'B Chan', '', '', cSameUrl));
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lOnStream := StreamIdByUpstream(lStore, 'on');
+  lListId := NewTestList(lStore, 'L');
+  AddTestItem(lStore, lListId, StreamIdByUpstream(lStore, 'off'), ctLive);
+  AddTestItem(lStore, lListId, lOnStream, ctLive);
+
+  Assert.AreEqual<Integer>(1, lStore.DedupeListItems(lListId), 'one duplicate removed');
+  lItems := lStore.LoadItems(lListId);
+  try
+    Assert.AreEqual<Integer>(1, lItems.Count);
+    Assert.AreEqual<Integer>(lOnStream, lItems[0].StreamItemId, 'the active source''s copy stays');
+  finally
+    FreeAndNil(lItems);
+  end;
+end;
+
+procedure TStorageTests.SaveListAndMirrorCredentialsTouchLineup;
+var
+  lStore: IStore;
+  lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId: Integer;
+  lLists: TObjectList<TCustomList>;
+  lList: TCustomList;
+begin
+  lStore := NewStore(FDbPath);
+  SetupMirror(lStore, lSrcId, lMasterId, lMirrorId, lLiveId, lOffId, lSerId);
+
+  lStore.SetState(cStateLineupChanged, '');
+  lLists := lStore.LoadLists;
+  try
+    for lList in lLists do
+      if lList.Id = lMasterId then
+      begin
+        lList.Enabled := False;
+        lStore.SaveList(lList);
+      end;
+  finally
+    FreeAndNil(lLists);
+  end;
+  Assert.AreNotEqual('', lStore.GetState(cStateLineupChanged), 'saving a bouquet touches the lineup');
+
+  lStore.SetState(cStateLineupChanged, '');
+  lStore.SaveMirrorCredentials(lMirrorId, [MirrorCred(lSrcId, '', 'x', 'y')]);
+  Assert.AreNotEqual('', lStore.GetState(cStateLineupChanged), 'mirror credentials touch the lineup');
+end;
+
+procedure TStorageTests.EpisodeUrlEscapesProviderParts;
+var
+  lStore: IStore;
+  lSnap: TSourceSnapshot;
+  lSrcId, lListId, lSerId: Integer;
+  lIds: TArray<Integer>;
+  lS: TStreamItem;
+begin
+  lStore := NewStore(FDbPath);
+  lSrcId := SaveTestSource(lStore, [ctSeries], True);
+  lSnap := TSourceSnapshot.Create(lSrcId);
+  try
+    lSnap.Streams.Add(MakeStream(lSrcId, ctSeries, 'ser1', 'Some Show', 'G', '', 'http://prov/series/u/p/ser1.ts'));
+    lStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+  lSerId := StreamIdByUpstream(lStore, 'ser1');
+  lListId := NewTestList(lStore, 'A');
+  AddTestItem(lStore, lListId, lSerId, ctSeries);
+  lIds := lStore.EnsureEpisodeIds(lSerId, ['9/../x?y#z', '77'], ['mkv/../a', 'mkv']);
+
+  lS := lStore.LoadListStreamById(lListId, lIds[0]);
+  try
+    Assert.IsNotNull(lS);
+    Assert.AreEqual('http://prov:8080/series/u/p/9%2F..%2Fx%3Fy%23z.mp4', lS.UpstreamUrl,
+      'id escaped, unsafe extension replaced by the default');
+  finally
+    FreeAndNil(lS);
+  end;
+  lS := lStore.LoadListStreamById(lListId, lIds[1]);
+  try
+    Assert.IsNotNull(lS);
+    Assert.AreEqual('http://prov:8080/series/u/p/77.mkv', lS.UpstreamUrl, 'a plain episode is unchanged');
+  finally
+    FreeAndNil(lS);
+  end;
 end;
 
 initialization

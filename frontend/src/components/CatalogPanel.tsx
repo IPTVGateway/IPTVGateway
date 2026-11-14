@@ -9,7 +9,7 @@ import type {
   Source,
   StreamItem,
 } from '../types'
-import { SEARCH_DEBOUNCE_MS, useDebounced } from '../hooks/useDebounced'
+import { SEARCH_DEBOUNCE_MS, isBlank, useDebounced } from '../hooks/useDebounced'
 import { CONTENT_LIVE, CONTENT_TYPES, byNameCI, compareGroups } from '../lib/ordering'
 import { useT } from '../i18n'
 import { isMirror } from '../lib/mirror'
@@ -39,10 +39,11 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   const [sourceId, setSourceId] = useState<number | ''>('')
   const [onlyNew, setOnlyNew] = useState(false)
 
-  const debSearch = useDebounced(search, SEARCH_DEBOUNCE_MS)
-  const debPrefix = useDebounced(prefix, SEARCH_DEBOUNCE_MS)
-  const searchTerm = debSearch.trim()
-  const prefixTerm = debPrefix.trim()
+  // clearing a field resets the debounced value itself at once, so "Back to groups"
+  // drops the search without lingering, and a term typed right after it can't bring
+  // back the old one for a debounce period
+  const searchTerm = useDebounced(search, SEARCH_DEBOUNCE_MS, isBlank).trim()
+  const prefixTerm = useDebounced(prefix, SEARCH_DEBOUNCE_MS, isBlank).trim()
 
   // --- navigation: groups view vs. drilled stream view ----------------------
   const [drill, setDrill] = useState<Category | null>(null)
@@ -95,6 +96,12 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   useEffect(() => {
     if (!groupForActiveList) setTargetGroupId(0)
   }, [groupForActiveList])
+  // the picked group was deleted (or the groups were reloaded without it): fall
+  // back to the upstream group, so added channels never get a dead group id
+  const targetGroupKnown = targetGroupId === 0 || groups.some((g) => g.id === targetGroupId)
+  useEffect(() => {
+    if (!targetGroupKnown) setTargetGroupId(0)
+  }, [targetGroupKnown])
 
   const sourceName = useMemo(() => {
     const m = new Map<number, string>()
@@ -153,6 +160,11 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   }, [drill, flatSearch, sourceId, type, onlyNew, searchTerm, prefixTerm, catReload, sources])
 
   // --- new counts for "Mark all as seen" (whole source / type, not the search) --
+  // another source or type: never show (or confirm) the previous one's counts
+  useEffect(() => {
+    setNewCounts(null)
+    setConfirmAllSeen(false)
+  }, [sourceId, type])
   useEffect(() => {
     if (drill || flatSearch) return
     let cancelled = false
@@ -167,7 +179,8 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     return () => {
       cancelled = true
     }
-  }, [drill, flatSearch, sourceId, type, catReload])
+    // `sources` too: a refresh / filter edit changes what is new, as for the group list
+  }, [drill, flatSearch, sourceId, type, catReload, sources])
 
   // --- load STREAMS (paged) for the drilled group or a flat search ----------
   const streamQuery: CatalogQuery | null = useMemo(() => {
@@ -209,7 +222,12 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
         })
       })
       .catch((e) => {
-        if (!cancelled) setError((e as Error).message)
+        if (cancelled) return
+        setError((e as Error).message)
+        // never keep the previous page's rows (and a selection on them) under an error;
+        // the total (and so the page) stays, so the error shows on the page asked for
+        setStreams([])
+        setSelected(new Set())
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -222,9 +240,10 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   // the total can shrink under us (e.g. "mark seen" in the only-new view): never
   // stay on a page past the last one ("Page 3 / 2")
+  // (not under an error: that would jump away from the page that failed)
   useEffect(() => {
-    if (page > pageCount - 1) setPage(pageCount - 1)
-  }, [page, pageCount])
+    if (!error && page > pageCount - 1) setPage(pageCount - 1)
+  }, [page, pageCount, error])
   const showingStreams = drill != null || flatSearch
 
   const sortedCategories = useMemo(
@@ -289,6 +308,10 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
   }
 
   function backToGroups() {
+    // a search term would keep (or put) the view in the flat search: the group list
+    // only shows without one. In the flat search the prefix goes too (it started there).
+    if (!drill) setPrefix('')
+    setSearch('')
     setDrill(null)
     setPage(0)
     setSelected(new Set())
@@ -299,7 +322,10 @@ export function CatalogPanel({ sources, lists, groups, activeListId, onItemsAdde
     setBusy('add')
     setError(null)
     try {
-      await api.addItems(targetListId, [...selected], targetGroupId)
+      // only a group of the active list that still exists; else the upstream group
+      const groupId =
+        groupForActiveList && groups.some((g) => g.id === targetGroupId) ? targetGroupId : 0
+      await api.addItems(targetListId, [...selected], groupId)
       setSelected(new Set())
       onItemsAdded?.()
     } catch (e) {

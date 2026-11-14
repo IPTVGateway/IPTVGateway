@@ -236,6 +236,9 @@ const
   cErrUniqueConstraint = 'UNIQUE'; // SQLite error fragment (lower case) of ADD COLUMN on an existing column
   cVacuumAboveBytes = 64 * 1024 * 1024;     // VACUUM after the token repair when this much is free
   cStateM3uStreamIdV2 = 'm3u_stream_id_v2'; // app_state flag: M3U stream ids re-keyed once
+  // app_state flag: the quote-doubling repair ran once (a '"' typed later must survive)
+  cStateSourceTokensRepaired = 'source_tokens_repaired_v1';
+  cStateFlagDone = '1';
 
   // precomputed hidden flags (RecomputeHidden)
   cRecomputeForce = True;       // recompute even when the filters didn't change
@@ -624,6 +627,7 @@ end;
 // Undo the quote-doubling of old StrArrayToCsv (see IPTV.Core.Utils) and drop
 // unusable (>200 char) filter items. The '"' removal runs in SQLite (C speed on a
 // multi-hundred-MB value); then VACUUM once if that freed a lot of space.
+// A one-time migration (app_state flag): a '"' the operator types later is kept.
 procedure TSQLiteStore.RepairSourceTokens;
 var
   lQuery: TFDQuery;
@@ -633,6 +637,8 @@ var
   lChanged: Boolean;
   lCol: string;
 begin
+  if GetState(cStateSourceTokensRepaired) = cStateFlagDone then
+    Exit;
   lChanged := False;
   for lCol in TArray<string>.Create('include_filters', 'exclude_filters', 'strip_prefixes', 'strip_suffixes') do
     if FConn.ExecSQL(Format('''
@@ -692,6 +698,7 @@ begin
       FreeAndNil(lQuery);
     end;
   end;
+  SetState(cStateSourceTokensRepaired, cStateFlagDone);
 end;
 
 procedure TSQLiteStore.RecomputeHidden(ASourceId: Integer; AForce: Boolean);
@@ -953,16 +960,21 @@ var
   lQuery: TFDQuery;
 begin
   Result := TObjectList<TSourceConfig>.Create(True);
-  lQuery := NewQuery;
   try
-    lQuery.Open('SELECT * FROM sources ORDER BY name COLLATE NOCASE');
-    while not lQuery.Eof do
-    begin
-      Result.Add(ReadSource(lQuery));
-      lQuery.Next;
+    lQuery := NewQuery;
+    try
+      lQuery.Open('SELECT * FROM sources ORDER BY name COLLATE NOCASE');
+      while not lQuery.Eof do
+      begin
+        Result.Add(ReadSource(lQuery));
+        lQuery.Next;
+      end;
+    finally
+      FreeAndNil(lQuery);
     end;
-  finally
-    FreeAndNil(lQuery);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -1606,12 +1618,15 @@ var
   lPrepared: TPreparedCatalogFilter;
   lNewCounts: TDictionary<string, Integer>;
   lCount: Integer;
+  lKeep: Boolean;
 begin
   Result := TCategoryList.Create(True);
-  lPrepared := PrepareCatalogFilter(AFilter);
-  lNewCounts := TDictionary<string, Integer>.Create;
-  lQuery := NewQuery;
+  lNewCounts := nil;
+  lQuery := nil;
   try
+    lPrepared := PrepareCatalogFilter(AFilter);
+    lNewCounts := TDictionary<string, Integer>.Create;
+    lQuery := NewQuery;
     // 1) new streams per category, so a group that is not new itself but holds new
     //    channels shows "+N new" and stays in the "only new" view
     lWhere := SourceTypeSql(AFilter);
@@ -1642,20 +1657,30 @@ begin
     while not lQuery.Eof do
     begin
       lCat := ReadCategory(lQuery);
-      if lNewCounts.TryGetValue(CategoryKey(lCat.SourceId, ContentTypeNames[lCat.ContentType], lCat.UpstreamId),
-        lCount) then
-        lCat.NewCount := lCount;
-      // "only new": the group itself is new, or it holds new channels
-      if CategoryPassesFilter(lCat, lPrepared) and
-         (not AFilter.OnlyNew or lCat.IsNew or (lCat.NewCount > 0)) then
+      try
+        if lNewCounts.TryGetValue(CategoryKey(lCat.SourceId, ContentTypeNames[lCat.ContentType],
+          lCat.UpstreamId), lCount) then
+          lCat.NewCount := lCount;
+        // "only new": the group itself is new, or it holds new channels
+        lKeep := CategoryPassesFilter(lCat, lPrepared) and
+          (not AFilter.OnlyNew or lCat.IsNew or (lCat.NewCount > 0));
+      except
+        FreeAndNil(lCat); // not in Result yet: nobody else frees it
+        raise;
+      end;
+      if lKeep then
         Result.Add(lCat)
       else
         FreeAndNil(lCat);
       lQuery.Next;
     end;
-  finally
     FreeAndNil(lQuery);
     FreeAndNil(lNewCounts);
+  except
+    FreeAndNil(lQuery);
+    FreeAndNil(lNewCounts);
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -1702,27 +1727,32 @@ var
   lSql: string;
 begin
   Result := TStreamItemList.Create(True);
-  lQuery := NewQuery;
   try
-    // id as tiebreak: equal names in an undefined order made paging repeat or skip rows
-    lSql := 'SELECT * FROM streams' + StreamWhere(AFilter) + ' ORDER BY name COLLATE NOCASE, id';
-    if AFilter.Limit > 0 then
-      lSql := lSql + ' LIMIT :limit OFFSET :offset';
-    lQuery.SQL.Text := lSql;
-    BindStreamFilter(lQuery, AFilter);
-    if AFilter.Limit > 0 then
-    begin
-      lQuery.ParamByName('limit').AsInteger := AFilter.Limit;
-      lQuery.ParamByName('offset').AsInteger := AFilter.Offset;
+    lQuery := NewQuery;
+    try
+      // id as tiebreak: equal names in an undefined order made paging repeat or skip rows
+      lSql := 'SELECT * FROM streams' + StreamWhere(AFilter) + ' ORDER BY name COLLATE NOCASE, id';
+      if AFilter.Limit > 0 then
+        lSql := lSql + ' LIMIT :limit OFFSET :offset';
+      lQuery.SQL.Text := lSql;
+      BindStreamFilter(lQuery, AFilter);
+      if AFilter.Limit > 0 then
+      begin
+        lQuery.ParamByName('limit').AsInteger := AFilter.Limit;
+        lQuery.ParamByName('offset').AsInteger := AFilter.Offset;
+      end;
+      lQuery.Open;
+      while not lQuery.Eof do
+      begin
+        Result.Add(ReadStream(lQuery));
+        lQuery.Next;
+      end;
+    finally
+      FreeAndNil(lQuery);
     end;
-    lQuery.Open;
-    while not lQuery.Eof do
-    begin
-      Result.Add(ReadStream(lQuery));
-      lQuery.Next;
-    end;
-  finally
-    FreeAndNil(lQuery);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -1771,13 +1801,18 @@ end;
 function TSQLiteStore.CountNew(const AFilter: TCatalogFilter): TNewCounts;
 var
   lQuery: TFDQuery;
+  lWhere: string;
 begin
+  // what the catalog shows: rows hidden by the source's name filters don't count
+  lWhere := SourceTypeSql(AFilter);
+  if AFilter.UseHiddenFlag then
+    lWhere := lWhere + ' AND hidden=0';
   lQuery := NewQuery;
   try
-    lQuery.Open('SELECT COUNT(*) AS n FROM categories WHERE is_new=1' + SourceTypeSql(AFilter));
+    lQuery.Open('SELECT COUNT(*) AS n FROM categories WHERE is_new=1' + lWhere);
     Result.Categories := lQuery.FieldByName('n').AsInteger;
     lQuery.Close;
-    lQuery.Open('SELECT COUNT(*) AS n FROM streams WHERE is_new=1' + SourceTypeSql(AFilter));
+    lQuery.Open('SELECT COUNT(*) AS n FROM streams WHERE is_new=1' + lWhere);
     Result.Streams := lQuery.FieldByName('n').AsInteger;
   finally
     FreeAndNil(lQuery);
@@ -1916,12 +1951,31 @@ begin
   Result := LoadScopedStream(lMasterId, AStreamItemId);
   if Result = nil then
     Exit;
-  lAccounts := LoadPlaybackAccounts(AListId);
   try
-    Result.UpstreamUrl := PlaybackUrl(lAccounts, Result.SourceId, Result.UpstreamUrl);
-  finally
-    FreeAndNil(lAccounts);
+    lAccounts := LoadPlaybackAccounts(AListId);
+    try
+      Result.UpstreamUrl := PlaybackUrl(lAccounts, Result.SourceId, Result.UpstreamUrl);
+    finally
+      FreeAndNil(lAccounts);
+    end;
+  except
+    FreeAndNil(Result);
+    raise;
   end;
+end;
+
+// container extension of a provider episode for the playback URL: letters/digits
+// only (it comes from the provider's get_series_info), else the default
+function SafeEpisodeExt(const AExt: string): string;
+var
+  lChar: Char;
+begin
+  if AExt = '' then
+    Exit(cDefaultEpisodeExt);
+  for lChar in AExt do
+    if not CharInSet(lChar, ['A'..'Z', 'a'..'z', '0'..'9']) then
+      Exit(cDefaultEpisodeExt);
+  Result := AExt;
 end;
 
 function TSQLiteStore.LoadScopedStream(AListId, AStreamItemId: Integer): TStreamItem;
@@ -1955,12 +2009,12 @@ begin
         Result.ContentType := ctSeries;
         Result.UpstreamId := lQuery.FieldByName('eid').AsString;
         Result.Name := lQuery.FieldByName('nm').AsString;
-        // built from the source's CURRENT url/credentials (a credential swap keeps working)
+        // built from the source's CURRENT url/credentials (a credential swap keeps working);
+        // id and extension come from the provider: escaped / restricted to letters+digits
         Result.UpstreamUrl := Format('%s/series/%s/%s/%s.%s',
           [lQuery.FieldByName('surl').AsString.Trim.TrimRight(['/']), UrlPathSafe(lQuery.FieldByName('su').AsString),
-           UrlPathSafe(lQuery.FieldByName('sp').AsString), Result.UpstreamId,
-           System.StrUtils.IfThen(lQuery.FieldByName('ext').AsString = '', cDefaultEpisodeExt,
-             lQuery.FieldByName('ext').AsString)]);
+           UrlPathSafe(lQuery.FieldByName('sp').AsString), UrlPathSafe(Result.UpstreamId),
+           SafeEpisodeExt(lQuery.FieldByName('ext').AsString)]);
       end;
       Exit;
     end;
@@ -3047,43 +3101,48 @@ var
   lLo, lHi, i: Integer;
 begin
   Result := TEpgProgrammeList.Create(True);
-  if Length(ATvgIds) = 0 then
-    Exit;
-  if AMaxDays > 0 then
-    lCutoff := DateTimeToIsoUtc(IncDay(NowUtc, AMaxDays));
-  lLo := 0;
-  while lLo <= High(ATvgIds) do
-  begin
-    lHi := lLo + cEpgTvgIdParamChunk - 1;
-    if lHi > High(ATvgIds) then
-      lHi := High(ATvgIds);
-    lQuery := NewQuery;
-    try
-      lPlaceholders := '';
-      for i := lLo to lHi do
-        lPlaceholders := lPlaceholders + IfThen(i > lLo, ',', '') + ':p' + i.ToString;
-      lQuery.SQL.Text := 'SELECT * FROM epg WHERE channel_tvg_id IN (' + lPlaceholders + ')';
-      // optional cap: drop programmes that start beyond now + AMaxDays (0 = no cap)
-      if AMaxDays > 0 then
-        lQuery.SQL.Text := lQuery.SQL.Text + ' AND start_utc < :cutoff';
-      lQuery.SQL.Text := lQuery.SQL.Text + ' ORDER BY channel_tvg_id, start_utc';
-      for i := lLo to lHi do
-        lQuery.ParamByName('p' + i.ToString).AsWideString := ATvgIds[i];
-      if AMaxDays > 0 then
-        lQuery.ParamByName('cutoff').AsWideString := lCutoff;
-      lQuery.Open;
-      while not lQuery.Eof do
-      begin
-        Result.Add(ReadProgramme(lQuery));
-        lQuery.Next;
+  try
+    if Length(ATvgIds) = 0 then
+      Exit;
+    if AMaxDays > 0 then
+      lCutoff := DateTimeToIsoUtc(IncDay(NowUtc, AMaxDays));
+    lLo := 0;
+    while lLo <= High(ATvgIds) do
+    begin
+      lHi := lLo + cEpgTvgIdParamChunk - 1;
+      if lHi > High(ATvgIds) then
+        lHi := High(ATvgIds);
+      lQuery := NewQuery;
+      try
+        lPlaceholders := '';
+        for i := lLo to lHi do
+          lPlaceholders := lPlaceholders + IfThen(i > lLo, ',', '') + ':p' + i.ToString;
+        lQuery.SQL.Text := 'SELECT * FROM epg WHERE channel_tvg_id IN (' + lPlaceholders + ')';
+        // optional cap: drop programmes that start beyond now + AMaxDays (0 = no cap)
+        if AMaxDays > 0 then
+          lQuery.SQL.Text := lQuery.SQL.Text + ' AND start_utc < :cutoff';
+        lQuery.SQL.Text := lQuery.SQL.Text + ' ORDER BY channel_tvg_id, start_utc';
+        for i := lLo to lHi do
+          lQuery.ParamByName('p' + i.ToString).AsWideString := ATvgIds[i];
+        if AMaxDays > 0 then
+          lQuery.ParamByName('cutoff').AsWideString := lCutoff;
+        lQuery.Open;
+        while not lQuery.Eof do
+        begin
+          Result.Add(ReadProgramme(lQuery));
+          lQuery.Next;
+        end;
+      finally
+        FreeAndNil(lQuery);
       end;
-    finally
-      FreeAndNil(lQuery);
+      lLo := lHi + 1;
     end;
-    lLo := lHi + 1;
+    // several providers deliver the same channel's guide: serve one, not all
+    KeepOneSourcePerChannel(Result, NowUtc);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
-  // several providers deliver the same channel's guide: serve one, not all
-  KeepOneSourcePerChannel(Result, NowUtc);
 end;
 
 // ── Lists ──────────────────────────────────────────────────────────────────
@@ -3104,16 +3163,21 @@ var
   lQuery: TFDQuery;
 begin
   Result := TObjectList<TCustomList>.Create(True);
-  lQuery := NewQuery;
   try
-    lQuery.Open('SELECT * FROM lists ORDER BY name COLLATE NOCASE');
-    while not lQuery.Eof do
-    begin
-      Result.Add(ReadList(lQuery));
-      lQuery.Next;
+    lQuery := NewQuery;
+    try
+      lQuery.Open('SELECT * FROM lists ORDER BY name COLLATE NOCASE');
+      while not lQuery.Eof do
+      begin
+        Result.Add(ReadList(lQuery));
+        lQuery.Next;
+      end;
+    finally
+      FreeAndNil(lQuery);
     end;
-  finally
-    FreeAndNil(lQuery);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -3231,6 +3295,7 @@ begin
   finally
     FreeAndNil(lQuery);
   end;
+  TouchLineup; // enabled flag / mirror target / login: Plex may serve this bouquet
 end;
 
 function TSQLiteStore.LoadMirrorCredentials(AListId: Integer): TArray<TMirrorCredential>;
@@ -3298,6 +3363,7 @@ begin
   finally
     FreeAndNil(lQuery);
   end;
+  TouchLineup; // the mirror's stream URLs change: Plex may serve this bouquet
 end;
 
 function TSQLiteStore.LoadPlaybackAccounts(AListId: Integer): TDictionary<Integer, TPlaybackAccount>;
@@ -3306,30 +3372,35 @@ var
   lAccount: TPlaybackAccount;
 begin
   Result := TDictionary<Integer, TPlaybackAccount>.Create;
-  lQuery := NewQuery;
   try
-    lQuery.Open(
-      '''
-      SELECT c.source_id, c.url, c.username, c.password,
-        src.url AS surl, src.username AS su, src.password AS sp
-      FROM list_source_credentials c
-      JOIN sources src ON src.id = c.source_id
-      WHERE c.list_id = :l
-      ''', [AListId]);
-    while not lQuery.Eof do
-    begin
-      lAccount.SourceUrl := lQuery.FieldByName('surl').AsString;
-      lAccount.SourceUser := lQuery.FieldByName('su').AsString;
-      lAccount.SourcePass := lQuery.FieldByName('sp').AsString;
-      lAccount.Credential.SourceId := lQuery.FieldByName('source_id').AsInteger;
-      lAccount.Credential.Url := lQuery.FieldByName('url').AsString;
-      lAccount.Credential.Username := lQuery.FieldByName('username').AsString;
-      lAccount.Credential.Password := lQuery.FieldByName('password').AsString;
-      Result.AddOrSetValue(lAccount.Credential.SourceId, lAccount);
-      lQuery.Next;
+    lQuery := NewQuery;
+    try
+      lQuery.Open(
+        '''
+        SELECT c.source_id, c.url, c.username, c.password,
+          src.url AS surl, src.username AS su, src.password AS sp
+        FROM list_source_credentials c
+        JOIN sources src ON src.id = c.source_id
+        WHERE c.list_id = :l
+        ''', [AListId]);
+      while not lQuery.Eof do
+      begin
+        lAccount.SourceUrl := lQuery.FieldByName('surl').AsString;
+        lAccount.SourceUser := lQuery.FieldByName('su').AsString;
+        lAccount.SourcePass := lQuery.FieldByName('sp').AsString;
+        lAccount.Credential.SourceId := lQuery.FieldByName('source_id').AsInteger;
+        lAccount.Credential.Url := lQuery.FieldByName('url').AsString;
+        lAccount.Credential.Username := lQuery.FieldByName('username').AsString;
+        lAccount.Credential.Password := lQuery.FieldByName('password').AsString;
+        Result.AddOrSetValue(lAccount.Credential.SourceId, lAccount);
+        lQuery.Next;
+      end;
+    finally
+      FreeAndNil(lQuery);
     end;
-  finally
-    FreeAndNil(lQuery);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -3422,22 +3493,27 @@ var
   lQuery: TFDQuery;
 begin
   Result := TCustomGroupList.Create(True);
-  lQuery := NewQuery;
   try
-    // favorites first, then the manual drag order (sort_order>0), then A->Z for any
-    // groups not manually positioned yet
-    lQuery.Open('''
-      SELECT * FROM list_groups WHERE list_id=:l
-      ORDER BY is_favorite DESC, CASE WHEN sort_order>0 THEN 0 ELSE 1 END, sort_order, name COLLATE NOCASE
-      ''',
-      [AListId]);
-    while not lQuery.Eof do
-    begin
-      Result.Add(ReadGroup(lQuery));
-      lQuery.Next;
+    lQuery := NewQuery;
+    try
+      // favorites first, then the manual drag order (sort_order>0), then A->Z for any
+      // groups not manually positioned yet
+      lQuery.Open('''
+        SELECT * FROM list_groups WHERE list_id=:l
+        ORDER BY is_favorite DESC, CASE WHEN sort_order>0 THEN 0 ELSE 1 END, sort_order, name COLLATE NOCASE
+        ''',
+        [AListId]);
+      while not lQuery.Eof do
+      begin
+        Result.Add(ReadGroup(lQuery));
+        lQuery.Next;
+      end;
+    finally
+      FreeAndNil(lQuery);
     end;
-  finally
-    FreeAndNil(lQuery);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -3560,24 +3636,30 @@ var
   lQuery: TFDQuery;
 begin
   Result := TCustomItemList.Create(True);
-  lQuery := NewQuery;
   try
-    // join the upstream stream so the UI can show the real channel name/logo
-    // even when no override is set (LEFT JOIN: keep the item if the stream is gone)
-    lQuery.Open(
-      '''
-      SELECT i.*, s.name AS stream_name, s.logo AS stream_logo, s.tvg_id AS stream_tvg, s.source_id AS stream_source, s.archive_days AS stream_archive
-      FROM list_items i LEFT JOIN streams s ON s.id = i.stream_item_id
-      WHERE i.list_id=:l ORDER BY i.channel_number, stream_name COLLATE NOCASE
-      ''',
-      [AListId]);
-    while not lQuery.Eof do
-    begin
-      Result.Add(ReadItem(lQuery));
-      lQuery.Next;
+    lQuery := NewQuery;
+    try
+      // join the upstream stream so the UI can show the real channel name/logo
+      // even when no override is set (LEFT JOIN: keep the item if the stream is gone)
+      lQuery.Open(
+        '''
+        SELECT i.*, s.name AS stream_name, s.logo AS stream_logo, s.tvg_id AS stream_tvg,
+          s.source_id AS stream_source, s.archive_days AS stream_archive
+        FROM list_items i LEFT JOIN streams s ON s.id = i.stream_item_id
+        WHERE i.list_id=:l ORDER BY i.channel_number, stream_name COLLATE NOCASE
+        ''',
+        [AListId]);
+      while not lQuery.Eof do
+      begin
+        Result.Add(ReadItem(lQuery));
+        lQuery.Next;
+      end;
+    finally
+      FreeAndNil(lQuery);
     end;
-  finally
-    FreeAndNil(lQuery);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -3592,12 +3674,17 @@ begin
     Exit(LoadListChannels(AListId));
   // a mirror: exactly the master's channels, played with the mirror's own account
   Result := LoadListChannels(lMasterId);
-  lAccounts := LoadPlaybackAccounts(AListId);
   try
-    for lChannel in Result do
-      lChannel.UpstreamUrl := PlaybackUrl(lAccounts, lChannel.SourceId, lChannel.UpstreamUrl);
-  finally
-    FreeAndNil(lAccounts);
+    lAccounts := LoadPlaybackAccounts(AListId);
+    try
+      for lChannel in Result do
+        lChannel.UpstreamUrl := PlaybackUrl(lAccounts, lChannel.SourceId, lChannel.UpstreamUrl);
+    finally
+      FreeAndNil(lAccounts);
+    end;
+  except
+    FreeAndNil(Result);
+    raise;
   end;
 end;
 
@@ -3607,58 +3694,63 @@ var
   lChannel: TOutputChannel;
 begin
   Result := TOutputChannelList.Create(True);
-  lQuery := NewQuery;
   try
-    // Join item -> stream (upstream data) -> group (override). COALESCE applies
-    // the rename/regroup/logo overrides; empty overrides fall back to upstream.
-    // A disabled source / content type is never offered to a box (cSqlSourceActive).
-    // Order: favorites first, then the manual group drag-order (sort_order>0), then
-    // any un-positioned groups A→Z; WITHIN a group honour the operator's channel
-    // numbers (drag/sort-by-Nr) — numbered first in number order, then unnumbered A→Z.
-    lQuery.SQL.Text :=
-      '''
-      SELECT i.stream_item_id AS sid, s.source_id AS srcid, i.channel_number AS num, i.content_type AS ctype,
-        COALESCE(NULLIF(i.display_name,''), s.name) AS cname,
-        COALESCE(NULLIF(i.logo_override,''), s.logo) AS clogo,
-        COALESCE(NULLIF(i.tvg_id_override,''), s.tvg_id) AS tvg, s.tvg_id AS utvg, s.upstream_url AS url,
-        s.upstream_id AS uid, s.archive_days AS arch,
-        COALESCE(NULLIF(g.name,''), s.group_title) AS gname,
-        COALESCE(g.is_favorite, 0) AS fav, COALESCE(g.sort_order, 0) AS gsort
-      FROM list_items i
-      JOIN streams s ON s.id = i.stream_item_id
-      LEFT JOIN list_groups g ON g.id = i.custom_group_id
-      LEFT JOIN sources src ON src.id = s.source_id
-      WHERE i.list_id = :l AND
-      ''' + cSqlSourceActive +
-      '''
+    lQuery := NewQuery;
+    try
+      // Join item -> stream (upstream data) -> group (override). COALESCE applies
+      // the rename/regroup/logo overrides; empty overrides fall back to upstream.
+      // A disabled source / content type is never offered to a box (cSqlSourceActive).
+      // Order: favorites first, then the manual group drag-order (sort_order>0), then
+      // any un-positioned groups A→Z; WITHIN a group honour the operator's channel
+      // numbers (drag/sort-by-Nr) — numbered first in number order, then unnumbered A→Z.
+      lQuery.SQL.Text :=
+        '''
+        SELECT i.stream_item_id AS sid, s.source_id AS srcid, i.channel_number AS num, i.content_type AS ctype,
+          COALESCE(NULLIF(i.display_name,''), s.name) AS cname,
+          COALESCE(NULLIF(i.logo_override,''), s.logo) AS clogo,
+          COALESCE(NULLIF(i.tvg_id_override,''), s.tvg_id) AS tvg, s.tvg_id AS utvg, s.upstream_url AS url,
+          s.upstream_id AS uid, s.archive_days AS arch,
+          COALESCE(NULLIF(g.name,''), s.group_title) AS gname,
+          COALESCE(g.is_favorite, 0) AS fav, COALESCE(g.sort_order, 0) AS gsort
+        FROM list_items i
+        JOIN streams s ON s.id = i.stream_item_id
+        LEFT JOIN list_groups g ON g.id = i.custom_group_id
+        LEFT JOIN sources src ON src.id = s.source_id
+        WHERE i.list_id = :l AND
+        ''' + cSqlSourceActive +
+        '''
 
-      ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
-        CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE
-      ''';
-    lQuery.Open(lQuery.SQL.Text, [AListId]);
-    while not lQuery.Eof do
-    begin
-      lChannel := TOutputChannel.Create;
-      lChannel.StreamItemId := lQuery.FieldByName('sid').AsInteger;
-      lChannel.SourceId := lQuery.FieldByName('srcid').AsInteger;
-      lChannel.Number := lQuery.FieldByName('num').AsInteger;
-      lChannel.ContentType := ContentTypeFromString(lQuery.FieldByName('ctype').AsString);
-      lChannel.Name := lQuery.FieldByName('cname').AsString;
-      lChannel.Logo := lQuery.FieldByName('clogo').AsString;
-      lChannel.TvgId := lQuery.FieldByName('tvg').AsString;
-      lChannel.UpstreamTvgId := lQuery.FieldByName('utvg').AsString;
-      lChannel.UpstreamUrl := lQuery.FieldByName('url').AsString;
-      lChannel.UpstreamId := lQuery.FieldByName('uid').AsString;
-      lChannel.ArchiveDays := lQuery.FieldByName('arch').AsInteger;
-      lChannel.GroupName := lQuery.FieldByName('gname').AsString;
-      lChannel.IsFavoriteGroup := lQuery.FieldByName('fav').AsInteger <> 0;
-      Result.Add(lChannel);
-      lQuery.Next;
+        ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
+          CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE
+        ''';
+      lQuery.Open(lQuery.SQL.Text, [AListId]);
+      while not lQuery.Eof do
+      begin
+        lChannel := TOutputChannel.Create;
+        lChannel.StreamItemId := lQuery.FieldByName('sid').AsInteger;
+        lChannel.SourceId := lQuery.FieldByName('srcid').AsInteger;
+        lChannel.Number := lQuery.FieldByName('num').AsInteger;
+        lChannel.ContentType := ContentTypeFromString(lQuery.FieldByName('ctype').AsString);
+        lChannel.Name := lQuery.FieldByName('cname').AsString;
+        lChannel.Logo := lQuery.FieldByName('clogo').AsString;
+        lChannel.TvgId := lQuery.FieldByName('tvg').AsString;
+        lChannel.UpstreamTvgId := lQuery.FieldByName('utvg').AsString;
+        lChannel.UpstreamUrl := lQuery.FieldByName('url').AsString;
+        lChannel.UpstreamId := lQuery.FieldByName('uid').AsString;
+        lChannel.ArchiveDays := lQuery.FieldByName('arch').AsInteger;
+        lChannel.GroupName := lQuery.FieldByName('gname').AsString;
+        lChannel.IsFavoriteGroup := lQuery.FieldByName('fav').AsInteger <> 0;
+        Result.Add(lChannel);
+        lQuery.Next;
+      end;
+    finally
+      FreeAndNil(lQuery);
     end;
-  finally
-    FreeAndNil(lQuery);
+    ApplyExtraGuides(Result);
+  except
+    FreeAndNil(Result);
+    raise;
   end;
-  ApplyExtraGuides(Result);
 end;
 
 function TSQLiteStore.SaveItem(const AItem: TCustomItem): Integer;
@@ -4146,18 +4238,24 @@ begin
   lQuery := NewQuery;
   try
     // walk items in the OUTPUT order (as LoadOutputChannels: favorites, group
-    // drag-order, groups A-Z, channel numbers, names A-Z); the FIRST occurrence of
-    // each upstream URL is kept, later ones are dropped as duplicates.
+    // drag-order, groups A-Z, channel numbers, names A-Z), items of an active source
+    // and content type first (only those are offered); the FIRST occurrence of each
+    // upstream URL is kept, later ones are dropped as duplicates.
     lQuery.Open(
       '''
       SELECT i.id AS iid, s.upstream_url AS url, i.channel_number AS num,
         COALESCE(NULLIF(g.name,''), s.group_title) AS gname,
         COALESCE(NULLIF(i.display_name,''), s.name) AS cname,
-        COALESCE(g.is_favorite, 0) AS fav, COALESCE(g.sort_order, 0) AS gsort
+        COALESCE(g.is_favorite, 0) AS fav, COALESCE(g.sort_order, 0) AS gsort,
+        CASE WHEN
+      ''' + cSqlSourceActive +
+      '''
+       THEN 1 ELSE 0 END AS active
       FROM list_items i JOIN streams s ON s.id = i.stream_item_id
       LEFT JOIN list_groups g ON g.id = i.custom_group_id
+      LEFT JOIN sources src ON src.id = s.source_id
       WHERE i.list_id = :l
-      ORDER BY fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
+      ORDER BY active DESC, fav DESC, CASE WHEN gsort > 0 THEN 0 ELSE 1 END, gsort, gname COLLATE NOCASE,
         CASE WHEN num > 0 THEN 0 ELSE 1 END, num, cname COLLATE NOCASE
       ''',
       [AListId]);

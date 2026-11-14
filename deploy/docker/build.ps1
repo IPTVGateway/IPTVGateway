@@ -135,9 +135,32 @@ if (-not (Test-Path $staged)) { throw "no staged binary at $staged - run without
 Write-Host "    staged: $staged ($([math]::Round((Get-Item $staged).Length/1MB,1)) MB)"
 
 # stage the built React admin UI next to the Dockerfile (deploy\docker\webui) so
-# the image bundles it (served at / by the service). Run 'npm run build' in
-# frontend\ first; we just copy whatever dist is there.
+# the image bundles it (served at / by the service). A dist older than the sources
+# would ship an old web app (whose saves no longer match the API), so it is rebuilt
+# first when needed ('npm run build' in frontend\; Node from PATH or the default install).
 $dist = Join-Path $repo 'frontend\dist'
+$frontendDir = Join-Path $repo 'frontend'
+$distIndex = Join-Path $dist 'index.html'
+$newestSrc = Get-ChildItem (Join-Path $frontendDir 'src') -Recurse -File |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($newestSrc -and ((-not (Test-Path $distIndex)) -or ($newestSrc.LastWriteTime -gt (Get-Item $distIndex).LastWriteTime))) {
+  Write-Host "==> frontend\dist is older than frontend\src - running npm run build ..." -ForegroundColor Cyan
+  $nodeDir = Join-Path $env:ProgramFiles 'nodejs'
+  if ((-not (Get-Command npm -ErrorAction SilentlyContinue)) -and (Test-Path $nodeDir)) {
+    $env:PATH = "$nodeDir;$env:PATH"
+  }
+  if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "frontend\dist is stale and npm was not found - run 'npm run build' in frontend\ first"
+  }
+  Push-Location $frontendDir
+  try {
+    cmd /c "npm run build"
+    if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+  }
+  finally {
+    Pop-Location
+  }
+}
 $webui = Join-Path $here 'webui'
 if (Test-Path $dist) {
   if (Test-Path $webui) { Remove-Item $webui -Recurse -Force }

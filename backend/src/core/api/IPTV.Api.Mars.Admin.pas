@@ -22,15 +22,25 @@ type
   protected
     [Context] Response: IMARSResponse;
     [Context] Request: IMARSRequest;
+    /// This request was let in by a download token (a nested RequireApp of the same
+    /// request needn't look it up again).
+    FTokenAuthed: Boolean;
     /// Guard run at the start of every handler: 503 if the service isn't up, and
     /// 401 if an admin password is configured but missing/wrong on the request.
-    /// AAllowQueryPassword: also accept ?pw= (only the download links, which can't
-    /// send a header - a password in a URL ends up in browser history / proxy logs)
+    /// A GET may instead carry ?dt=<token> from POST /api/download-token, valid only for
+    /// the path it was issued for (download links can't send a header; the password
+    /// itself is never accepted in a URL).
+    /// AAllowQueryPassword is kept for the download routes' calls and has no effect.
     procedure RequireApp(AAllowQueryPassword: Boolean = False);
   public
     /// Liveness + version; needs no login.
     [GET, Path('health'), Produces(TMediaType.APPLICATION_JSON)]
     function Health: TJSONObject;
+    /// A download token for one bouquet export: body {"path": "/api/lists/12/export.m3u"}
+    /// -> {"token": "..."}; then GET <path>?dt=<token> (valid 60 s for that path only,
+    /// usable more than once within it).
+    [POST, Path('download-token'), Consumes(TMediaType.APPLICATION_JSON), Produces(TMediaType.APPLICATION_JSON)]
+    function PostDownloadToken([BodyParam] ABody: TJSONObject): TJSONObject;
 
     // ── sources ──────────────────────────────────────────────────────────
     /// All configured sources.
@@ -289,13 +299,31 @@ uses
   IPTV.Output.Builder,
   IPTV.Core.Utils,
   IPTV.Plex.Client,
-  IPTV.Source.Probe;
+  IPTV.Source.Probe,
+  IPTV.Api.Security;
 
 const
-  // admin authentication: header (web app), query param (download links only)
+  // admin authentication: header (web app), single-use token (download links)
   cAdminPasswordHeader = 'X-Admin-Password';
-  cAdminPasswordQuery = 'pw';
-  cAllowQueryPassword = True; // RequireApp AAllowQueryPassword
+  cDownloadTokenQuery = 'dt';
+  cDownloadTokenField = 'token';
+  cMethodGet = 'GET';
+  cAllowQueryPassword = True; // RequireApp AAllowQueryPassword (no effect any more)
+  // write-only secrets in GET /api/config (the settings export keeps them)
+  cFieldPlexToken = 'plexToken';
+  cFieldHasPlexToken = 'hasPlexToken';
+  cFieldClearPlexToken = 'clearPlexToken'; // POST /api/config: true = remove the token
+  cFieldAllowedHosts = 'allowedHosts';
+  cFieldExtraEpgUrls = 'extraEpgUrls';
+  cFieldDownloadPath = 'path'; // POST /api/download-token body
+  cHeaderHost = 'Host';
+  cMsgBadDownloadPath = 'A download token is only issued for /api/lists/{id}/export.m3u or ' +
+    '/api/lists/{id}/export.xmltv';
+  cMsgClearPlexTokenBool = 'clearPlexToken must be true or false';
+  cMsgHostLockout = 'This change would lock you out: without an admin password the admin API only ' +
+    'accepts Host "%s" through allowedHosts / publicBaseUrl - keep it there or set an admin password first';
+  cWithSecrets = True;    // ConfigToJson AIncludeSecrets
+  cWithoutSecrets = False;
 
   // truthy query-param values ('1' / 'true', case-insensitive)
   cQueryTrueDigit = '1';
@@ -347,6 +375,9 @@ const
   cMsgMirrorReadOnly = 'This bouquet mirrors %s - edit the channels there';
   cNoMirror = 0;
 
+  // catalog routes: a `type` query value that is no content type name (%s = the value)
+  cMsgUnknownType = 'unknown type ''%s''';
+
   // download exports
   cHeaderContentDisposition = 'Content-Disposition';
   cAttachmentFmt = 'attachment; filename="%s"';
@@ -360,10 +391,19 @@ begin
   if App = nil then
     raise EMARSHttpException.Create('service not started', cHttpServiceUnavailable);
   lPw := App.Config.AdminPassword;
-  if lPw <> '' then
-    if not IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), lPw) and
-       not (AAllowQueryPassword and IsSamePassword(Request.GetQueryParamValue(cAdminPasswordQuery), lPw)) then
-      raise EMARSHttpException.Create('Unauthorized', cHttpUnauthorized);
+  if (lPw = '') or FTokenAuthed then
+    Exit;
+  if IsSamePassword(Request.GetHeaderParamValue(cAdminPasswordHeader), lPw) then
+    Exit;
+  // a download link: a token (60 s, for this one path) instead of the password, which
+  // used to travel as ?pw= and end up in browser history and proxy logs
+  if SameText(Request.Method, cMethodGet) and
+     GDownloadTokens.IsValid(Request.GetQueryParamValue(cDownloadTokenQuery), Request.GetRawPath) then
+  begin
+    FTokenAuthed := True;
+    Exit;
+  end;
+  raise EMARSHttpException.Create('Unauthorized', cHttpUnauthorized);
 end;
 
 function ParseIds(const ABody: TJSONObject): TArray<Integer>;
@@ -428,8 +468,9 @@ begin
 end;
 
 // The Plex bouquet of an imported bundle: the import recreates the lists (new ids),
-// so map the bundle's plexListId through its list NAME; 0 (= first enabled) if gone.
-function ImportedPlexListId(const ABody, ACfg: TJSONObject): Integer;
+// so map the bundle's plexListId through the import's id map; a bundle whose lists
+// carry no ids falls back to the list NAME; 0 (= first enabled) if gone.
+function ImportedPlexListId(const ABody, ACfg: TJSONObject; const ACounts: TImportCounts): Integer;
 var
   lOldId: Integer;
   lName: string;
@@ -439,7 +480,10 @@ var
 begin
   Result := 0;
   lOldId := ACfg.GetValue<Integer>('plexListId', 0);
-  if (lOldId = 0) or not (ABody.GetValue('lists') is TJSONArray) then
+  if lOldId = 0 then
+    Exit;
+  Result := ACounts.NewListId(lOldId);
+  if (Result <> 0) or not (ABody.GetValue('lists') is TJSONArray) then
     Exit;
   lName := '';
   for lItem in TJSONArray(ABody.GetValue('lists')) do
@@ -479,10 +523,12 @@ function MakeFilter(ASourceId: Integer; const AType, AOnlyNew, ASearch, APrefix,
 begin
   Result := Default(TCatalogFilter);
   Result.SourceId := ASourceId;
+  // empty type = any; an unknown one is a client error, never a silent "live"
   if AType <> '' then
   begin
     Result.HasContentType := True;
-    Result.ContentType := ContentTypeFromString(AType);
+    if not TryContentTypeFromString(AType, Result.ContentType) then
+      raise EMARSHttpException.Create(Format(cMsgUnknownType, [AType]), cHttpBadRequest);
   end;
   Result.OnlyNew := IsTrue(AOnlyNew);
   Result.Search := ASearch;
@@ -593,7 +639,7 @@ begin
   RequireApp;
   lList := App.Store.LoadSources;
   try
-    Result := SourcesToJson(lList);
+    Result := SourcesToAdminJson(lList); // provider passwords are write-only
   finally
     FreeAndNil(lList);
   end;
@@ -605,11 +651,13 @@ var
   lSources: TObjectList<TSourceConfig>;
   lId: Integer;
   lOldStrip, lOldStripSfx: TArray<string>;
-  lTooLong: string;
+  lTooLong, lStoredUrl, lStoredEpgUrl: string;
 begin
   RequireApp;
   lOldStrip := [];
   lOldStripSfx := [];
+  lStoredUrl := '';
+  lStoredEpgUrl := '';
   lSource := TSourceConfig.Create;
   try
     // For an update, pre-load the stored row so a PARTIAL body (e.g. just a
@@ -626,6 +674,8 @@ begin
             lSource.Assign(lExisting);
             lOldStrip := lExisting.StripPrefixes; // remember to re-strip existing items if it changes
             lOldStripSfx := lExisting.StripSuffixes;
+            lStoredUrl := lExisting.Url;
+            lStoredEpgUrl := lExisting.EpgUrl;
             Break;
           end;
       finally
@@ -633,6 +683,9 @@ begin
       end;
     end;
     SourceFromJson(ABody, lSource);
+    // the GET masks secret query values ('***'): put the stored ones back
+    lSource.Url := RestoreMaskedUrlSecrets(lSource.Url, lStoredUrl);
+    lSource.EpgUrl := RestoreMaskedUrlSecrets(lSource.EpgUrl, lStoredEpgUrl);
     // a name-filter item can't be a whole pasted list: refuse oversized items
     // (they used to reach SQLite as one giant LIKE pattern and fail every catalog
     // query) and split pasted multi-line items into separate tokens
@@ -650,7 +703,7 @@ begin
        ((StrArrayToCsv(lOldStrip, cStripTokenSep) <> StrArrayToCsv(lSource.StripPrefixes, cStripTokenSep)) or
        (StrArrayToCsv(lOldStripSfx, cStripTokenSep) <> StrArrayToCsv(lSource.StripSuffixes, cStripTokenSep))) then
       App.Store.RestripSourceItems(lSource.Id, lOldStrip, lOldStripSfx, lSource.StripPrefixes, lSource.StripSuffixes);
-    Result := SourceToJson(lSource);
+    Result := SourceToAdminJson(lSource); // provider password is write-only
   finally
     FreeAndNil(lSource);
   end;
@@ -995,7 +1048,10 @@ begin
   if ABody.GetValue('credentials') is TJSONArray then
     lArray := TJSONArray(ABody.GetValue('credentials'));
   try
-    App.Store.SaveMirrorCredentials(AId, MirrorCredentialsFromJson(lArray));
+    // a row with a missing/empty "password" keeps that source's stored one (the GET never
+    // returns it); "clearPassword": true clears it
+    App.Store.SaveMirrorCredentials(AId,
+      MirrorCredentialsFromJson(lArray, App.Store.LoadMirrorCredentials(AId)));
   except
     on E: EStoreValidation do // not a mirror
       raise EMARSHttpException.Create(E.Message, cHttpBadRequest);
@@ -1003,9 +1059,21 @@ begin
   Result := MirrorCredentialsToJson(App.Store.LoadMirrorCredentials(AId));
 end;
 
-function TAdminResource.GetConfig: TJSONObject;
+// AUrls with their query secrets masked ('***', MaskUrlQuerySecrets)
+function MaskedUrls(const AUrls: TArray<string>): TArray<string>;
+var
+  i: Integer;
 begin
-  RequireApp;
+  SetLength(Result, Length(AUrls));
+  for i := 0 to High(AUrls) do
+    Result[i] := MaskUrlQuerySecrets(AUrls[i]);
+end;
+
+// The runtime settings. AIncludeSecrets: the Plex token and extra-EPG URL secrets as
+// stored (settings export = a backup); otherwise write-only: '' plus hasPlexToken, and
+// '***' for a secret query value of an extra-EPG URL.
+function ConfigToJson(AIncludeSecrets: Boolean): TJSONObject;
+begin
   Result := TJSONObject.Create;
   // editable fields
   Result.AddPair('refreshHour', TJSONNumber.Create(App.Config.RefreshHour));
@@ -1022,7 +1090,11 @@ begin
   Result.AddPair('plexTunerCount', TJSONNumber.Create(App.Config.PlexTunerCount));
   Result.AddPair('plexListId', TJSONNumber.Create(App.Config.PlexListId));
   Result.AddPair('plexServerUrl', App.Config.PlexServerUrl);
-  Result.AddPair('plexToken', App.Config.PlexToken);
+  if AIncludeSecrets then
+    Result.AddPair(cFieldPlexToken, App.Config.PlexToken)
+  else
+    Result.AddPair(cFieldPlexToken, '');
+  Result.AddPair(cFieldHasPlexToken, TJSONBool.Create(App.Config.PlexToken <> ''));
   // media servers: base URL (now editable) + dummy-EPG settings + global group filter
   Result.AddPair('publicBaseUrl', App.Config.PublicBaseUrl);
   Result.AddPair('dummyEpgEnabled', TJSONBool.Create(App.Config.DummyEpgEnabled));
@@ -1034,12 +1106,58 @@ begin
   Result.AddPair('nameShowSource', TJSONBool.Create(App.Config.NameShowSource));
   Result.AddPair('idSortPrefix', TJSONBool.Create(App.Config.IdSortPrefix));
   Result.AddPair('visibleGroups', StrArrayToJson(App.Config.VisibleGroups));
-  Result.AddPair('extraEpgUrls', StrArrayToJson(App.Config.ExtraEpgUrls));
+  // their query secrets (?apikey=...) are write-only like the Plex token: '***'
+  if AIncludeSecrets then
+    Result.AddPair(cFieldExtraEpgUrls, StrArrayToJson(App.Config.ExtraEpgUrls))
+  else
+    Result.AddPair(cFieldExtraEpgUrls, StrArrayToJson(MaskedUrls(App.Config.ExtraEpgUrls)));
   Result.AddPair('mediaAllowedClients', StrArrayToJson(App.Config.MediaAllowedClients));
+  // Host names the admin API accepts without an admin password (DNS-rebinding guard)
+  Result.AddPair(cFieldAllowedHosts, StrArrayToJson(App.Config.AllowedHosts));
   // read-only context (shown but not editable from the UI)
   Result.AddPair('httpPort', TJSONNumber.Create(App.Config.HttpPort));
   Result.AddPair('useHttps', TJSONBool.Create(App.Config.UseHttps));
   Result.AddPair('plexDeviceId', App.Config.PlexDeviceId);
+end;
+
+function TAdminResource.GetConfig: TJSONObject;
+begin
+  RequireApp;
+  Result := ConfigToJson(cWithoutSecrets);
+end;
+
+function TAdminResource.PostDownloadToken(ABody: TJSONObject): TJSONObject;
+var
+  lPath: string;
+begin
+  RequireApp;
+  lPath := '';
+  if ABody <> nil then
+    lPath := PathWithoutQuery(ABody.GetValue<string>(cFieldDownloadPath, '').Trim);
+  // bound to one path, and only to the bouquet downloads (never e.g. /api/export, the
+  // settings backup with every secret)
+  if not IsDownloadTokenPath(lPath) then
+    raise EMARSHttpException.Create(cMsgBadDownloadPath, cHttpBadRequest);
+  Result := TJSONObject.Create;
+  Result.AddPair(cDownloadTokenField, GDownloadTokens.Issue(lPath));
+end;
+
+// The Plex token a POST /api/config asks for: "clearPlexToken": true clears it; a
+// missing OR empty "plexToken" keeps the stored one (the web app never gets it); a
+// non-empty value sets it.
+function PostedPlexToken(const ABody: TJSONObject): string;
+var
+  lValue: TJSONValue;
+begin
+  Result := App.Config.PlexToken;
+  lValue := ABody.GetValue(cFieldClearPlexToken);
+  if (lValue <> nil) and not (lValue is TJSONBool) then
+    raise EMARSHttpException.Create(cMsgClearPlexTokenBool, cHttpBadRequest);
+  if (lValue is TJSONBool) and TJSONBool(lValue).AsBoolean then
+    Exit('');
+  lValue := ABody.GetValue(cFieldPlexToken);
+  if (lValue is TJSONString) and (TJSONString(lValue).Value.Trim <> '') then
+    Result := TJSONString(lValue).Value.Trim;
 end;
 
 function TAdminResource.PostConfig(ABody: TJSONObject): TJSONObject;
@@ -1048,56 +1166,103 @@ var
   lArrValue: TJSONValue;
   lBase: string;
   lHour, lMinute, lProxyPort, lEpgDays: Integer;
+  lOld: TAppConfig;
+  lHosts: TArray<string>;
+  lHost, lPlexToken: string;
 begin
   RequireApp;
-  // EVERY field is checked BEFORE anything is applied (hour 24 never fired; -1
-  // wrapped to 65535; a bad dummy-EPG value used to fail after the relay had moved)
-  CheckSettingsRange(ABody);
-  // validated: a value without scheme/host used to break every box login (500)
-  if not SettingsBaseUrl(ABody, lBase) then
-    raise EMARSHttpException.Create(cBadBaseUrlMsg, cHttpBadRequest);
-  // default each field to its current value, so a partial body is fine
-  lHour := ABody.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour);
-  lMinute := ABody.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute);
-  lProxyPort := ABody.GetValue<Integer>(cFieldProxyPort, App.Config.ProxyPort);
-  lEpgDays := ABody.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays);
-  App.UpdateSettings(lHour, lMinute,
-    ABody.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
-    lProxyPort, lEpgDays,
-    ABody.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
-  App.UpdatePlexSettings(
-    ABody.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
-    ABody.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
-    ABody.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
-    ABody.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
-    ABody.GetValue<Integer>('plexTunerCount', App.Config.PlexTunerCount),
-    ABody.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
-    ABody.GetValue<string>('plexToken', App.Config.PlexToken));
-  App.SetPlexListId(ABody.GetValue<Integer>('plexListId', App.Config.PlexListId));
-  // media servers: global group filter + base URL (trailing slash normalised) + dummy EPG
-  lArrValue := ABody.GetValue('visibleGroups');
-  if lArrValue is TJSONArray then
-    lGroups := StrArrayFromJson(TJSONArray(lArrValue))
-  else
-    lGroups := App.Config.VisibleGroups;
-  App.UpdateMediaConfig(lGroups, lBase,
-    ABody.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
-    ABody.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
-    ABody.GetValue<Integer>('dummyEpgHoursBack', App.Config.DummyEpgHoursBack),
-    ABody.GetValue<Integer>('dummyEpgHoursAhead', App.Config.DummyEpgHoursAhead),
-    ABody.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
-    ABody.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
-    ABody.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
-    ABody.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
-  // media-server client allow-list: only when the body carries the field
-  lArrValue := ABody.GetValue('mediaAllowedClients');
-  if lArrValue is TJSONArray then
-    App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lArrValue)));
-  // extra (third-party) XMLTV guides: only when the body carries the field
-  lArrValue := ABody.GetValue('extraEpgUrls');
-  if lArrValue is TJSONArray then
-    App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(lArrValue)));
-  Result := GetConfig;
+  // one settings save at a time (two tabs saving at once used to interleave the steps)
+  App.BeginConfigChange;
+  try
+    // EVERY field is checked BEFORE anything is applied (hour 24 never fired; -1
+    // wrapped to 65535; a bad dummy-EPG value used to fail after the relay had moved)
+    CheckSettingsRange(ABody);
+    // validated: a value without scheme/host used to break every box login (500)
+    if not SettingsBaseUrl(ABody, lBase) then
+      raise EMARSHttpException.Create(cBadBaseUrlMsg, cHttpBadRequest);
+    lPlexToken := PostedPlexToken(ABody);
+    // without an admin password the Host rule guards the API: a change of allowedHosts /
+    // publicBaseUrl that would refuse THIS browser's Host is refused itself (400)
+    lArrValue := ABody.GetValue(cFieldAllowedHosts);
+    if lArrValue is TJSONArray then
+      lHosts := StrArrayFromJson(TJSONArray(lArrValue))
+    else
+      lHosts := App.Config.AllowedHosts;
+    lHost := Request.GetHeaderParamValue(cHeaderHost);
+    if (App.Config.AdminPassword = '') and
+       IsAllowedAdminHost(lHost, App.Config.PublicBaseUrl, App.Config.AllowedHosts) and
+       not IsAllowedAdminHost(lHost, lBase, lHosts) then
+      raise EMARSHttpException.Create(Format(cMsgHostLockout, [HostHeaderName(lHost)]), cHttpBadRequest);
+    // default each field to its current value, so a partial body is fine
+    lHour := ABody.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour);
+    lMinute := ABody.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute);
+    lProxyPort := ABody.GetValue<Integer>(cFieldProxyPort, App.Config.ProxyPort);
+    lEpgDays := ABody.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays);
+    // The two steps that can fail (a relay port that can't bind) run first, all or
+    // nothing: UpdateSettings changes nothing when the relay can't (re)bind (400);
+    // when the Plex step fails (a Plex relay flag needs the relay), UpdatePlexSettings
+    // restores the Plex section and the relay section is put back here - so a 400
+    // leaves memory and config.json as they were, and the sections below never run
+    // half-way.
+    lOld := App.Config;
+    App.UpdateSettings(lHour, lMinute,
+      ABody.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
+      lProxyPort, lEpgDays,
+      ABody.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
+    try
+      App.UpdatePlexSettings(
+        ABody.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
+        ABody.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
+        ABody.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
+        ABody.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
+        ABody.GetValue<Integer>('plexTunerCount', App.Config.PlexTunerCount),
+        ABody.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
+        // write-only: missing / empty = keep, clearPlexToken = remove, a value = set
+        lPlexToken);
+    except
+      try
+        App.UpdateSettings(lOld.RefreshHour, lOld.RefreshMinute, lOld.ProxyStreams, lOld.ProxyPort,
+          lOld.EpgMaxDays, lOld.StreamFailover);
+      except
+        on E: Exception do
+          App.Log('Settings: the relay settings could not be restored: ' + E.Message);
+      end;
+      raise;
+    end;
+    App.SetPlexListId(ABody.GetValue<Integer>('plexListId', App.Config.PlexListId));
+    // media servers: global group filter + base URL (trailing slash normalised) + dummy EPG
+    lArrValue := ABody.GetValue('visibleGroups');
+    if lArrValue is TJSONArray then
+      lGroups := StrArrayFromJson(TJSONArray(lArrValue))
+    else
+      lGroups := App.Config.VisibleGroups;
+    App.UpdateMediaConfig(lGroups, lBase,
+      ABody.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
+      ABody.GetValue<Integer>('dummyEpgBlockMinutes', App.Config.DummyEpgBlockMinutes),
+      ABody.GetValue<Integer>('dummyEpgHoursBack', App.Config.DummyEpgHoursBack),
+      ABody.GetValue<Integer>('dummyEpgHoursAhead', App.Config.DummyEpgHoursAhead),
+      ABody.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
+      ABody.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
+      ABody.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
+      ABody.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
+    // media-server client allow-list: only when the body carries the field
+    lArrValue := ABody.GetValue('mediaAllowedClients');
+    if lArrValue is TJSONArray then
+      App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lArrValue)));
+    // extra (third-party) XMLTV guides: only when the body carries the field
+    // (GET sent their query secrets masked: '***' takes the stored value back)
+    lArrValue := ABody.GetValue(cFieldExtraEpgUrls);
+    if lArrValue is TJSONArray then
+      App.UpdateExtraEpgUrls(RestoreMaskedUrlList(StrArrayFromJson(TJSONArray(lArrValue)),
+        App.Config.ExtraEpgUrls));
+    // admin Host names without a password: only when the body carries the field
+    lArrValue := ABody.GetValue(cFieldAllowedHosts);
+    if lArrValue is TJSONArray then
+      App.UpdateAllowedHosts(lHosts);
+    Result := ConfigToJson(cWithoutSecrets);
+  finally
+    App.EndConfigChange;
+  end;
 end;
 
 // (defined further down, next to the Plex setup constants)
@@ -1197,7 +1362,7 @@ begin
   // store-backed bundle (sources + lists + groups + chosen channels) ...
   Result := ExportStoreSettings(App.Store);
   // ... plus the app-level settings (refresh time / proxy)
-  Result.AddPair('config', GetConfig);
+  Result.AddPair('config', ConfigToJson(cWithSecrets)); // a backup: the Plex token included
 end;
 
 // Replace the whole curation from an exported bundle: wipes sources + lists
@@ -1211,6 +1376,7 @@ var
   lGroups: TArray<string>;
   lBase: string;
   lWarnings: TList<string>;
+  lHosts: TArray<string>;
 begin
   RequireApp;
   if not ((ABody.GetValue('sources') is TJSONArray) or (ABody.GetValue('lists') is TJSONArray)) then
@@ -1245,76 +1411,98 @@ begin
   try
     if lCfg <> nil then
     begin
+      // the config section as one unit (no settings save interleaves with it)
+      App.BeginConfigChange;
       try
-        App.UpdateSettings(
-          lCfg.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour),
-          lCfg.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute),
-          lCfg.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
-          lCfg.GetValue<Integer>(cFieldProxyPort, App.Config.ProxyPort),
-          lCfg.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays), // was dropped on import
-          lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
-      except
-        on E: Exception do
-        begin
-          lWarnings.Add('Stream relay settings not applied (relay could not be started): ' + E.Message);
-          // UpdateSettings changed nothing: apply the rest with the relay as it is now
-          try
-            App.UpdateSettings(
-              lCfg.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour),
-              lCfg.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute),
-              App.Config.ProxyStreams,
-              App.Config.ProxyPort,
-              lCfg.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays),
-              lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
-          except
-            on E2: Exception do
-              lWarnings.Add('Refresh/EPG settings not applied: ' + E2.Message);
+        try
+          App.UpdateSettings(
+            lCfg.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour),
+            lCfg.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute),
+            lCfg.GetValue<Boolean>('proxyStreams', App.Config.ProxyStreams),
+            lCfg.GetValue<Integer>(cFieldProxyPort, App.Config.ProxyPort),
+            lCfg.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays), // was dropped on import
+            lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
+        except
+          on E: Exception do
+          begin
+            lWarnings.Add('Stream relay settings not applied (relay could not be started): ' + E.Message);
+            // UpdateSettings changed nothing: apply the rest with the relay as it is now
+            try
+              App.UpdateSettings(
+                lCfg.GetValue<Integer>(cFieldRefreshHour, App.Config.RefreshHour),
+                lCfg.GetValue<Integer>(cFieldRefreshMinute, App.Config.RefreshMinute),
+                App.Config.ProxyStreams,
+                App.Config.ProxyPort,
+                lCfg.GetValue<Integer>(cFieldEpgMaxDays, App.Config.EpgMaxDays),
+                lCfg.GetValue<Boolean>('streamFailover', App.Config.StreamFailover));
+            except
+              on E2: Exception do
+                lWarnings.Add('Refresh/EPG settings not applied: ' + E2.Message);
+            end;
           end;
         end;
-      end;
-      // were exported but never restored
-      if lCfg.GetValue('extraEpgUrls') is TJSONArray then
-        App.UpdateExtraEpgUrls(StrArrayFromJson(TJSONArray(lCfg.GetValue('extraEpgUrls'))));
-      if lCfg.GetValue('mediaAllowedClients') is TJSONArray then
-        App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lCfg.GetValue('mediaAllowedClients'))));
-      App.SetPlexListId(ImportedPlexListId(ABody, lCfg));
-      // the Plex tuner surfaces are part of the clone too — restore them as well
-      try
-        App.UpdatePlexSettings(
-          lCfg.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
-          lCfg.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
-          lCfg.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
-          lCfg.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
-          lCfg.GetValue<Integer>(cFieldPlexTunerCount, App.Config.PlexTunerCount),
-          lCfg.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
-          lCfg.GetValue<string>('plexToken', App.Config.PlexToken));
-      except
-        on E: Exception do
-          lWarnings.Add('Plex relay/discovery could not be started: ' + E.Message);
-      end;
-      // media servers: the global group filter + base URL + dummy-EPG settings
-      // the base URL, dummy EPG and name options are restored also when the bundle has
-      // no group filter (then the current filter stays)
-      if lCfg.GetValue('visibleGroups') is TJSONArray then
-        lGroups := StrArrayFromJson(TJSONArray(lCfg.GetValue('visibleGroups')))
-      else
-        lGroups := App.Config.VisibleGroups;
-      // an unusable base URL keeps the current one
-      if not SettingsBaseUrl(lCfg, lBase) then
-        lWarnings.Add('publicBaseUrl in the bundle is not a valid URL - kept ' + lBase);
-      try
-        App.UpdateMediaConfig(lGroups, lBase,
-          lCfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
-          lCfg.GetValue<Integer>(cFieldDummyEpgBlockMinutes, App.Config.DummyEpgBlockMinutes),
-          lCfg.GetValue<Integer>(cFieldDummyEpgHoursBack, App.Config.DummyEpgHoursBack),
-          lCfg.GetValue<Integer>(cFieldDummyEpgHoursAhead, App.Config.DummyEpgHoursAhead),
-          lCfg.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
-          lCfg.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
-          lCfg.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
-          lCfg.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
-      except
-        on E: Exception do
-          lWarnings.Add('Plex relay/discovery could not be started: ' + E.Message);
+        // were exported but never restored
+        // (a bundle built from GET /api/config carries masked secrets: keep the stored ones)
+        if lCfg.GetValue(cFieldExtraEpgUrls) is TJSONArray then
+          App.UpdateExtraEpgUrls(RestoreMaskedUrlList(StrArrayFromJson(TJSONArray(lCfg.GetValue(cFieldExtraEpgUrls))),
+            App.Config.ExtraEpgUrls));
+        if lCfg.GetValue('mediaAllowedClients') is TJSONArray then
+          App.UpdateMediaAllowedClients(StrArrayFromJson(TJSONArray(lCfg.GetValue('mediaAllowedClients'))));
+        // without an admin password the Host rule guards the API: the Host this import came
+        // in on stays allowed (added to allowedHosts when the bundle would drop it)
+        if lCfg.GetValue(cFieldAllowedHosts) is TJSONArray then
+          lHosts := StrArrayFromJson(TJSONArray(lCfg.GetValue(cFieldAllowedHosts)))
+        else
+          lHosts := App.Config.AllowedHosts;
+        if App.Config.AdminPassword = '' then
+        begin
+          SettingsBaseUrl(lCfg, lBase); // the base URL the import will set (else the current)
+          lHosts := HostsKeepingCurrent(Request.GetHeaderParamValue(cHeaderHost), lBase, lHosts);
+        end;
+        if (lCfg.GetValue(cFieldAllowedHosts) is TJSONArray) or
+           (Length(lHosts) <> Length(App.Config.AllowedHosts)) then
+          App.UpdateAllowedHosts(lHosts);
+        App.SetPlexListId(ImportedPlexListId(ABody, lCfg, lCounts));
+        // the Plex tuner surfaces are part of the clone too — restore them as well
+        try
+          App.UpdatePlexSettings(
+            lCfg.GetValue<Boolean>('plexM3uEnabled', App.Config.PlexM3uEnabled),
+            lCfg.GetValue<Boolean>('plexM3uProxy', App.Config.PlexM3uProxy),
+            lCfg.GetValue<Boolean>('plexHdhrEnabled', App.Config.PlexHdhrEnabled),
+            lCfg.GetValue<Boolean>('plexHdhrProxy', App.Config.PlexHdhrProxy),
+            lCfg.GetValue<Integer>(cFieldPlexTunerCount, App.Config.PlexTunerCount),
+            lCfg.GetValue<string>('plexServerUrl', App.Config.PlexServerUrl),
+            lCfg.GetValue<string>('plexToken', App.Config.PlexToken));
+        except
+          on E: Exception do
+            lWarnings.Add('Plex relay/discovery could not be started: ' + E.Message);
+        end;
+        // media servers: the global group filter + base URL + dummy-EPG settings
+        // the base URL, dummy EPG and name options are restored also when the bundle has
+        // no group filter (then the current filter stays)
+        if lCfg.GetValue('visibleGroups') is TJSONArray then
+          lGroups := StrArrayFromJson(TJSONArray(lCfg.GetValue('visibleGroups')))
+        else
+          lGroups := App.Config.VisibleGroups;
+        // an unusable base URL keeps the current one
+        if not SettingsBaseUrl(lCfg, lBase) then
+          lWarnings.Add('publicBaseUrl in the bundle is not a valid URL - kept ' + lBase);
+        try
+          App.UpdateMediaConfig(lGroups, lBase,
+            lCfg.GetValue<Boolean>('dummyEpgEnabled', App.Config.DummyEpgEnabled),
+            lCfg.GetValue<Integer>(cFieldDummyEpgBlockMinutes, App.Config.DummyEpgBlockMinutes),
+            lCfg.GetValue<Integer>(cFieldDummyEpgHoursBack, App.Config.DummyEpgHoursBack),
+            lCfg.GetValue<Integer>(cFieldDummyEpgHoursAhead, App.Config.DummyEpgHoursAhead),
+            lCfg.GetValue<Boolean>('nameShowGroup', App.Config.NameShowGroup),
+            lCfg.GetValue<Boolean>('nameShowNumber', App.Config.NameShowNumber),
+            lCfg.GetValue<Boolean>('nameShowSource', App.Config.NameShowSource),
+            lCfg.GetValue<Boolean>('idSortPrefix', App.Config.IdSortPrefix));
+        except
+          on E: Exception do
+            lWarnings.Add('Plex relay/discovery could not be started: ' + E.Message);
+        end;
+      finally
+        App.EndConfigChange;
       end;
     end;
 
@@ -1510,47 +1698,20 @@ end;
 function TAdminResource.GetListEpg(AId: Integer): TJSONArray;
 var
   lChannels: TOutputChannelList;
-  lChannel: TOutputChannel;
-  lUpstreams: TStringList;
-  lEffById: TDictionary<string, string>; // upstream tvg-id -> effective (override) id
   lProgs: TEpgProgrammeList;
-  lProgramme: TEpgProgramme;
-  lEff: string;
 begin
   RequireApp;
-  lUpstreams := nil;
-  lEffById := nil;
+  // exactly what xmltv.php publishes: the linear channels, read via EpgReadIds (incl.
+  // a name-matched extra guide on a channel without tvg-id), keyed by the published id
+  lProgs := nil;
+  lChannels := App.Store.LoadOutputChannels(AId);
   try
-    lUpstreams := TStringList.Create;
-    lUpstreams.Sorted := True;
-    lUpstreams.Duplicates := dupIgnore;
-    lEffById := TDictionary<string, string>.Create;
-    lChannels := App.Store.LoadOutputChannels(AId);
-    try
-      // fetch EPG by UPSTREAM id (where the provider's programmes are stored), and
-      // remember the effective (override) id to re-key them to on the way out
-      for lChannel in lChannels do
-        if lChannel.TvgId <> '' then
-          for lEff in lChannel.EpgReadIds do
-          begin
-            lUpstreams.Add(lEff);
-            lEffById.AddOrSetValue(lEff, lChannel.TvgId);
-          end;
-    finally
-      FreeAndNil(lChannels);
-    end;
-    lProgs := App.Store.LoadEpgForTvgIds(lUpstreams.ToStringArray, App.Config.EpgMaxDays);
-    try
-      for lProgramme in lProgs do
-        if lEffById.TryGetValue(lProgramme.ChannelTvgId, lEff) then
-          lProgramme.ChannelTvgId := lEff;
-      Result := ProgrammesToJson(lProgs);
-    finally
-      FreeAndNil(lProgs);
-    end;
+    KeepContentTypes(lChannels, cLinearContentTypes);
+    lProgs := ListEpgProgrammes(App.Store, lChannels, App.Config.EpgMaxDays);
+    Result := ProgrammesToJson(lProgs);
   finally
-    FreeAndNil(lUpstreams);
-    FreeAndNil(lEffById);
+    FreeAndNil(lProgs);
+    FreeAndNil(lChannels);
   end;
 end;
 

@@ -31,6 +31,12 @@ type
     [Test] procedure ListPartialPatchKeepsFields;
     /// <summary>A partial item patch keeps the other fields.</summary>
     [Test] procedure ItemPartialPatchKeepsFields;
+    /// <summary>Source password: missing or '' keeps it, a value sets it, clearPassword clears it.</summary>
+    [Test] procedure SourcePasswordEmptyKeeps;
+    /// <summary>Mirror credential rows follow the same password contract per row.</summary>
+    [Test] procedure MirrorPasswordEmptyKeeps;
+    /// <summary>The admin JSON masks secret query values of url and epgUrl.</summary>
+    [Test] procedure SourceAdminJsonMasksUrlSecrets;
   end;
 
 implementation
@@ -305,6 +311,105 @@ begin
     Assert.AreEqual(42, lItem.ChannelNumber, 'channel number preserved (not reset to 0)');
   finally
     FreeAndNil(lItem);
+  end;
+end;
+
+procedure TSerializerTests.SourcePasswordEmptyKeeps;
+var
+  lSource: TSourceConfig;
+  lBody: TJSONObject;
+begin
+  lBody := nil;
+  lSource := TSourceConfig.Create;
+  try
+    lSource.Password := 'secret';
+    lBody := TJSONObject.Create.AddPair('name', 'renamed');
+    SourceFromJson(lBody, lSource);
+    Assert.AreEqual('secret', lSource.Password, 'no key = keep');
+    FreeAndNil(lBody);
+    lBody := TJSONObject.Create.AddPair('password', '');
+    SourceFromJson(lBody, lSource);
+    Assert.AreEqual('secret', lSource.Password, 'an empty value = keep (the GET always sends "")');
+    FreeAndNil(lBody);
+    lBody := TJSONObject.Create.AddPair('password', 'new');
+    SourceFromJson(lBody, lSource);
+    Assert.AreEqual('new', lSource.Password, 'a value sets it');
+    FreeAndNil(lBody);
+    lBody := TJSONObject.Create.AddPair('password', '').AddPair('clearPassword', TJSONBool.Create(True));
+    SourceFromJson(lBody, lSource);
+    Assert.AreEqual('', lSource.Password, 'clearPassword clears it');
+    FreeAndNil(lBody);
+    lBody := TJSONObject.Create.AddPair('password', 'x').AddPair('clearPassword', TJSONBool.Create(True));
+    SourceFromJson(lBody, lSource);
+    Assert.AreEqual('', lSource.Password, 'clearPassword wins over a value');
+  finally
+    FreeAndNil(lBody);
+    FreeAndNil(lSource);
+  end;
+end;
+
+procedure TSerializerTests.MirrorPasswordEmptyKeeps;
+const
+  cMissing = 1;
+  cEmpty = 2;
+  cSet = 3;
+  cCleared = 4;
+  cUnknown = 5;
+var
+  lStored: TArray<TMirrorCredential>;
+  lParsed: TArray<TMirrorCredential>;
+  lArray: TJSONArray;
+  i: Integer;
+begin
+  SetLength(lStored, 4);
+  for i := 0 to High(lStored) do
+  begin
+    lStored[i].SourceId := i + 1;
+    lStored[i].Password := 'old' + IntToStr(i + 1);
+  end;
+  lArray := TJSONArray.Create;
+  try
+    lArray.AddElement(TJSONObject.Create.AddPair('sourceId', TJSONNumber.Create(cMissing)));
+    lArray.AddElement(TJSONObject.Create.AddPair('sourceId', TJSONNumber.Create(cEmpty))
+      .AddPair('password', ''));
+    lArray.AddElement(TJSONObject.Create.AddPair('sourceId', TJSONNumber.Create(cSet))
+      .AddPair('password', 'new3'));
+    lArray.AddElement(TJSONObject.Create.AddPair('sourceId', TJSONNumber.Create(cCleared))
+      .AddPair('password', '').AddPair('clearPassword', TJSONBool.Create(True)));
+    lArray.AddElement(TJSONObject.Create.AddPair('sourceId', TJSONNumber.Create(cUnknown))
+      .AddPair('password', ''));
+    lParsed := MirrorCredentialsFromJson(lArray, lStored);
+  finally
+    FreeAndNil(lArray);
+  end;
+  Assert.AreEqual(5, Length(lParsed));
+  Assert.AreEqual('old1', lParsed[0].Password, 'no key = the stored password');
+  Assert.AreEqual('old2', lParsed[1].Password, 'empty = the stored password');
+  Assert.AreEqual('new3', lParsed[2].Password, 'a value sets it');
+  Assert.AreEqual('', lParsed[3].Password, 'clearPassword clears it');
+  Assert.AreEqual('', lParsed[4].Password, 'nothing stored for that source: stays empty');
+end;
+
+procedure TSerializerTests.SourceAdminJsonMasksUrlSecrets;
+var
+  lSource: TSourceConfig;
+  lJson: TJSONObject;
+begin
+  lJson := nil;
+  lSource := TSourceConfig.Create;
+  try
+    lSource.Url := 'http://p:8080/get.php?username=u&password=pw&type=m3u_plus';
+    lSource.EpgUrl := 'http://g/xmltv.php?token=abc';
+    lJson := SourceToAdminJson(lSource);
+    Assert.AreEqual('http://p:8080/get.php?username=u&password=***&type=m3u_plus', lJson.GetValue<string>('url'));
+    Assert.AreEqual('http://g/xmltv.php?token=***', lJson.GetValue<string>('epgUrl'));
+    FreeAndNil(lJson);
+    // the export / backup form stays complete
+    lJson := SourceToJson(lSource);
+    Assert.AreEqual(lSource.Url, lJson.GetValue<string>('url'), 'export keeps the real URL');
+  finally
+    FreeAndNil(lJson);
+    FreeAndNil(lSource);
   end;
 end;
 

@@ -31,6 +31,16 @@ type
     [Test] procedure ExportImportClonesMirror;
     /// <summary>A config.json with bad types/ranges loads with defaults/clamps.</summary>
     [Test] procedure ConfigLoadToleratesBadTypesAndRanges;
+    /// <summary>A Live and a Movies group with the same name stay two groups (mapped by bundle id).</summary>
+    [Test] procedure ImportKeepsSameNamedGroupsApart;
+    /// <summary>Two sources with the same name keep their own channels and mirror credentials.</summary>
+    [Test] procedure ImportKeepsSameNamedSourcesApart;
+    /// <summary>A mirror of one of two same-named masters follows ITS master.</summary>
+    [Test] procedure ImportMirrorOfSameNamedMaster;
+    /// <summary>An older bundle without groupId/sourceId still imports by name.</summary>
+    [Test] procedure ImportOldBundleMatchesByName;
+    /// <summary>The import reports every list's new id by its bundle id (same names stay apart; the Plex bouquet).</summary>
+    [Test] procedure ImportReportsListIdMap;
   end;
 
 implementation
@@ -500,6 +510,373 @@ begin
   finally
     FreeAndNil(lMaster);
     FreeAndNil(lMirror);
+  end;
+end;
+
+// -- helpers for the id-remap tests --------------------------------------------
+
+function AddSource(const AStore: IStore; const AName, AUrl: string): Integer;
+var
+  lCfg: TSourceConfig;
+begin
+  lCfg := TSourceConfig.Create;
+  try
+    lCfg.Name := AName;
+    lCfg.Kind := skXtream;
+    lCfg.Url := AUrl;
+    lCfg.Username := 'a';
+    lCfg.Password := 'b';
+    Result := AStore.SaveSource(lCfg);
+  finally
+    FreeAndNil(lCfg);
+  end;
+end;
+
+// all streams of a source in one snapshot (a snapshot replaces the source's catalog)
+procedure AddSourceStreams(const AStore: IStore; ASourceId: Integer; const AStreams: array of TStreamItem);
+var
+  lSnap: TSourceSnapshot;
+  lStream: TStreamItem;
+begin
+  lSnap := TSourceSnapshot.Create(ASourceId);
+  try
+    for lStream in AStreams do
+      lSnap.Streams.Add(lStream);
+    AStore.MergeSnapshot(lSnap);
+  finally
+    FreeAndNil(lSnap);
+  end;
+end;
+
+function TypedStream(ASourceId: Integer; ACt: TContentType; const AUp, AName, AUrl: string): TStreamItem;
+begin
+  Result := MakeStream(ASourceId, AUp, AName, '', '', AUrl);
+  Result.ContentType := ACt;
+end;
+
+function StreamIdOf(const AStore: IStore; ASourceId: Integer; const AUrl: string): Integer;
+var
+  lStreams: TStreamItemList;
+  lStream: TStreamItem;
+begin
+  Result := -1;
+  lStreams := AStore.LoadStreams(Default(TCatalogFilter));
+  try
+    for lStream in lStreams do
+      if (lStream.SourceId = ASourceId) and (lStream.UpstreamUrl = AUrl) then
+        Exit(lStream.Id);
+  finally
+    FreeAndNil(lStreams);
+  end;
+end;
+
+function AddList(const AStore: IStore; const AName: string; AMirrorOf: Integer = 0): Integer;
+var
+  lList: TCustomList;
+begin
+  lList := TCustomList.Create;
+  try
+    lList.Name := AName;
+    lList.OutputUsername := AName + IntToStr(AMirrorOf) + TGUID.NewGuid.ToString;
+    lList.MirrorOfListId := AMirrorOf;
+    Result := AStore.SaveList(lList);
+  finally
+    FreeAndNil(lList);
+  end;
+end;
+
+function AddGroup(const AStore: IStore; AListId: Integer; const AName: string; ACt: TContentType): Integer;
+var
+  lGroup: TCustomGroup;
+begin
+  lGroup := TCustomGroup.Create;
+  try
+    lGroup.ListId := AListId;
+    lGroup.Name := AName;
+    lGroup.ContentType := ACt;
+    Result := AStore.SaveGroup(lGroup);
+  finally
+    FreeAndNil(lGroup);
+  end;
+end;
+
+procedure AddItem(const AStore: IStore; AListId, AStreamId, AGroupId: Integer; ACt: TContentType);
+var
+  lItem: TCustomItem;
+begin
+  lItem := TCustomItem.Create;
+  try
+    lItem.ListId := AListId;
+    lItem.StreamItemId := AStreamId;
+    lItem.CustomGroupId := AGroupId;
+    lItem.ContentType := ACt;
+    AStore.SaveItem(lItem);
+  finally
+    FreeAndNil(lItem);
+  end;
+end;
+
+// export ASrc and import the bundle into ADst; AStrip: drop the reference ids an
+// older bundle doesn't have (items' groupId, streams' sourceId)
+procedure CloneSettings(const ASrc, ADst: IStore; AStrip: Boolean = False);
+var
+  lBundle, lItemObj: TJSONObject;
+  lList, lItem: TJSONValue;
+begin
+  lBundle := ExportStoreSettings(ASrc);
+  try
+    if AStrip then
+      for lList in TJSONArray(lBundle.GetValue('lists')) do
+        for lItem in TJSONArray(TJSONObject(lList).GetValue('items')) do
+        begin
+          lItemObj := TJSONObject(lItem);
+          lItemObj.RemovePair('groupId').Free;
+          TJSONObject(lItemObj.GetValue('stream')).RemovePair('sourceId').Free;
+        end;
+    ImportStoreSettings(ADst, lBundle);
+  finally
+    FreeAndNil(lBundle);
+  end;
+end;
+
+procedure TSettingsIOTests.ImportKeepsSameNamedGroupsApart;
+var
+  lSrc, lDst: IStore;
+  lSrcId, lListId: Integer;
+  lList: TCustomList;
+  lGroups: TCustomGroupList;
+  lItems: TCustomItemList;
+  lGroup: TCustomGroup;
+  lItem: TCustomItem;
+  lGroupType: TDictionary<Integer, TContentType>;
+  lType: TContentType;
+begin
+  lSrc := NewStore(FDb1);
+  lSrcId := AddSource(lSrc, 'Prov', 'http://h');
+  AddSourceStreams(lSrc, lSrcId, [TypedStream(lSrcId, ctLive, 'l1', 'Kids TV', 'http://h/live/a/b/1.ts'),
+    TypedStream(lSrcId, ctMovie, 'm1', 'Kids Movie', 'http://h/movie/a/b/2.mkv')]);
+  lListId := AddList(lSrc, 'Box');
+  // the Movies group first: a name-keyed import would put both channels in the last one
+  AddItem(lSrc, lListId, StreamIdOf(lSrc, lSrcId, 'http://h/movie/a/b/2.mkv'),
+    AddGroup(lSrc, lListId, 'Kids', ctMovie), ctMovie);
+  AddItem(lSrc, lListId, StreamIdOf(lSrc, lSrcId, 'http://h/live/a/b/1.ts'),
+    AddGroup(lSrc, lListId, 'Kids', ctLive), ctLive);
+
+  lDst := NewStore(FDb2);
+  CloneSettings(lSrc, lDst);
+
+  lList := FindListByName(lDst, 'Box');
+  lGroupType := TDictionary<Integer, TContentType>.Create;
+  try
+    Assert.IsNotNull(lList);
+    lGroups := lDst.LoadGroups(lList.Id);
+    try
+      Assert.AreEqual<Integer>(2, lGroups.Count, 'both groups');
+      for lGroup in lGroups do
+        lGroupType.Add(lGroup.Id, lGroup.ContentType);
+    finally
+      FreeAndNil(lGroups);
+    end;
+    lItems := lDst.LoadItems(lList.Id);
+    try
+      Assert.AreEqual<Integer>(2, lItems.Count, 'both channels');
+      for lItem in lItems do
+      begin
+        Assert.IsTrue(lGroupType.TryGetValue(lItem.CustomGroupId, lType), 'item is in a group');
+        Assert.AreEqual<Integer>(Ord(lItem.ContentType), Ord(lType), 'item in the group of its own type');
+      end;
+      Assert.AreNotEqual<Integer>(lItems[0].CustomGroupId, lItems[1].CustomGroupId, 'two groups, not one');
+    finally
+      FreeAndNil(lItems);
+    end;
+  finally
+    FreeAndNil(lGroupType);
+    FreeAndNil(lList);
+  end;
+end;
+
+procedure TSettingsIOTests.ImportKeepsSameNamedSourcesApart;
+var
+  lSrc, lDst: IStore;
+  lSrcA, lSrcB, lListId, lMirrorId: Integer;
+  lCred: TMirrorCredential;
+  lSources: TObjectList<TSourceConfig>;
+  lSource: TSourceConfig;
+  lUrlById: TDictionary<Integer, string>;
+  lList, lMirror: TCustomList;
+  lChannels: TOutputChannelList;
+  lChannel: TOutputChannel;
+  lCreds: TArray<TMirrorCredential>;
+begin
+  lSrc := NewStore(FDb1);
+  lSrcA := AddSource(lSrc, 'Prov', 'http://a');
+  lSrcB := AddSource(lSrc, 'Prov', 'http://b');
+  // the very same upstream URL on both (two accounts' playlists can overlap)
+  AddSourceStreams(lSrc, lSrcA, [TypedStream(lSrcA, ctLive, '1', 'From A', 'http://x/live/a/b/1.ts')]);
+  AddSourceStreams(lSrc, lSrcB, [TypedStream(lSrcB, ctLive, '1', 'From B', 'http://x/live/a/b/1.ts')]);
+  lListId := AddList(lSrc, 'Box');
+  AddItem(lSrc, lListId, StreamIdOf(lSrc, lSrcA, 'http://x/live/a/b/1.ts'), 0, ctLive);
+  AddItem(lSrc, lListId, StreamIdOf(lSrc, lSrcB, 'http://x/live/a/b/1.ts'), 0, ctLive);
+  lMirrorId := AddList(lSrc, 'Copy', lListId);
+  lCred.SourceId := lSrcA; // the FIRST of the two: a name-keyed import would pick the last
+  lCred.Url := '';
+  lCred.Username := 'a2';
+  lCred.Password := 'b2';
+  lSrc.SaveMirrorCredentials(lMirrorId, [lCred]);
+
+  lDst := NewStore(FDb2);
+  CloneSettings(lSrc, lDst);
+
+  lUrlById := TDictionary<Integer, string>.Create;
+  lList := FindListByName(lDst, 'Box');
+  lMirror := FindListByName(lDst, 'Copy');
+  try
+    Assert.IsNotNull(lList);
+    Assert.IsNotNull(lMirror);
+    lSources := lDst.LoadSources;
+    try
+      Assert.AreEqual<Integer>(2, lSources.Count, 'both sources');
+      for lSource in lSources do
+        lUrlById.Add(lSource.Id, lSource.Url);
+    finally
+      FreeAndNil(lSources);
+    end;
+    lChannels := lDst.LoadOutputChannels(lList.Id);
+    try
+      Assert.AreEqual<Integer>(2, lChannels.Count, 'both channels');
+      for lChannel in lChannels do
+        if lChannel.Name = 'From A' then
+          Assert.AreEqual('http://a', lUrlById[lChannel.SourceId], 'the channel of A on source A')
+        else
+          Assert.AreEqual('http://b', lUrlById[lChannel.SourceId], 'the channel of B on source B');
+      Assert.AreNotEqual<Integer>(lChannels[0].SourceId, lChannels[1].SourceId);
+    finally
+      FreeAndNil(lChannels);
+    end;
+    lCreds := lDst.LoadMirrorCredentials(lMirror.Id);
+    Assert.AreEqual<Integer>(1, Length(lCreds));
+    Assert.AreEqual('http://a', lUrlById[lCreds[0].SourceId], 'credential on source A');
+  finally
+    FreeAndNil(lUrlById);
+    FreeAndNil(lList);
+    FreeAndNil(lMirror);
+  end;
+end;
+
+procedure TSettingsIOTests.ImportMirrorOfSameNamedMaster;
+var
+  lSrc, lDst: IStore;
+  lSrcId, lFirst, lSecond: Integer;
+  lMirror: TCustomList;
+  lChannels: TOutputChannelList;
+begin
+  lSrc := NewStore(FDb1);
+  lSrcId := AddSource(lSrc, 'Prov', 'http://h');
+  AddSourceStreams(lSrc, lSrcId, [TypedStream(lSrcId, ctLive, '1', 'One', 'http://h/live/a/b/1.ts'),
+    TypedStream(lSrcId, ctLive, '2', 'Two', 'http://h/live/a/b/2.ts')]);
+  lFirst := AddList(lSrc, 'Box');
+  AddItem(lSrc, lFirst, StreamIdOf(lSrc, lSrcId, 'http://h/live/a/b/1.ts'), 0, ctLive);
+  lSecond := AddList(lSrc, 'Box');
+  AddItem(lSrc, lSecond, StreamIdOf(lSrc, lSrcId, 'http://h/live/a/b/2.ts'), 0, ctLive);
+  // the mirror of the FIRST 'Box': a name-keyed import would pick the last one
+  AddList(lSrc, 'Mirror', lFirst);
+
+  lDst := NewStore(FDb2);
+  CloneSettings(lSrc, lDst);
+
+  lMirror := FindListByName(lDst, 'Mirror');
+  try
+    Assert.IsNotNull(lMirror);
+    Assert.AreNotEqual<Integer>(0, lMirror.MirrorOfListId, 'still a mirror');
+    lChannels := lDst.LoadOutputChannels(lMirror.Id);
+    try
+      Assert.AreEqual<Integer>(1, lChannels.Count);
+      Assert.AreEqual('One', lChannels[0].Name, 'mirrors its own master');
+    finally
+      FreeAndNil(lChannels);
+    end;
+  finally
+    FreeAndNil(lMirror);
+  end;
+end;
+
+procedure TSettingsIOTests.ImportReportsListIdMap;
+const
+  cUnknownBundleId = 9999;
+var
+  lSrc, lDst: IStore;
+  lSrcId, lFirst, lSecond, lMirrorId: Integer;
+  lBundle: TJSONObject;
+  lCounts: TImportCounts;
+  lChannels: TOutputChannelList;
+  lMirror: TCustomList;
+begin
+  lSrc := NewStore(FDb1);
+  lSrcId := AddSource(lSrc, 'Prov', 'http://h');
+  AddSourceStreams(lSrc, lSrcId, [TypedStream(lSrcId, ctLive, '1', 'One', 'http://h/live/a/b/1.ts'),
+    TypedStream(lSrcId, ctLive, '2', 'Two', 'http://h/live/a/b/2.ts')]);
+  lFirst := AddList(lSrc, 'Box');
+  AddItem(lSrc, lFirst, StreamIdOf(lSrc, lSrcId, 'http://h/live/a/b/1.ts'), 0, ctLive);
+  lSecond := AddList(lSrc, 'Box');
+  AddItem(lSrc, lSecond, StreamIdOf(lSrc, lSrcId, 'http://h/live/a/b/2.ts'), 0, ctLive);
+  lMirrorId := AddList(lSrc, 'Mirror', lFirst);
+
+  lDst := NewStore(FDb2);
+  lBundle := ExportStoreSettings(lSrc);
+  try
+    lCounts := ImportStoreSettings(lDst, lBundle);
+  finally
+    FreeAndNil(lBundle);
+  end;
+  Assert.AreEqual<Integer>(3, Length(lCounts.ListIds), 'every list, the mirror too');
+  // the SECOND 'Box' by its bundle id (a name lookup would hit the first one)
+  lChannels := lDst.LoadOutputChannels(lCounts.NewListId(lSecond));
+  try
+    Assert.AreEqual<Integer>(1, lChannels.Count);
+    Assert.AreEqual('Two', lChannels[0].Name, 'the second Box');
+  finally
+    FreeAndNil(lChannels);
+  end;
+  lMirror := FindListByName(lDst, 'Mirror');
+  try
+    Assert.IsNotNull(lMirror);
+    Assert.AreEqual(lMirror.Id, lCounts.NewListId(lMirrorId), 'the mirror is mapped too');
+  finally
+    FreeAndNil(lMirror);
+  end;
+  Assert.AreEqual(0, lCounts.NewListId(cUnknownBundleId), 'unknown bundle id');
+  Assert.AreEqual(0, lCounts.NewListId(0), 'no bundle id');
+end;
+
+procedure TSettingsIOTests.ImportOldBundleMatchesByName;
+var
+  lSrc, lDst: IStore;
+  lSrcId, lListId: Integer;
+  lList: TCustomList;
+  lChannels: TOutputChannelList;
+begin
+  lSrc := NewStore(FDb1);
+  lSrcId := AddSource(lSrc, 'Prov', 'http://h');
+  AddSourceStreams(lSrc, lSrcId, [TypedStream(lSrcId, ctLive, '1', 'One', 'http://h/live/a/b/1.ts')]);
+  lListId := AddList(lSrc, 'Box');
+  AddItem(lSrc, lListId, StreamIdOf(lSrc, lSrcId, 'http://h/live/a/b/1.ts'),
+    AddGroup(lSrc, lListId, 'Sport', ctLive), ctLive);
+
+  lDst := NewStore(FDb2);
+  CloneSettings(lSrc, lDst, True);
+
+  lList := FindListByName(lDst, 'Box');
+  try
+    Assert.IsNotNull(lList);
+    lChannels := lDst.LoadOutputChannels(lList.Id);
+    try
+      Assert.AreEqual<Integer>(1, lChannels.Count, 'channel resolved by source name');
+      Assert.AreEqual('Sport', lChannels[0].GroupName, 'group by name');
+    finally
+      FreeAndNil(lChannels);
+    end;
+  finally
+    FreeAndNil(lList);
   end;
 end;
 

@@ -65,6 +65,12 @@ type
     FBgOps: Integer; // count of detached background ops (admin-triggered refreshes)
     FStopped: Boolean;   // Stop ran (it is idempotent: Destroy calls it again)
     FAbandoned: Boolean; // Stop left work running on other threads (see Abandoned)
+    FMediaRefusedLock: TObject;   // guards FMediaRefusedLogged
+    // serialises every runtime change of FConfig (settings saves, imports, Plex). A
+    // TMonitor (re-entrant): a composite change holds it across several Update* calls.
+    // Lock order: this lock first, then TApiServer's (never the other way round).
+    FConfigLock: TObject;
+    FMediaRefusedLogged: Boolean; // a refused public Plex/HDHomeRun client was logged
   public
     /// AConfigPath overrides where settings are loaded from AND persisted to
     /// (empty => config.json next to the executable, as the dev/daemon hosts use).
@@ -74,6 +80,11 @@ type
     destructor Destroy; override;
     /// Opens the store, starts ingest, the HTTP server and the scheduler, then sets App.
     procedure Start;
+    /// <summary>Hold the config lock across several Update* calls (one settings save or
+    /// import as a unit). Re-entrant; pair every call with EndConfigChange.</summary>
+    procedure BeginConfigChange;
+    /// <summary>Release the lock taken by BeginConfigChange.</summary>
+    procedure EndConfigChange;
     /// Stops scheduler and server, waits (bounded) for the daily refresh and background
     /// ops, clears App, releases the store. Idempotent: a second call does nothing.
     procedure Stop;
@@ -94,8 +105,16 @@ type
     procedure UpdateExtraEpgUrls(const AUrls: TArray<string>);
     /// Set the clients allowed on the Plex/HDHomeRun endpoints (blank entries dropped); persisted.
     procedure UpdateMediaAllowedClients(const AClients: TArray<string>);
-    /// May this client IP use the Plex/HDHomeRun endpoints? (empty list = everyone)
-    function IsMediaClientAllowed(const AClientIp: string): Boolean;
+    /// May this client IP use the Plex/HDHomeRun endpoints? (empty list = only
+    /// private/LAN addresses; the first refused public client is logged once)
+    function IsMediaClientAllowed(const AClientIp: string): Boolean; overload;
+    /// May this request use the Plex/HDHomeRun endpoints? The client is resolved through
+    /// trustedProxies + X-Forwarded-For (GAuthThrottle); with an empty allow-list it must
+    /// be local (GAuthThrottle.IsLocalClient), else listed.
+    function IsMediaClientAllowed(const ARemoteIp, AForwardedFor: string): Boolean; overload;
+    /// Extra Host names the admin API accepts while no admin password is set
+    /// (DNS-rebinding guard; blank entries dropped); persisted.
+    procedure UpdateAllowedHosts(const AHosts: TArray<string>);
     /// Media-server config: the global group filter, the base URL boxes use, and the
     /// dummy-EPG settings. Persisted; read live by the output builders (no restart).
     procedure UpdateMediaConfig(const AVisibleGroups: TArray<string>;
@@ -161,7 +180,9 @@ uses
   IPTV.Storage.Locking,
   IPTV.Core.Utils,
   IPTV.Output.Builder,
-  IPTV.Api.Serializers;
+  IPTV.Api.Serializers,
+  IPTV.Api.Security,
+  IPTV.Api.AuthThrottle;
 
 const
   // host part of the image's config.json template value (http://your-unraid-host:7777)
@@ -249,6 +270,8 @@ constructor TAppContext.Create(const AConfig: TAppConfig; const ALog: TLogProc;
   const AConfigPath: string);
 begin
   inherited Create;
+  FMediaRefusedLock := TObject.Create;
+  FConfigLock := TObject.Create;
   FConfig := AConfig;
   AdminPasswordEarly := AConfig.AdminPassword;
   FHostLog := ALog;
@@ -273,6 +296,8 @@ end;
 destructor TAppContext.Destroy;
 begin
   Stop;
+  FreeAndNil(FMediaRefusedLock);
+  FreeAndNil(FConfigLock);
   inherited;
 end;
 
@@ -339,9 +364,19 @@ begin
         on E: Exception do
           Log('Daily refresh failed: ' + E.Message);
       end;
-    end);
+    end, StoreLastRunLoader(FStore), StoreLastRunSaver(FStore));
 
   App := Self;
+end;
+
+procedure TAppContext.BeginConfigChange;
+begin
+  TMonitor.Enter(FConfigLock);
+end;
+
+procedure TAppContext.EndConfigChange;
+begin
+  TMonitor.Exit(FConfigLock);
 end;
 
 procedure TAppContext.Log(const AMsg: string);
@@ -377,54 +412,85 @@ procedure TAppContext.UpdateSettings(ARefreshHour, ARefreshMinute: Word;
   AProxyStreams: Boolean; AProxyPort: Integer; AEpgMaxDays: Integer;
   AStreamFailover: Boolean);
 begin
-  // the relay first: when it can't (re)bind this raises and NOTHING is changed -
-  // before, the new values stayed in memory and a later unrelated save wrote them
-  if Assigned(FServer) then
-    FServer.SetProxy(AProxyStreams, AProxyPort); // start/stop/rebind the relay live
-  FConfig.RefreshHour := ARefreshHour;
-  FConfig.RefreshMinute := ARefreshMinute;
-  FConfig.ProxyStreams := AProxyStreams;
-  FConfig.ProxyPort := AProxyPort;
-  FConfig.StreamFailover := AStreamFailover;
-  if AEpgMaxDays >= 0 then
-    FConfig.EpgMaxDays := AEpgMaxDays;
-  if Assigned(FScheduler) then
-  begin
-    FScheduler.Hour := ARefreshHour;
-    FScheduler.Minute := ARefreshMinute;
+  TMonitor.Enter(FConfigLock);
+  try
+    // the relay first: when it can't (re)bind this raises and NOTHING is changed -
+    // before, the new values stayed in memory and a later unrelated save wrote them
+    if Assigned(FServer) then
+      FServer.SetProxy(AProxyStreams, AProxyPort); // start/stop/rebind the relay live
+    FConfig.RefreshHour := ARefreshHour;
+    FConfig.RefreshMinute := ARefreshMinute;
+    FConfig.ProxyStreams := AProxyStreams;
+    FConfig.ProxyPort := AProxyPort;
+    FConfig.StreamFailover := AStreamFailover;
+    if AEpgMaxDays >= 0 then
+      FConfig.EpgMaxDays := AEpgMaxDays;
+    if Assigned(FScheduler) then
+    begin
+      FScheduler.Hour := ARefreshHour;
+      FScheduler.Minute := ARefreshMinute;
+    end;
+    FConfig.Save(FConfigPath);
+    Log(Format('Settings updated: refresh %0.2d:%0.2d, proxy=%s (port %d)',
+      [ARefreshHour, ARefreshMinute, BoolToStr(AProxyStreams, True), AProxyPort]));
+  finally
+    TMonitor.Exit(FConfigLock);
   end;
-  FConfig.Save(FConfigPath);
-  Log(Format('Settings updated: refresh %0.2d:%0.2d, proxy=%s (port %d)',
-    [ARefreshHour, ARefreshMinute, BoolToStr(AProxyStreams, True), AProxyPort]));
 end;
 
 procedure TAppContext.UpdatePlexSettings(AM3uEnabled, AM3uProxy, AHdhrEnabled,
   AHdhrProxy: Boolean; ATunerCount: Integer; const AServerUrl, AToken: string);
+var
+  lOld: TAppConfig;
 begin
-  FConfig.PlexM3uEnabled := AM3uEnabled;
-  FConfig.PlexM3uProxy := AM3uProxy;
-  FConfig.PlexHdhrEnabled := AHdhrEnabled;
-  FConfig.PlexHdhrProxy := AHdhrProxy;
-  FConfig.PlexServerUrl := AServerUrl;
-  FConfig.PlexToken := AToken;
-  if ATunerCount > 0 then
-    FConfig.PlexTunerCount := ATunerCount;
-  if Assigned(FServer) then
-    FServer.SyncPlex(FConfig); // start/stop the SSDP responder to match
-  FConfig.Save(FConfigPath);
-  Log(Format('Plex updated: M3U=%s (proxy %s), HDHR=%s (proxy %s), tuners=%d',
-    [BoolToStr(AM3uEnabled, True), BoolToStr(AM3uProxy, True),
-     BoolToStr(AHdhrEnabled, True), BoolToStr(AHdhrProxy, True), FConfig.PlexTunerCount]));
+  TMonitor.Enter(FConfigLock);
+  try
+    // all or nothing: a Plex "relay" flag needs the relay; when it can't bind, the
+    // server raises (400) and the Plex settings are restored before anything is saved
+    lOld := FConfig;
+    FConfig.PlexM3uEnabled := AM3uEnabled;
+    FConfig.PlexM3uProxy := AM3uProxy;
+    FConfig.PlexHdhrEnabled := AHdhrEnabled;
+    FConfig.PlexHdhrProxy := AHdhrProxy;
+    FConfig.PlexServerUrl := AServerUrl;
+    FConfig.PlexToken := AToken;
+    if ATunerCount > 0 then
+      FConfig.PlexTunerCount := ATunerCount;
+    if Assigned(FServer) then
+      try
+        FServer.SyncPlex(FConfig); // start/stop the SSDP responder + relay to match
+      except
+        FConfig.PlexM3uEnabled := lOld.PlexM3uEnabled;
+        FConfig.PlexM3uProxy := lOld.PlexM3uProxy;
+        FConfig.PlexHdhrEnabled := lOld.PlexHdhrEnabled;
+        FConfig.PlexHdhrProxy := lOld.PlexHdhrProxy;
+        FConfig.PlexServerUrl := lOld.PlexServerUrl;
+        FConfig.PlexToken := lOld.PlexToken;
+        FConfig.PlexTunerCount := lOld.PlexTunerCount;
+        raise; // SyncPlex already restored the server's own copy
+      end;
+    FConfig.Save(FConfigPath);
+    Log(Format('Plex updated: M3U=%s (proxy %s), HDHR=%s (proxy %s), tuners=%d',
+      [BoolToStr(AM3uEnabled, True), BoolToStr(AM3uProxy, True),
+       BoolToStr(AHdhrEnabled, True), BoolToStr(AHdhrProxy, True), FConfig.PlexTunerCount]));
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
 end;
 
 procedure TAppContext.SetPlexListId(AListId: Integer);
 begin
-  if AListId = FConfig.PlexListId then
-    Exit;
-  FConfig.PlexListId := AListId;
-  FConfig.Save(FConfigPath);
-  MarkLineupChanged; // Plex must re-read the (different) lineup
-  Log(Format('Plex bouquet set to list %d (0 = first enabled)', [AListId]));
+  TMonitor.Enter(FConfigLock);
+  try
+    if AListId = FConfig.PlexListId then
+      Exit;
+    FConfig.PlexListId := AListId;
+    FConfig.Save(FConfigPath);
+    MarkLineupChanged; // Plex must re-read the (different) lineup
+    Log(Format('Plex bouquet set to list %d (0 = first enabled)', [AListId]));
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
 end;
 
 function TAppContext.PlexList: TCustomList;
@@ -466,26 +532,39 @@ procedure TAppContext.UpdateMediaConfig(const AVisibleGroups: TArray<string>;
   const ABaseUrl: string; ADummyEnabled: Boolean;
   ADummyBlockMinutes, ADummyHoursBack, ADummyHoursAhead: Integer;
   ANameShowGroup, ANameShowNumber, ANameShowSource, AIdSortPrefix: Boolean);
+var
+  lOld: TAppConfig;
 begin
-  FConfig.VisibleGroups := AVisibleGroups;
-  FConfig.PublicBaseUrl := ABaseUrl;
-  FConfig.NameShowGroup := ANameShowGroup;
-  FConfig.NameShowNumber := ANameShowNumber;
-  FConfig.NameShowSource := ANameShowSource;
-  FConfig.IdSortPrefix := AIdSortPrefix;
-  FConfig.DummyEpgEnabled := ADummyEnabled;
-  if ADummyBlockMinutes > 0 then
-    FConfig.DummyEpgBlockMinutes := ADummyBlockMinutes;
-  if ADummyHoursBack >= 0 then
-    FConfig.DummyEpgHoursBack := ADummyHoursBack;
-  if ADummyHoursAhead > 0 then
-    FConfig.DummyEpgHoursAhead := ADummyHoursAhead;
-  if Assigned(FServer) then
-    FServer.SyncPlex(FConfig); // refresh the server's config copy (SSDP location host)
-  FConfig.Save(FConfigPath);
-  Log(Format('Media config updated: %d visible groups, baseUrl=%s, dummyEpg=%s (%d min, -%d/+%dh)',
-    [Length(AVisibleGroups), ABaseUrl, BoolToStr(ADummyEnabled, True),
-     FConfig.DummyEpgBlockMinutes, FConfig.DummyEpgHoursBack, FConfig.DummyEpgHoursAhead]));
+  TMonitor.Enter(FConfigLock);
+  try
+    lOld := FConfig;
+    FConfig.VisibleGroups := AVisibleGroups;
+    FConfig.PublicBaseUrl := ABaseUrl;
+    FConfig.NameShowGroup := ANameShowGroup;
+    FConfig.NameShowNumber := ANameShowNumber;
+    FConfig.NameShowSource := ANameShowSource;
+    FConfig.IdSortPrefix := AIdSortPrefix;
+    FConfig.DummyEpgEnabled := ADummyEnabled;
+    if ADummyBlockMinutes > 0 then
+      FConfig.DummyEpgBlockMinutes := ADummyBlockMinutes;
+    if ADummyHoursBack >= 0 then
+      FConfig.DummyEpgHoursBack := ADummyHoursBack;
+    if ADummyHoursAhead > 0 then
+      FConfig.DummyEpgHoursAhead := ADummyHoursAhead;
+    if Assigned(FServer) then
+      try
+        FServer.SyncPlex(FConfig); // refresh the server's config copy (SSDP location host)
+      except
+        FConfig := lOld; // SyncPlex restored its own copy; nothing was saved
+        raise;           // the 400 of SyncPlex
+      end;
+    FConfig.Save(FConfigPath);
+    Log(Format('Media config updated: %d visible groups, baseUrl=%s, dummyEpg=%s (%d min, -%d/+%dh)',
+      [Length(AVisibleGroups), ABaseUrl, BoolToStr(ADummyEnabled, True),
+       FConfig.DummyEpgBlockMinutes, FConfig.DummyEpgHoursBack, FConfig.DummyEpgHoursAhead]));
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
 end;
 
 procedure TAppContext.UpdateMediaAllowedClients(const AClients: TArray<string>);
@@ -493,18 +572,70 @@ var
   lClients: TArray<string>;
   lClient: string;
 begin
-  lClients := nil;
-  for lClient in AClients do
-    if lClient.Trim <> '' then
-      lClients := lClients + [lClient.Trim];
-  FConfig.MediaAllowedClients := lClients;
-  FConfig.Save(FConfigPath);
-  Log(Format('Media servers: %d allowed client entr(y/ies) (0 = everyone)', [Length(lClients)]));
+  TMonitor.Enter(FConfigLock);
+  try
+    lClients := nil;
+    for lClient in AClients do
+      if lClient.Trim <> '' then
+        lClients := lClients + [lClient.Trim];
+    FConfig.MediaAllowedClients := lClients;
+    FConfig.Save(FConfigPath);
+    Log(Format('Media servers: %d allowed client entr(y/ies) (0 = LAN only)', [Length(lClients)]));
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
 end;
 
 function TAppContext.IsMediaClientAllowed(const AClientIp: string): Boolean;
 begin
-  Result := IsClientInList(AClientIp, FConfig.MediaAllowedClients);
+  // empty list = LAN only: lineup.json / playlist.m3u carry the bouquet's box login
+  // (and, relay off, raw provider URLs) - never hand them to the internet by default
+  Result := IsMediaClientPermitted(AClientIp, FConfig.MediaAllowedClients);
+  if Result or (Length(FConfig.MediaAllowedClients) > 0) then
+    Exit;
+  TMonitor.Enter(FMediaRefusedLock);
+  try
+    if FMediaRefusedLogged then
+      Exit;
+    FMediaRefusedLogged := True;
+  finally
+    TMonitor.Exit(FMediaRefusedLock);
+  end;
+  Log(Format('Media servers: refused public client %s on the Plex/HDHomeRun endpoints ' +
+    '(without "allowed clients" only LAN addresses may use them; logged once)', [AClientIp]));
+end;
+
+function TAppContext.IsMediaClientAllowed(const ARemoteIp, AForwardedFor: string): Boolean;
+var
+  lClient: string;
+begin
+  lClient := GAuthThrottle.ClientAddress(ARemoteIp, AForwardedFor);
+  if Length(FConfig.MediaAllowedClients) > 0 then
+    Exit(IsMediaClientPermitted(lClient, FConfig.MediaAllowedClients));
+  // LAN only; a reverse proxy on the LAN that is not a trusted proxy must not hand the
+  // endpoints to its internet clients
+  Result := GAuthThrottle.IsLocalClient(ARemoteIp, AForwardedFor);
+  if not Result then
+    IsMediaClientAllowed(lClient); // logs the first refused public client
+end;
+
+procedure TAppContext.UpdateAllowedHosts(const AHosts: TArray<string>);
+var
+  lHosts: TArray<string>;
+  lHost: string;
+begin
+  TMonitor.Enter(FConfigLock);
+  try
+    lHosts := nil;
+    for lHost in AHosts do
+      if lHost.Trim <> '' then
+        lHosts := lHosts + [lHost.Trim];
+    FConfig.AllowedHosts := lHosts;
+    FConfig.Save(FConfigPath);
+    Log(Format('Admin API: %d extra allowed host name(s)', [Length(lHosts)]));
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
 end;
 
 procedure TAppContext.UpdateExtraEpgUrls(const AUrls: TArray<string>);
@@ -512,27 +643,45 @@ var
   lUrls: TArray<string>;
   lUrl: string;
 begin
-  lUrls := nil;
-  for lUrl in AUrls do
-    if lUrl.Trim <> '' then
-      lUrls := lUrls + [lUrl.Trim];
-  FConfig.ExtraEpgUrls := lUrls;
-  if Assigned(FIngest) then
-    FIngest.SetExtraEpgUrls(lUrls);
-  FConfig.Save(FConfigPath);
-  Log(Format('Extra EPG sources: %d (fetched with the next refresh / EPG update)', [Length(lUrls)]));
+  TMonitor.Enter(FConfigLock);
+  try
+    lUrls := nil;
+    for lUrl in AUrls do
+      if lUrl.Trim <> '' then
+        lUrls := lUrls + [lUrl.Trim];
+    FConfig.ExtraEpgUrls := lUrls;
+    if Assigned(FIngest) then
+      FIngest.ApplyExtraEpgUrls(lUrls); // removed URLs' slots go now, not after the next refresh
+    FConfig.Save(FConfigPath);
+    Log(Format('Extra EPG sources: %d (fetched with the next refresh / EPG update)', [Length(lUrls)]));
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
 end;
 
 function TAppContext.ResetPlexDeviceId: string;
+var
+  lOld: TAppConfig;
 begin
-  // fresh 8-hex id (same shape as the one minted on first start) — a NEW device to Plex
-  FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1,
-    cPlexDeviceIdLength);
-  if Assigned(FServer) then
-    FServer.SyncPlex(FConfig); // refresh the server's config copy (discover.json reads App.Config live)
-  FConfig.Save(FConfigPath);
-  Result := FConfig.PlexDeviceId;
-  Log('Plex tuner DeviceID reset to ' + Result + ' — remove + re-add the DVR in Plex for a fresh import');
+  TMonitor.Enter(FConfigLock);
+  try
+    lOld := FConfig;
+    // fresh 8-hex id (same shape as the one minted on first start) — a NEW device to Plex
+    FConfig.PlexDeviceId := Copy(TGUID.NewGuid.ToString.Replace('{', '').Replace('-', ''), 1,
+      cPlexDeviceIdLength);
+    if Assigned(FServer) then
+      try
+        FServer.SyncPlex(FConfig); // refresh the server's config copy (discover.json reads App.Config live)
+      except
+        FConfig := lOld; // the old device id stays (nothing saved); re-raise the 400
+        raise;
+      end;
+    FConfig.Save(FConfigPath);
+    Result := FConfig.PlexDeviceId;
+    Log('Plex tuner DeviceID reset to ' + Result + ' — remove + re-add the DVR in Plex for a fresh import');
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
 end;
 
 procedure TAppContext.MarkLineupChanged;

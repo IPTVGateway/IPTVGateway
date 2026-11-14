@@ -20,6 +20,7 @@ uses
   System.SyncObjs,
   System.Generics.Collections,
   // Own units
+  IPTV.Model.Epg,
   IPTV.Storage.Intf;
 
 type
@@ -90,9 +91,32 @@ type
     procedure RefreshExtraEpg;
     /// The extra guide URLs (from config.json extraEpgUrls), first = highest priority.
     procedure SetExtraEpgUrls(const AUrls: TArray<string>);
+    /// A settings change of the extra guide URLs: SetExtraEpgUrls, then right away
+    /// (under the ingest lock) ResetChangedExtraEpgSlots, so the slots of removed URLs
+    /// stop being served now instead of after the next refresh.
+    procedure ApplyExtraEpgUrls(const AUrls: TArray<string>);
     /// Snapshot of the per-source ingest progress (for the admin status endpoint).
     function GetStatus: TArray<TIngestStatus>;
   end;
+
+type
+  /// What ApplyExtraEpgDownload did with a slot.
+  TExtraEpgOutcome = (
+    eoStored,   // usable guide: stored in the slot
+    eoKept,     // nothing usable, same URL: the slot keeps its previous guide
+    eoEmptied); // nothing usable, the slot held another URL's guide: emptied
+
+/// Before fetching the extra guides: drop the slots of removed URLs (the slot is the
+/// list position) and record the URL of every slot that has none recorded yet (a
+/// database from before the URL was recorded: its guides are kept). A slot whose URL
+/// changed is left as it is here - ApplyExtraEpgDownload replaces or empties it.
+procedure ResetChangedExtraEpgSlots(const AStore: IStore; const AUrls: TArray<string>);
+/// After the download of extra guide ASlotNo (1-based) from AUrl: with programmes
+/// (AProgs <> nil, Count > 0) they replace the slot; without, the slot keeps its guide
+/// when it was filled from AUrl, else (it holds another URL's guide) it is emptied.
+/// Either way AUrl is recorded as the slot's URL.
+function ApplyExtraEpgDownload(const AStore: IStore; ASlotNo: Integer; const AUrl: string;
+  const AChannels: TArray<TEpgChannelInfo>; const AProgs: TEpgProgrammeList): TExtraEpgOutcome;
 
 implementation
 
@@ -103,7 +127,6 @@ uses
   IPTV.Model.Types,
   IPTV.Model.Source,
   IPTV.Model.Catalog,
-  IPTV.Model.Epg,
   IPTV.Model.CustomList,
   IPTV.Source.Intf,
   IPTV.Source.Factory,
@@ -113,6 +136,59 @@ uses
 const
   // RSS log line after a refresh is in MiB
   cBytesPerMiB = 1024 * 1024;
+  // app state key per extra-EPG slot (+ 1-based slot number): the URL that filled it
+  cStateExtraEpgSlotUrl = 'extra_epg.slot_url.';
+  cOwnsProgrammes = True;
+
+function ExtraEpgSlotKey(ASlotNo: Integer): string;
+begin
+  Result := cStateExtraEpgSlotUrl + IntToStr(ASlotNo);
+end;
+
+procedure ResetChangedExtraEpgSlots(const AStore: IStore; const AUrls: TArray<string>);
+var
+  lKey: string;
+  i: Integer;
+begin
+  // slots of removed URLs go away (also when the list is now empty)
+  AStore.ClearExtraEpgBelow(-Length(AUrls));
+  for i := 0 to High(AUrls) do
+  begin
+    lKey := ExtraEpgSlotKey(i + 1);
+    // nothing recorded yet (the first run after the upgrade): adopt the guide as is,
+    // instead of wiping every extra guide until the downloads have finished
+    if AStore.GetState(lKey) = '' then
+      AStore.SetState(lKey, AUrls[i]);
+  end;
+end;
+
+function ApplyExtraEpgDownload(const AStore: IStore; ASlotNo: Integer; const AUrl: string;
+  const AChannels: TArray<TEpgChannelInfo>; const AProgs: TEpgProgrammeList): TExtraEpgOutcome;
+var
+  lKey: string;
+  lEmpty: TEpgProgrammeList;
+begin
+  lKey := ExtraEpgSlotKey(ASlotNo);
+  if (AProgs <> nil) and (AProgs.Count > 0) then
+  begin
+    AStore.ReplaceExtraEpg(-ASlotNo, AChannels, AProgs);
+    Result := eoStored;
+  end
+  else if AStore.GetState(lKey) = AUrl then
+    Result := eoKept // an empty/garbage download: keep what we have
+  else
+  begin
+    // the slot still holds the guide of the URL that was here before: never serve it
+    lEmpty := TEpgProgrammeList.Create(cOwnsProgrammes);
+    try
+      AStore.ReplaceExtraEpg(-ASlotNo, [], lEmpty);
+    finally
+      FreeAndNil(lEmpty);
+    end;
+    Result := eoEmptied;
+  end;
+  AStore.SetState(lKey, AUrl);
+end;
 
 constructor TIngestService.Create(const AStore: IStore; const ALog: TLogProc);
 begin
@@ -347,7 +423,7 @@ begin
             end;
           except
             on E: Exception do
-              Log('  EPG failed (catalog kept): ' + E.Message);
+              Log('  EPG failed (catalog kept): ' + MaskUrlSecrets(E.Message));
           end;
         finally
           FEpgLock.Release;
@@ -392,7 +468,7 @@ begin
   except
     on E: Exception do
     begin
-      StatusDone(ASourceId, E.Message);
+      StatusDone(ASourceId, MaskUrlSecrets(E.Message));
       raise; // RefreshAll catches + logs per source; a single-refresh thread just ends
     end;
   end;
@@ -448,7 +524,7 @@ begin
     TrimProcessMemory; // hand each source's freed parse memory back before the next
   except
     on E: Exception do
-      Log(Format('Source "%s" failed: %s', [lNames[i], E.Message]));
+      Log(Format('Source "%s" failed: %s', [lNames[i], MaskUrlSecrets(E.Message)]));
   end;
   // Report the actual resident memory (the figure the operator watches) so its
   // trend is visible in the log after each refresh.
@@ -464,6 +540,19 @@ begin
   finally
     FStatusLock.Release;
   end;
+end;
+
+procedure TIngestService.ApplyExtraEpgUrls(const AUrls: TArray<string>);
+var
+  lUrls: TArray<string>;
+begin
+  SetExtraEpgUrls(AUrls);
+  lUrls := Copy(AUrls);
+  WriteLocked(
+    procedure
+    begin
+      ResetChangedExtraEpgSlots(FStore, lUrls);
+    end);
 end;
 
 // Fetch the extra (third-party) XMLTV guides from the settings. Each URL is a
@@ -483,11 +572,22 @@ var
   lInfo: TEpgChannelInfo;
   lProgs: TEpgProgrammeList;
   i, j, lSlot: Integer;
+  lOutcome: TExtraEpgOutcome;
+  lUrl: string;
 
   procedure AddKey(const AKey: string);
   begin
     if AKey <> '' then
       lListKeys.AddOrSetValue(AKey, 0);
+  end;
+
+  procedure LogExtraEpgUnusable(ASlotNo: Integer; AOutcome: TExtraEpgOutcome);
+  begin
+    if AOutcome = eoEmptied then
+      Log(Format('  extra EPG %d: nothing usable - slot emptied (its guide came from a previous URL)',
+        [ASlotNo]))
+    else
+      Log(Format('  extra EPG %d: nothing usable - kept its previous guide', [ASlotNo]));
   end;
 
 begin
@@ -497,11 +597,11 @@ begin
   finally
     FStatusLock.Release;
   end;
-  // slots of removed URLs go away (also when the list is now empty)
+  // slots of removed URLs go away; a changed slot is settled after its download
   WriteLocked(
     procedure
     begin
-      FStore.ClearExtraEpgBelow(-Length(lUrls));
+      ResetChangedExtraEpgSlots(FStore, lUrls);
     end);
   if Length(lUrls) = 0 then
     Exit;
@@ -537,6 +637,7 @@ begin
       if IsCancelled then
         Break;
       lSlot := -(i + 1);
+      lUrl := lUrls[i]; // (a for-loop variable can't be captured by the closures below)
       FEpgLock.Acquire; // one guide parse at a time (memory)
       try
         try
@@ -560,25 +661,36 @@ begin
             for j := lProgs.Count - 1 downto 0 do
               if not lKeepIds.ContainsKey(lProgs[j].ChannelTvgId) then
                 lProgs.Delete(j);
-            if lProgs.Count = 0 then
-            begin
-              // empty/garbage download: keep what we have
-              Log(Format('  extra EPG %d: nothing usable - kept the previous guide', [i + 1]));
-              Continue;
-            end;
             WriteLocked(
               procedure
               begin
-                FStore.ReplaceExtraEpg(lSlot, lKept, lProgs);
+                lOutcome := ApplyExtraEpgDownload(FStore, -lSlot, lUrl, lKept, lProgs);
               end);
-            Log(Format('  %d guide channels, %d match a list channel, %d programmes stored',
-              [Length(lGuide), Length(lKept), lProgs.Count]));
+            if lOutcome = eoStored then
+              Log(Format('  %d guide channels, %d match a list channel, %d programmes stored',
+                [Length(lGuide), Length(lKept), lProgs.Count]))
+            else
+              LogExtraEpgUnusable(-lSlot, lOutcome);
           finally
             FreeAndNil(lProgs);
           end;
         except
           on E: Exception do
-            Log(Format('Extra EPG %d failed: %s', [i + 1, E.Message]));
+          begin
+            Log(Format('Extra EPG %d failed: %s', [-lSlot, MaskUrlSecrets(E.Message)]));
+            // a failed download of a CHANGED URL must not leave the previous URL's guide
+            try
+              WriteLocked(
+                procedure
+                begin
+                  lOutcome := ApplyExtraEpgDownload(FStore, -lSlot, lUrl, nil, nil);
+                end);
+              LogExtraEpgUnusable(-lSlot, lOutcome);
+            except
+              on E2: Exception do
+                Log(Format('  extra EPG %d: slot not updated: %s', [-lSlot, MaskUrlSecrets(E2.Message)]));
+            end;
+          end;
         end;
       finally
         FEpgLock.Release;
@@ -637,7 +749,7 @@ begin
         end;
       except
         on E: Exception do
-          Log(Format('EPG "%s" failed: %s', [lSrc.Name, E.Message]));
+          Log(Format('EPG "%s" failed: %s', [lSrc.Name, MaskUrlSecrets(E.Message)]));
       end;
   finally
     FreeAndNil(lSources);

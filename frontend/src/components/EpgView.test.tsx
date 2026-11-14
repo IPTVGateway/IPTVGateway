@@ -113,5 +113,33 @@ describe('EpgView', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Reload' }))
     await waitFor(() => expect(vi.mocked(api.listItems).mock.calls.length).toBeGreaterThan(before))
   })
+
+  it('a mirror bouquet takes its channel labels + lanes from its master, the guide from itself', async () => {
+    const lists: CustomList[] = [
+      ...LISTS,
+      { id: 5, name: 'Kids', outputUsername: 'k', outputPassword: 'k', enabled: true, mirrorOfListId: 1 },
+    ]
+    vi.mocked(api.listItems).mockImplementation(async (id: number) =>
+      id === 1
+        ? [{ id: 1, listId: 1, streamItemId: 1, customGroupId: 0, contentType: 'live', displayName: 'NPO 1', channelNumber: 0, streamTvgId: 'npo1' }]
+        : [],
+    )
+    render(<EpgView lists={lists} activeListId={5} />)
+    await waitFor(() => expect(api.listEpg).toHaveBeenCalledWith(5))
+    expect(await screen.findByText('NPO 1')).toBeInTheDocument()
+    expect(api.listItems).toHaveBeenCalledWith(1)
+    expect(api.listGroups).toHaveBeenCalledWith(1)
+    expect(api.listItems).not.toHaveBeenCalledWith(5)
+  })
+
+  it('labels the lane of a channel without tvg-id (published as iptv-<stream id>) with its name', async () => {
+    vi.mocked(api.listEpg).mockResolvedValue([{ ...PROGS[0], channelTvgId: 'iptv-42' }])
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 9, listId: 1, streamItemId: 42, customGroupId: 0, contentType: 'live', displayName: 'Local TV', channelNumber: 0 },
+    ])
+    render(<EpgView lists={LISTS} activeListId={1} />)
+    expect(await screen.findByText('Local TV')).toBeInTheDocument()
+    expect(screen.queryByText('iptv-42')).toBeNull()
+  })
 })
 

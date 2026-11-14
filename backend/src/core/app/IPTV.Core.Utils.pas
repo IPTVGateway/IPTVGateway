@@ -108,9 +108,21 @@ function EpgNameKey(const AName: string): string;
 function EpgIdKey(const AId: string): string;
 
 /// A URL with credentials hidden, for messages/logs: query keys username/password/
-/// pass/pw/user/token/auth/mac -> ***, and the Xtream path form
-/// /live|movie|series|timeshift/USER/PASS/ -> /live/***/***/.
+/// pass/pw/user/token/auth/mac -> ***, the Xtream path form
+/// /live|movie|series|stream|timeshift/USER/PASS/ -> /live/***/***/, and (when no
+/// such typed path is present) the short Xtream form /USER/PASS/<numeric id>[.ext]
+/// (http://host:port/USER/PASS/123.ts) -> /***/***/123.ts. Also inside a message.
 function MaskUrlSecrets(const AUrl: string): string;
+
+/// A URL for the admin web app: the VALUES of the query parameters password, pass, pwd,
+/// token, key, apikey and api_key (case-insensitive; empty values stay empty) become
+/// '***'. Everything else (path, other parameters, fragment) stays as is.
+function MaskUrlQuerySecrets(const AUrl: string): string;
+/// The URL to store when the web app sends back a masked one: every such secret
+/// parameter of ANewUrl whose value is '***' gets the value of the same parameter in
+/// AStoredUrl; when AStoredUrl has no such parameter, it is dropped. Other parameters
+/// (and a real new value) stay as sent.
+function RestoreMaskedUrlSecrets(const ANewUrl, AStoredUrl: string): string;
 
 /// The public base URL as the operator typed it, made usable: trimmed, trailing
 /// '/' removed, 'http://' added when no scheme was given. False when it still has
@@ -224,6 +236,19 @@ const
 
   // M3uStreamId: shorter credentials are not blanked (they'd hit incidental chars)
   cMinCredLength = 2;
+
+  // MaskUrlSecrets: the typed Xtream path (/live/USER/PASS/), the short form
+  // (/USER/PASS/123.ts, ending the URL or followed by a query/fragment/quote/space)
+  // and credential query keys
+  cMasked = '***';
+  cMaskedPair = '***/***/';
+  cMaskTypedPath = '(/(live|movie|series|stream|timeshift)/)[^/?#\s]+/[^/?#\s]+/';
+  cMaskShortPath = '/[^/?#\s]+/[^/?#\s]+/(\d+(?:\.[A-Za-z0-9]+)?)(?=$|[?#\s"''\)\]])';
+  cMaskQueryCred = '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&#\s]*';
+  // MaskUrlQuerySecrets / RestoreMaskedUrlSecrets: the query keys whose value is hidden
+  // from the web app (the '***' a masked value comes back as may arrive URL-encoded)
+  cSecretQueryKeys: array[0..6] of string = ('password', 'pass', 'pwd', 'token', 'key', 'apikey', 'api_key');
+  cMaskedEncoded = '%2A%2A%2A';
 
   // UrlPercentDecode
   cPercent = '%';
@@ -1096,10 +1121,121 @@ end;
 
 function MaskUrlSecrets(const AUrl: string): string;
 begin
-  Result := TRegEx.Replace(AUrl, '(/(live|movie|series|timeshift)/)[^/?#]+/[^/?#]+/', '$1***/***/',
-    [roIgnoreCase]);
-  Result := TRegEx.Replace(Result, '([?&](username|password|pass|pw|user|token|auth|mac)=)[^&#]*', '$1***',
-    [roIgnoreCase]);
+  // the typed path (/live/USER/PASS/...); a timeshift's later segments (duration,
+  // start) stay readable, so the short form below only applies without one
+  if TRegEx.IsMatch(AUrl, cMaskTypedPath, [roIgnoreCase]) then
+    Result := TRegEx.Replace(AUrl, cMaskTypedPath, '$1' + cMaskedPair, [roIgnoreCase])
+  else
+    Result := TRegEx.Replace(AUrl, cMaskShortPath, '/' + cMaskedPair + '$1', [roIgnoreCase]);
+  Result := TRegEx.Replace(Result, cMaskQueryCred, '$1' + cMasked, [roIgnoreCase]);
+end;
+
+// AUrl split around its query: AHead up to and incl. '?', AQuery without the fragment,
+// ATail the '#fragment' (or ''). False when there is no query.
+function SplitUrlQuery(const AUrl: string; out AHead, AQuery, ATail: string): Boolean;
+var
+  lQueryPos, lHashPos: Integer;
+begin
+  AHead := AUrl;
+  AQuery := '';
+  ATail := '';
+  lQueryPos := AUrl.IndexOf(cUrlQueryStart);
+  lHashPos := AUrl.IndexOf(cUrlFragmentStart);
+  Result := (lQueryPos >= 0) and ((lHashPos < 0) or (lHashPos > lQueryPos));
+  if not Result then
+    Exit;
+  AHead := AUrl.Substring(0, lQueryPos + 1);
+  if lHashPos < 0 then
+    AQuery := AUrl.Substring(lQueryPos + 1)
+  else
+  begin
+    AQuery := AUrl.Substring(lQueryPos + 1, lHashPos - lQueryPos - 1);
+    ATail := AUrl.Substring(lHashPos);
+  end;
+end;
+
+// one query pair split at its first '='; False when it has no name
+function SplitQueryPair(const APair: string; out AName, AValue: string): Boolean;
+var
+  lEqPos: Integer;
+begin
+  lEqPos := APair.IndexOf(cUrlParamAssign);
+  Result := lEqPos > 0;
+  if Result then
+  begin
+    AName := APair.Substring(0, lEqPos);
+    AValue := APair.Substring(lEqPos + 1);
+  end
+  else
+  begin
+    AName := '';
+    AValue := '';
+  end;
+end;
+
+function IsSecretQueryKey(const AName: string): Boolean;
+begin
+  Result := MatchText(AName, cSecretQueryKeys);
+end;
+
+function MaskUrlQuerySecrets(const AUrl: string): string;
+var
+  lHead, lQuery, lTail, lName, lValue: string;
+  lPairs: TArray<string>;
+  i: Integer;
+begin
+  Result := AUrl;
+  if not SplitUrlQuery(AUrl, lHead, lQuery, lTail) then
+    Exit;
+  lPairs := lQuery.Split([cUrlParamSep]);
+  for i := 0 to High(lPairs) do
+    if SplitQueryPair(lPairs[i], lName, lValue) and (lValue <> '') and IsSecretQueryKey(lName) then
+      lPairs[i] := lName + cUrlParamAssign + cMasked;
+  Result := lHead + string.Join(cUrlParamSep, lPairs) + lTail;
+end;
+
+// the raw value of query parameter AName (case-insensitive); False when absent
+function TryUrlQueryParamRaw(const AUrl, AName: string; out AValue: string): Boolean;
+var
+  lHead, lQuery, lTail, lPair, lName: string;
+begin
+  AValue := '';
+  Result := False;
+  if not SplitUrlQuery(AUrl, lHead, lQuery, lTail) then
+    Exit;
+  for lPair in lQuery.Split([cUrlParamSep]) do
+    if SplitQueryPair(lPair, lName, AValue) and SameText(lName, AName) then
+      Exit(True);
+  AValue := '';
+end;
+
+function RestoreMaskedUrlSecrets(const ANewUrl, AStoredUrl: string): string;
+var
+  lHead, lQuery, lTail, lPair, lName, lValue, lStored: string;
+  lKept: TList<string>;
+begin
+  Result := ANewUrl;
+  if not SplitUrlQuery(ANewUrl, lHead, lQuery, lTail) then
+    Exit;
+  lKept := TList<string>.Create;
+  try
+    for lPair in lQuery.Split([cUrlParamSep]) do
+      if SplitQueryPair(lPair, lName, lValue) and IsSecretQueryKey(lName) and
+        (SameText(lValue, cMasked) or SameText(lValue, cMaskedEncoded)) then
+      begin
+        // the web app sent the mask back unchanged: the stored value, or nothing
+        if TryUrlQueryParamRaw(AStoredUrl, lName, lStored) then
+          lKept.Add(lName + cUrlParamAssign + lStored);
+      end
+      else
+        lKept.Add(lPair);
+    if lKept.Count = 0 then
+      Result := lHead.Substring(0, lHead.Length - 1) + lTail // no parameter left: no '?'
+    else
+      Result := lHead + string.Join(cUrlParamSep, lKept.ToArray) + lTail;
+  finally
+    FreeAndNil(lKept);
+  end;
 end;
 
 function XtreamBase64(const AValue: string): string;

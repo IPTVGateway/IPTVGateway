@@ -2,6 +2,8 @@ import { LogView } from './components/LogView'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, adminAuth, setUnauthorizedHandler, TooManyRequestsError, UnauthorizedError } from './api/client'
 import { LoginGate } from './components/LoginGate'
+import { AccessBlocked } from './components/AccessBlocked'
+import { accessBlock, type AccessBlock } from './lib/errors'
 import type { CustomGroup, CustomItem, CustomList, Source } from './types'
 import { SourcesPanel } from './components/SourcesPanel'
 import { CatalogPanel } from './components/CatalogPanel'
@@ -60,6 +62,9 @@ export function App() {
   const [authed, setAuthed] = useState<boolean | null>(null)
   // seconds of a failed-login lockout (429) the initial probe ran into (0 = none)
   const [lockedForSec, setLockedForSec] = useState(0)
+  // the admin API refused this browser (403: no admin password + not on the LAN,
+  // or a Host that is not allowed): a full-page notice instead of a broken workbench
+  const [blocked, setBlocked] = useState<AccessBlock | null>(null)
   const [view, setView] = useState<View>('workbench')
   // Which workbench panel is shown on phone/tablet (a single-panel switcher); on
   // wide screens all three show at once and this is ignored.
@@ -125,6 +130,13 @@ export function App() {
         // locked out after too many failed logins: the login gate, in its locked state
         if (e instanceof TooManyRequestsError) {
           setLockedForSec(e.retryAfterSec)
+          setAuthed(false)
+          return
+        }
+        // refused by the LAN / Host guard: not "in" — say why and what to do
+        const block = accessBlock(e)
+        if (block) {
+          setBlocked(block)
           setAuthed(false)
           return
         }
@@ -276,6 +288,7 @@ export function App() {
     loadActiveList()
   }, [loadActiveList])
 
+  if (blocked) return <AccessBlocked block={blocked} />
   if (authed === null) {
     return <div className="app-checking muted">{t('Connecting…')}</div>
   }
@@ -455,6 +468,7 @@ export function App() {
             <div className="wb-pane wb-list">
               <ListPanel
                 lists={lists}
+                sources={sources}
                 activeListId={activeListId}
                 onSelectList={setActiveListId}
                 groups={groups}

@@ -206,6 +206,10 @@ type
     // tell the configured Plex server to reload its DVR guide/lineup
     [POST, Path('plex/rescan'), Produces(TMediaType.APPLICATION_JSON)]
     function PlexRescan: TJSONObject;
+    /// <summary>Set the gateway up in Plex Live TV &amp; DVR (tuner + DVR with our guide +
+    /// channel map + guide reload), re-using what exists. Returns the steps taken.</summary>
+    [POST, Path('plex/setup'), Produces(TMediaType.APPLICATION_JSON)]
+    function PlexSetup: TJSONObject;
     // reminder state: is a Plex rescan due (bouquet changed since last rescan)?
     [GET, Path('plex/status'), Produces(TMediaType.APPLICATION_JSON)]
     function PlexStatus: TJSONObject;
@@ -957,6 +961,84 @@ begin
   except
     on E: Exception do
       raise EMARSHttpException.Create('Plex rescan failed: ' + E.Message, cHttpBadRequest);
+  end;
+end;
+
+const
+  // Plex DVR setup: the title Plex shows for our guide, its language, our guide path
+  cPlexDvrTitle = 'IPTV Gateway';
+  cPlexDvrLanguage = 'eng';
+  cPlexGuidePath = '/plex/epg.xml';
+  cPlexFallbackDeviceId = '12345678'; // as the HDHomeRun emulation advertises without one
+
+function TAdminResource.PlexSetup: TJSONObject;
+var
+  lList: TCustomList;
+  lChannels: TOutputChannelList;
+  lNums: TArray<Integer>;
+  lIds: TArray<string>;
+  lMap: TArray<TPlexChannelMapping>;
+  lSteps: TJSONArray;
+  lTuner, lDeviceId, lDvrKey: string;
+  i: Integer;
+begin
+  RequireApp;
+  if not App.Config.PlexHdhrEnabled then
+    raise EMARSHttpException.Create('Enable the HDHomeRun tuner first (Media Servers tab)', cHttpBadRequest);
+  lList := App.PlexList;
+  if lList = nil then
+    raise EMARSHttpException.Create('No bouquet for Plex (create or enable one first)', cHttpBadRequest);
+  lMap := nil;
+  try
+    // exactly the channels, numbers and guide ids that lineup.json and /plex/epg.xml
+    // publish (same selection and order), so the map lines up one to one
+    lChannels := SelectOutputChannels(App.Store, lList.Id, App.Config.VisibleGroups);
+    try
+      KeepContentTypes(lChannels, cLinearContentTypes);
+      lNums := OutputNumbers(lChannels);
+      lIds := ComputeGuideIds(lChannels, App.Config.IdSortPrefix);
+      SetLength(lMap, lChannels.Count);
+      for i := 0 to lChannels.Count - 1 do
+      begin
+        lMap[i].Number := lNums[i].ToString;
+        if i <= High(lIds) then
+          lMap[i].GuideId := lIds[i]
+        else
+          lMap[i].GuideId := ChannelGuideId(lChannels[i]);
+      end;
+    finally
+      FreeAndNil(lChannels);
+    end;
+  finally
+    FreeAndNil(lList);
+  end;
+
+  lTuner := MediaServerBaseUrl(App.Config.PublicBaseUrl, App.Config.UseHttps, App.Config.HttpPort);
+  lDeviceId := App.Config.PlexDeviceId;
+  if lDeviceId = '' then
+    lDeviceId := cPlexFallbackDeviceId;
+  lSteps := TJSONArray.Create;
+  try
+    try
+      lDvrKey := SetupPlexDvr(App.Config.PlexServerUrl, App.Config.PlexToken, lTuner, lTuner + cPlexGuidePath,
+        lDeviceId, cPlexDvrTitle, cPlexDvrLanguage, lMap,
+        procedure(AText: string)
+        begin
+          App.Log(AText);
+          lSteps.Add(AText);
+        end);
+    except
+      on E: Exception do
+        raise EMARSHttpException.Create('Plex setup failed: ' + E.Message, cHttpBadRequest);
+    end;
+    App.MarkPlexRescanned; // the guide was just reloaded
+    Result := TJSONObject.Create;
+    Result.AddPair('dvr', lDvrKey);
+    Result.AddPair('channels', TJSONNumber.Create(Length(lMap)));
+    Result.AddPair('steps', lSteps);
+    lSteps := nil; // owned by Result now
+  finally
+    FreeAndNil(lSteps);
   end;
 end;
 

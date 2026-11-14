@@ -28,6 +28,8 @@ export function MediaServersView() {
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
   const [rescanMsg, setRescanMsg] = useState<string | null>(null)
+  const [setupSteps, setSetupSteps] = useState<string[] | null>(null)
+  const [setupBusy, setSetupBusy] = useState(false)
   const [deviceMsg, setDeviceMsg] = useState<string | null>(null)
 
   const refreshStatus = useCallback(() => {
@@ -124,6 +126,20 @@ export function MediaServersView() {
       )
     } catch (e) {
       setError((e as Error).message)
+    }
+  }
+
+  async function setupPlex() {
+    setSetupSteps(null)
+    setError(null)
+    setSetupBusy(true)
+    try {
+      const r = await api.plexSetup()
+      setSetupSteps(r.steps)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setSetupBusy(false)
     }
   }
 
@@ -466,8 +482,26 @@ export function MediaServersView() {
               >
                 {t('Rescan Plex')}
               </button>
+              <button
+                type="button"
+                onClick={setupPlex}
+                disabled={setupBusy || !cfg.plexServerUrl?.trim() || !cfg.plexToken?.trim() || !cfg.plexHdhrEnabled}
+                title={t('Register the HDHomeRun tuner and a DVR with this guide in Plex and map all channels')}
+              >
+                {setupBusy ? t('Setting up…') : t('Set up in Plex')}
+              </button>
               {rescanMsg && <span className="muted">{rescanMsg}</span>}
             </div>
+            {setupSteps && (
+              <ul className="muted">
+                {setupSteps.map((s) => (
+                  <li key={s}>{s}</li>
+                ))}
+              </ul>
+            )}
+            <span className="hint">
+              {t('“Set up in Plex” needs the HDHomeRun tuner enabled and saved. It re-uses a tuner or DVR Plex already has, so running it again is safe.')}
+            </span>
             <span className="hint">
               {t('Save your settings first; the button has Plex re-read the guide + channels after a bouquet change. Find the token via Plex (X-Plex-Token).')}
             </span>

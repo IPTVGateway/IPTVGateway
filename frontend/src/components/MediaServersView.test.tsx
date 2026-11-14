@@ -12,6 +12,7 @@ vi.mock('../api/client', () => ({
     mediaStatus: vi.fn(),
     listLists: vi.fn(),
     plexRescan: vi.fn().mockResolvedValue({ dvrs: 1 }),
+    plexSetup: vi.fn(),
   },
 }))
 import { api } from '../api/client'
@@ -42,6 +43,28 @@ beforeEach(() => {
 })
 
 describe('MediaServersView', () => {
+  it('sets the gateway up in Plex and lists the steps', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({
+      ...CONFIG, plexHdhrEnabled: true, plexServerUrl: 'http://plex:32400', plexToken: 'tok',
+    })
+    vi.mocked(api.plexSetup).mockResolvedValue({
+      dvr: '7', channels: 28,
+      steps: ['Plex setup: tuner registered', 'Plex setup: 28 channels mapped to the guide'],
+    })
+    render(<MediaServersView />)
+    await userEvent.click(await screen.findByRole('button', { name: /Set up in Plex/ }))
+    expect(api.plexSetup).toHaveBeenCalled()
+    expect(await screen.findByText('Plex setup: 28 channels mapped to the guide')).toBeInTheDocument()
+  })
+
+  it('keeps "Set up in Plex" disabled while the HDHomeRun tuner is off', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({
+      ...CONFIG, plexServerUrl: 'http://plex:32400', plexToken: 'tok',
+    })
+    render(<MediaServersView />)
+    expect(await screen.findByRole('button', { name: /Set up in Plex/ })).toBeDisabled()
+  })
+
   it('picks the Plex bouquet and resets the group filter', async () => {
     vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, visibleGroups: ['Sport'] })
     render(<MediaServersView />)

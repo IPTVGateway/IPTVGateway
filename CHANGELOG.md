@@ -5,6 +5,14 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+### Added
+- **"Set up in Plex"** (Media Servers tab): the gateway sets itself up in Plex Live TV &
+  DVR through the Plex API. It registers the HDHomeRun tuner, creates a DVR with the
+  gateway's XMLTV guide, maps every channel to its guide entry and reloads the guide.
+  A tuner or DVR Plex already has is re-used, so it can be run again after bouquet
+  changes. Needs the HDHomeRun tuner enabled, plus the Plex server URL and token.
+  Plex doesn't document this API, so the calls follow what other tuner projects use.
+
 ## [1.2.38] - 2026-11-14
 
 Third bug hunt (five separate runs). The big code-style pass of 1.2.36 was checked

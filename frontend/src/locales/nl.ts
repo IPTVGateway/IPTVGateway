@@ -553,6 +553,12 @@ export const nl: Record<string, string> = {
     'Bron “{name}” verwijderen? Al haar zenders worden uit elk bouquet verwijderd.',
   'Delete group': 'Groep verwijderen',
   'Download': 'Downloaden',
+  'Register the HDHomeRun tuner and a DVR with this guide in Plex and map all channels':
+    'Meld de HDHomeRun-tuner en een DVR met deze gids aan in Plex en koppel alle kanalen',
+  'Setting up…': 'Bezig met instellen…',
+  'Set up in Plex': 'Instellen in Plex',
+  '“Set up in Plex” needs the HDHomeRun tuner enabled and saved. It re-uses a tuner or DVR Plex already has, so running it again is safe.':
+    '“Instellen in Plex” vraagt een ingeschakelde en opgeslagen HDHomeRun-tuner. Een tuner of DVR die Plex al kent wordt hergebruikt, dus opnieuw uitvoeren kan geen kwaad.',
   'Media servers: allowed clients': 'Mediaservers: toegestane clients',
   'The Plex/Jellyfin tuner and HDHomeRun addresses have no login. One IP address per line (e.g. your Plex server), or a prefix ending in a dot such as 192.168.1. for a whole network. Empty = every client.':
     'De Plex/Jellyfin-tuner en de HDHomeRun-adressen hebben geen login. Eén IP-adres per regel (bijv. je Plex-server), of een voorvoegsel dat op een punt eindigt zoals 192.168.1. voor een heel netwerk. Leeg = elke client.',

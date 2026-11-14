@@ -223,6 +223,9 @@ export const api = {
   resetDeviceId: () => http<{ deviceId: string }>('/media/device-id/reset', { method: 'POST' }),
   // tell the configured Plex server to reload its DVR guide/lineup
   plexRescan: () => http<{ dvrs: number }>('/plex/rescan', { method: 'POST' }),
+  // register the tuner + a DVR with our guide in Plex, map the channels, reload
+  plexSetup: () =>
+    http<{ dvr: string; channels: number; steps: string[] }>('/plex/setup', { method: 'POST' }),
   // reminder state: is a Plex rescan due, is a tuner enabled, is the API configured
   plexStatus: () => http<{ pending: boolean; enabled: boolean; configured: boolean }>('/plex/status'),
 

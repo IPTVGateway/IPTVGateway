@@ -5,6 +5,10 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+## [1.2.42] - 2026-11-15
+
+The web app now tells you when a newer version is out.
+
 ### Added
 - **Update notice.** Once a day the service checks whether a newer version has been
   released and then shows "Update: v…" in the header of the web app, linking to the

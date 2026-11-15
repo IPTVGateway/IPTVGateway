@@ -7,14 +7,24 @@ vi.mock('./api/client', () => {
   class TooManyRequestsError extends Error {
     retryAfterSec = 0
   }
+  // the workbench panels call many more endpoints once signed in: any other api
+  // function resolves to an empty list
+  const fallback = (base: Record<string, unknown>) =>
+    new Proxy(base, {
+      get: (target, key: string) => {
+        if (!(key in target)) target[key] = vi.fn().mockResolvedValue([])
+        return target[key]
+      },
+    })
   return {
-    api: {
+    api: fallback({
       health: vi.fn().mockResolvedValue({ status: 'ok', version: '1.0' }),
       getConfig: vi.fn(),
       plexStatus: vi.fn().mockResolvedValue({ pending: false, enabled: false, configured: false }),
+      updateStatus: vi.fn(),
       listSources: vi.fn().mockResolvedValue([]),
       listLists: vi.fn().mockResolvedValue([]),
-    },
+    }),
     adminAuth: { get: () => '', set: vi.fn(), clear: vi.fn() },
     setUnauthorizedHandler: vi.fn(),
     UnauthorizedError,
@@ -57,5 +67,35 @@ describe('App — access blocked (403)', () => {
     render(<App />)
     expect(await screen.findByText(/Host "tv.example.com" is not allowed/)).toBeInTheDocument()
     expect(screen.getByText('Or add the host “tv.example.com” to allowedHosts in config.json.')).toBeInTheDocument()
+  })
+})
+
+describe('App — update notice', () => {
+  const status = {
+    enabled: true,
+    current: '1.2.41',
+    latest: '1.2.42',
+    available: true,
+    releaseUrl: 'https://github.com/IPTVGateway/IPTVGateway/releases/tag/v1.2.42',
+    checkedUtc: '2026-11-15T12:00:00Z',
+    error: '',
+  }
+
+  it('links to the release when the server found a newer version', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({ proxyStreams: false } as never)
+    vi.mocked(api.updateStatus).mockResolvedValue(status)
+    render(<App />)
+    const link = await screen.findByRole('link', { name: 'Update: v1.2.42' })
+    expect(link).toHaveAttribute('href', status.releaseUrl)
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('shows nothing when the running version is the latest', async () => {
+    vi.mocked(api.getConfig).mockResolvedValue({ proxyStreams: false } as never)
+    vi.mocked(api.updateStatus).mockResolvedValue({ ...status, latest: '1.2.41', available: false })
+    render(<App />)
+    await screen.findByText('Workbench')
+    await vi.waitFor(() => expect(api.updateStatus).toHaveBeenCalled())
+    expect(screen.queryByText(/Update: v/)).toBeNull()
   })
 })

@@ -4,7 +4,7 @@ import { api, adminAuth, setUnauthorizedHandler, TooManyRequestsError, Unauthori
 import { LoginGate } from './components/LoginGate'
 import { AccessBlocked } from './components/AccessBlocked'
 import { accessBlock, type AccessBlock } from './lib/errors'
-import type { CustomGroup, CustomItem, CustomList, Source } from './types'
+import type { CustomGroup, CustomItem, CustomList, Source, UpdateStatus } from './types'
 import { SourcesPanel } from './components/SourcesPanel'
 import { CatalogPanel } from './components/CatalogPanel'
 import { ListPanel } from './components/ListPanel'
@@ -25,6 +25,8 @@ const RIGHT_W_MIN = 280
 const RIGHT_W_MAX = 900
 // how often the header re-checks whether a Plex rescan is due
 const PLEX_STATUS_POLL_MS = 20_000
+// the server checks once a day; the web app only re-reads what it found
+const UPDATE_STATUS_POLL_MS = 30 * 60_000
 // /api/health status of a healthy backend
 const HEALTH_OK = 'ok'
 
@@ -89,6 +91,12 @@ export function App() {
   const [plex, setPlex] = useState<{ pending: boolean; enabled: boolean; configured: boolean } | null>(null)
   const refreshPlex = useCallback(() => {
     api.plexStatus().then(setPlex).catch(() => {})
+  }, [])
+
+  // a newer release (daily server-side check); null = unknown / none
+  const [update, setUpdate] = useState<UpdateStatus | null>(null)
+  const refreshUpdate = useCallback(() => {
+    api.updateStatus().then(setUpdate).catch(() => {})
   }, [])
 
   // Resizable workbench columns (persisted), so the curated list can be widened.
@@ -176,6 +184,14 @@ export function App() {
     const t = setInterval(refreshPlex, PLEX_STATUS_POLL_MS)
     return () => clearInterval(t)
   }, [authed, refreshPlex])
+
+  // re-read the update check now and then (and after leaving Settings: it may be toggled there)
+  useEffect(() => {
+    if (authed !== true) return
+    refreshUpdate()
+    const t = setInterval(refreshUpdate, UPDATE_STATUS_POLL_MS)
+    return () => clearInterval(t)
+  }, [authed, view, refreshUpdate])
 
   async function plexRescanFromHeader() {
     if (!plex?.configured) {
@@ -310,6 +326,17 @@ export function App() {
         <h1>
           {t('IPTV Gateway')}
           {version && <span className="app-version" title={t('Running version')}>v{version}</span>}
+          {update?.available && (
+            <a
+              className="app-update"
+              href={update.releaseUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={t('A newer version is available — open the release notes')}
+            >
+              {t('Update: v{version}').replace('{version}', update.latest)}
+            </a>
+          )}
         </h1>
         <nav className="view-tabs">
           <button

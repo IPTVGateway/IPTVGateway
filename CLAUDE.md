@@ -224,7 +224,7 @@ $BDS="<RAD Studio 13 dir>"; $LIB="$BDS\lib\Win32\release"
 $DCU="<a DCU folder>"; $EXE="..\..\.Output\Win32\Debug"
 $U="..\src\core\model;..\src\core\sources;..\src\core\storage;..\src\core\app;..\src\core\api;..\src\core\ingest;..\src\core\scheduler"
 & "$BDS\bin\dcc32.exe" -B "-U$LIB;$U" "-NSSystem;Winapi;Data;Xml;Web;Soap;FireDAC" "-NU$DCU" "-N0$DCU" "-E$EXE" IPTVPlayTests.dpr
-& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (281 tests as of 1.2.40+hunt2)
+& "$EXE\IPTVPlayTests.exe"   # exits non-zero on failure (290 tests as of the update check)
 ```
 Compile-check the service host (incl. MARS/admin API) without running it:
 `cmd /c "call "<BDS>\bin\rsvars.bat" && msbuild backend\src\host_service\IPTVPlayService.dproj /t:Build /p:Config=Release /p:Platform=Win32"`.
@@ -236,7 +236,7 @@ small scratch console program that uses `TSQLiteStore` on a COPY of it.
 ```powershell
 npm install
 npm run dev        # http://localhost:5173, proxies /api -> :7777
-npx vitest run     # 195 tests as of 1.2.40+hunt2
+npx vitest run     # 198 tests as of the update check
 npm run build      # tsc -b && vite build
 ```
 
@@ -505,6 +505,21 @@ Pure helpers live in `IPTV.Api.Security` (tests `Test.Security`) and, for the re
   failing Plex/media steps roll back (400). SSDP only answers private addresses.
 - **Extra EPG slots** are recorded per URL (`extra_epg.slot_url.N`); a changed slot is
   settled by its next download (`ApplyExtraEpgDownload`), removed URLs go at once.
+
+## Update check (after 1.2.41)
+
+- `IPTV.App.UpdateCheck` (`TUpdateChecker`, tests `Test.UpdateCheck`): a thread owned by
+  `TAppContext` that, 2 min after start and then every 24 h, GETs
+  `releases/latest/download/version.json` (`{"version": "x.y.z"}`, UA `IPTVGateway/<ver>`,
+  15 s timeout) and compares it with `APP_VERSION` (`CompareAppVersions`, numeric per part).
+  The last successful check (`update.checked_utc`, `update.latest_version` in app state)
+  survives restarts, so a restart loop never re-checks within the day; a failure retries
+  hourly and is logged once per run of failures. Nothing about the install is sent.
+- `config.json` `updateCheck` (default true; Settings → "Updates", `App.SetUpdateCheck`);
+  `GET /api/update` → `enabled/current/latest/available/releaseUrl/checkedUtc/error`; the web
+  app shows "Update: v…" in the header (links to `releases/tag/v<latest>`).
+- `build.ps1` writes `.Output\Dockerersion.json`; every GitHub release must carry it as an
+  asset (that asset's download count ≈ installs running a version with the check, per day).
 
 ## Log tab (1.2.34)
 

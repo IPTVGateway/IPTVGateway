@@ -222,10 +222,22 @@ export interface AppConfig {
   nameShowNumber?: boolean // prefix a zero-padded sort number so Plex keeps bouquet order
   nameShowSource?: boolean // prefix a per-provider letter (A/B/…) so Plex groups by source
   idSortPrefix?: boolean // prefix a sort number in the channel-id so Plex sorts by bouquet order
+  updateCheck?: boolean // once a day look up the latest release on GitHub (anonymous GET)
   // read-only context
   httpPort: number
   useHttps: boolean
   plexDeviceId?: string
+}
+
+/** GET /api/update: the daily update check. */
+export interface UpdateStatus {
+  enabled: boolean
+  current: string
+  latest: string // '' = not known yet
+  available: boolean // latest is newer than current
+  releaseUrl: string // the GitHub release page of `latest`
+  checkedUtc: string // ISO, '' = never
+  error: string // '' = the last attempt worked
 }
 
 /** A selectable output group-title with how many channels carry it. */

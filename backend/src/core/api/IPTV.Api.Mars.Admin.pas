@@ -239,6 +239,9 @@ type
     // reminder state: is a Plex rescan due (bouquet changed since last rescan)?
     [GET, Path('plex/status'), Produces(TMediaType.APPLICATION_JSON)]
     function PlexStatus: TJSONObject;
+    // the daily update check: running version, latest release, is it newer?
+    [GET, Path('update'), Produces(TMediaType.APPLICATION_JSON)]
+    function UpdateStatus: TJSONObject;
 
     // ── media servers (Plex/Jellyfin) ───────────────────────────────────
     // the group-titles available to select (from the served/default list), with counts
@@ -293,6 +296,7 @@ uses
   IPTV.Storage.Intf,
   IPTV.App.Config,
   IPTV.App.Context,
+  IPTV.App.UpdateCheck,
   IPTV.Ingest.Service,
   IPTV.Api.Serializers,
   IPTV.Api.SettingsIO,
@@ -342,10 +346,11 @@ const
   cFieldDummyEpgHoursAhead = 'dummyEpgHoursAhead';
   cFieldPublicBaseUrl = 'publicBaseUrl';
   cFieldWarnings = 'warnings';
+  cFieldUpdateCheck = 'updateCheck';
   // settings fields that must be true/false when present
-  cBoolFields: array[0..10] of string = ('proxyStreams', 'streamFailover', 'plexM3uEnabled',
+  cBoolFields: array[0..11] of string = ('proxyStreams', 'streamFailover', 'plexM3uEnabled',
     'plexM3uProxy', 'plexHdhrEnabled', 'plexHdhrProxy', 'dummyEpgEnabled', 'nameShowGroup',
-    'nameShowNumber', 'nameShowSource', 'idSortPrefix');
+    'nameShowNumber', 'nameShowSource', 'idSortPrefix', cFieldUpdateCheck);
   cMinRefreshHour = 0;
   cMinRefreshMinute = 0;
   cMinEpgMaxDays = 0;
@@ -1114,6 +1119,7 @@ begin
   Result.AddPair('mediaAllowedClients', StrArrayToJson(App.Config.MediaAllowedClients));
   // Host names the admin API accepts without an admin password (DNS-rebinding guard)
   Result.AddPair(cFieldAllowedHosts, StrArrayToJson(App.Config.AllowedHosts));
+  Result.AddPair(cFieldUpdateCheck, TJSONBool.Create(App.Config.UpdateCheck));
   // read-only context (shown but not editable from the UI)
   Result.AddPair('httpPort', TJSONNumber.Create(App.Config.HttpPort));
   Result.AddPair('useHttps', TJSONBool.Create(App.Config.UseHttps));
@@ -1259,6 +1265,9 @@ begin
     lArrValue := ABody.GetValue(cFieldAllowedHosts);
     if lArrValue is TJSONArray then
       App.UpdateAllowedHosts(lHosts);
+    // daily update check: only when the body carries the field (checked as a bool above)
+    if ABody.GetValue(cFieldUpdateCheck) is TJSONBool then
+      App.SetUpdateCheck(TJSONBool(ABody.GetValue(cFieldUpdateCheck)).AsBoolean);
     Result := ConfigToJson(cWithoutSecrets);
   finally
     App.EndConfigChange;
@@ -1463,6 +1472,8 @@ begin
            (Length(lHosts) <> Length(App.Config.AllowedHosts)) then
           App.UpdateAllowedHosts(lHosts);
         App.SetPlexListId(ImportedPlexListId(ABody, lCfg, lCounts));
+        if lCfg.GetValue(cFieldUpdateCheck) is TJSONBool then
+          App.SetUpdateCheck(TJSONBool(lCfg.GetValue(cFieldUpdateCheck)).AsBoolean);
         // the Plex tuner surfaces are part of the clone too — restore them as well
         try
           App.UpdatePlexSettings(
@@ -1527,6 +1538,22 @@ begin
   Result.AddPair('enabled', TJSONBool.Create(App.PlexEnabled));
   Result.AddPair('configured',
     TJSONBool.Create((App.Config.PlexServerUrl <> '') and (App.Config.PlexToken <> '')));
+end;
+
+function TAdminResource.UpdateStatus: TJSONObject;
+var
+  lInfo: TUpdateInfo;
+begin
+  RequireApp;
+  lInfo := App.UpdateInfo;
+  Result := TJSONObject.Create;
+  Result.AddPair('enabled', TJSONBool.Create(lInfo.Enabled));
+  Result.AddPair('current', lInfo.Current);
+  Result.AddPair('latest', lInfo.Latest);
+  Result.AddPair('available', TJSONBool.Create(lInfo.Available));
+  Result.AddPair('releaseUrl', lInfo.ReleaseUrl);
+  Result.AddPair('checkedUtc', DateTimeToIsoUtc(lInfo.CheckedUtc));
+  Result.AddPair('error', lInfo.LastError);
 end;
 
 // the served (default) list a media server sees; nil if none configured

@@ -5,6 +5,17 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+### Added
+- **Update notice.** Once a day the service checks whether a newer version has been
+  released and then shows "Update: v…" in the header of the web app, linking to the
+  release notes. It downloads a tiny `version.json` file of the latest GitHub release;
+  nothing about your setup is sent (GitHub only sees the IP address, as with a
+  `docker pull`). A restart does not check again within the day. Switch it off in
+  Settings → "Updates" (or `"updateCheck": false` in `config.json`). `GET /api/update`
+  returns what the check found.
+- Every release now carries `version.json` as a release asset (written by
+  `deploy/docker/build.ps1`).
+
 ## [1.2.41] - 2026-11-14
 
 Security and robustness release from two rounds of bug and security hunting. Without an

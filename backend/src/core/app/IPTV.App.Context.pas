@@ -18,6 +18,7 @@ uses
   IPTV.Ingest.Service,
   IPTV.Model.CustomList,
   IPTV.Scheduler,
+  IPTV.App.UpdateCheck,
   IPTV.Api.Server,
   IPTV.Plex.Client;
 
@@ -58,6 +59,7 @@ type
     FStore: IStore;
     FIngest: TIngestService;
     FScheduler: TDailyScheduler;
+    FUpdateChecker: TUpdateChecker; // daily "newer version?" check (see IPTV.App.UpdateCheck)
     FServer: TApiServer;
     FLog: TLogProc;      // the host's log + the in-memory ring (see TLogRing)
     FHostLog: TLogProc;  // what the host passed in (console / VCL memo / event log)
@@ -115,6 +117,10 @@ type
     /// Extra Host names the admin API accepts while no admin password is set
     /// (DNS-rebinding guard; blank entries dropped); persisted.
     procedure UpdateAllowedHosts(const AHosts: TArray<string>);
+    /// <summary>Switch the daily update check on/off; persisted.</summary>
+    procedure SetUpdateCheck(AEnabled: Boolean);
+    /// <summary>What the update check found (Enabled False and no version before Start).</summary>
+    function UpdateInfo: TUpdateInfo;
     /// Media-server config: the global group filter, the base URL boxes use, and the
     /// dummy-EPG settings. Persisted; read live by the output builders (no restart).
     procedure UpdateMediaConfig(const AVisibleGroups: TArray<string>;
@@ -182,7 +188,8 @@ uses
   IPTV.Output.Builder,
   IPTV.Api.Serializers,
   IPTV.Api.Security,
-  IPTV.Api.AuthThrottle;
+  IPTV.Api.AuthThrottle,
+  IPTV.Source.Http;
 
 const
   // host part of the image's config.json template value (http://your-unraid-host:7777)
@@ -202,6 +209,12 @@ const
   // docker / systemd / the SCM, leaving room for draining the HTTP server.
   cStopMaxWaitMs = 25000;
   cStopPollMs = 50;
+
+  // update check: first check this long after the start (not during warm-up and the
+  // first box requests), a short read timeout, and our own User-Agent
+  cUpdateStartDelayMs = 120000;
+  cUpdateReadTimeoutMs = 15000;
+  cUpdateUserAgent = 'IPTVGateway/';
 
 { TLogRing }
 
@@ -365,6 +378,25 @@ begin
           Log('Daily refresh failed: ' + E.Message);
       end;
     end, StoreLastRunLoader(FStore), StoreLastRunSaver(FStore));
+
+  FUpdateChecker := TUpdateChecker.Create(FConfig.UpdateCheck, APP_VERSION,
+    function(const AUrl: string): string
+    begin
+      Result := HttpGetString(AUrl, cUpdateUserAgent + APP_VERSION, cUpdateReadTimeoutMs);
+    end,
+    function(const AKey: string): string
+    begin
+      Result := FStore.GetState(AKey);
+    end,
+    procedure(const AKey, AValue: string)
+    begin
+      FStore.SetState(AKey, AValue);
+    end,
+    procedure(const AText: string)
+    begin
+      Log(AText);
+    end,
+    cUpdateStartDelayMs);
 
   App := Self;
 end;
@@ -638,6 +670,36 @@ begin
   end;
 end;
 
+procedure TAppContext.SetUpdateCheck(AEnabled: Boolean);
+begin
+  TMonitor.Enter(FConfigLock);
+  try
+    if FConfig.UpdateCheck = AEnabled then
+      Exit;
+    FConfig.UpdateCheck := AEnabled;
+    if Assigned(FUpdateChecker) then
+      FUpdateChecker.SetEnabled(AEnabled);
+    FConfig.Save(FConfigPath);
+    if AEnabled then
+      Log('Update check: on (once a day)')
+    else
+      Log('Update check: off');
+  finally
+    TMonitor.Exit(FConfigLock);
+  end;
+end;
+
+function TAppContext.UpdateInfo: TUpdateInfo;
+begin
+  if Assigned(FUpdateChecker) then
+    Result := FUpdateChecker.Info
+  else
+  begin
+    Result := Default(TUpdateInfo);
+    Result.Current := APP_VERSION;
+  end;
+end;
+
 procedure TAppContext.UpdateExtraEpgUrls(const AUrls: TArray<string>);
 var
   lUrls: TArray<string>;
@@ -779,7 +841,7 @@ end;
 procedure TAppContext.Stop;
 var
   lClock: TStopwatch;
-  lSchedulerRunning: Boolean;
+  lSchedulerRunning, lCheckerRunning: Boolean;
 begin
   // idempotent: the runner calls Stop and Destroy calls it again - a second pass
   // would wait out the budget once more (past the docker/systemd/SCM grace)
@@ -797,6 +859,17 @@ begin
   // thread that runs it can usually be joined within the stop budget
   if Assigned(FIngest) then
     FIngest.Cancel;
+  // the update check holds at most one short HTTP read (cUpdateReadTimeoutMs)
+  lCheckerRunning := False;
+  if Assigned(FUpdateChecker) then
+  begin
+    FUpdateChecker.Terminate;
+    while (not FUpdateChecker.Finished) and (lClock.ElapsedMilliseconds < cStopMaxWaitMs) do
+      Sleep(cStopPollMs);
+    lCheckerRunning := not FUpdateChecker.Finished;
+    if not lCheckerRunning then
+      FreeAndNil(FUpdateChecker);
+  end;
   lSchedulerRunning := False;
   if Assigned(FScheduler) then
   begin
@@ -826,7 +899,7 @@ begin
   if App = Self then
     App := nil;
 
-  if lSchedulerRunning or (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) then
+  if lSchedulerRunning or lCheckerRunning or (TInterlocked.CompareExchange(FBgOps, 0, 0) > 0) then
   begin
     // A refresh is still running (stuck network read): it uses FIngest/FStore, and
     // when it ends it touches this context too (FBgOps, Log; the scheduler's

@@ -251,6 +251,7 @@ function ServiceSettings() {
         streamFailover: cfg.streamFailover,
         extraEpgUrls: (cfg.extraEpgUrls ?? []).map((u) => u.trim()).filter(Boolean),
         mediaAllowedClients: (cfg.mediaAllowedClients ?? []).map((u) => u.trim()).filter(Boolean),
+        updateCheck: cfg.updateCheck !== false,
       }
       // a missing list and an empty list are the same setting
       const changed = changedFields(
@@ -259,6 +260,8 @@ function ServiceSettings() {
           ...orig,
           extraEpgUrls: orig.extraEpgUrls ?? [],
           mediaAllowedClients: orig.mediaAllowedClients ?? [],
+          // missing = on (an older server)
+          updateCheck: orig.updateCheck !== false,
         },
       )
       const next = await api.saveConfig(changed)
@@ -394,6 +397,21 @@ function ServiceSettings() {
             </label>
             <span className="hint">
               {t('Only while relaying: if a channel’s provider can’t be reached, try the same channel (matched by tvg-id, else exact name) from another source. A plain 302 redirect can’t fail over.')}
+            </span>
+          </fieldset>
+
+          <fieldset>
+            <legend>{t('Updates')}</legend>
+            <label className="inline">
+              <input
+                type="checkbox"
+                checked={cfg.updateCheck !== false}
+                onChange={(e) => patch({ updateCheck: e.target.checked })}
+              />
+              {t('Check daily for a new version')}
+            </label>
+            <span className="hint">
+              {t('Once a day the server downloads a tiny version file of the latest release from GitHub and shows a notice in the header when a newer version exists. Nothing about your setup is sent; GitHub only sees the IP address (as with a docker pull).')}
             </span>
           </fieldset>
 

@@ -135,6 +135,23 @@ body {
   vertical-align: middle;
 }
 
+/* a newer release exists (daily server-side check) */
+.app-update {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  vertical-align: middle;
+  text-decoration: none;
+  color: var(--accent-contrast, #fff);
+  background: var(--accent, #2f6fde);
+}
+.app-update:hover {
+  filter: brightness(1.1);
+}
+
 .health {
   font-size: 12px;
   padding: 2px 8px;

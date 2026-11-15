@@ -29,6 +29,7 @@ uses
   Test.Serializers in 'Test.Serializers.pas',
   Test.SettingsIO in 'Test.SettingsIO.pas',
   Test.Relay in 'Test.Relay.pas',
+  Test.UpdateCheck in 'Test.UpdateCheck.pas',
   Test.Integration.Live in 'Test.Integration.Live.pas';
 
 var

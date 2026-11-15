@@ -198,6 +198,12 @@ function Copy-Bundle($destDir) {
     $src = Join-Path $here $f
     if (Test-Path $src) { Copy-Item $src $destDir -Force }
   }
+  # version.json: the GitHub release asset the service's daily update check reads
+  # (releases/latest/download/version.json, see IPTV.App.UpdateCheck)
+  if ($Version) {
+    $manifest = '{"version": "' + $Version + '"}' + "`n"
+    [IO.File]::WriteAllText((Join-Path $destDir 'version.json'), $manifest, (New-Object System.Text.UTF8Encoding $false))
+  }
   if ($Registry) {
     $xml = Join-Path $destDir 'iptv-gateway.xml'
     if (Test-Path $xml) {

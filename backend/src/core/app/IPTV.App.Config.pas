@@ -158,6 +158,9 @@ type
     /// password is set (DNS-rebinding guard; IP literals, localhost, single-label and
     /// .local/.lan/.home.arpa/.internal names and the publicBaseUrl host always pass).
     AllowedHosts: TArray<string>;
+    /// Once a day, look up the latest released version on GitHub (an anonymous GET of
+    /// the release's version.json) and show a notice in the web app. Default on.
+    UpdateCheck: Boolean;
     // Dummy EPG: when a channel has NO real guide data, emit filler programmes so
     // Plex/Jellyfin show a proper line-up instead of "Unknown airing". Channels
     // WITH real EPG are untouched. Applied to the tuner + Plex/root XMLTV output.
@@ -286,6 +289,7 @@ const
   cKeyMediaAllowedClients = 'mediaAllowedClients';
   cKeyTrustedProxies = 'trustedProxies';
   cKeyAllowedHosts = 'allowedHosts';
+  cKeyUpdateCheck = 'updateCheck';
 
 var
   GConfigSaveLock: TCriticalSection;
@@ -354,6 +358,7 @@ begin
   Result.MediaAllowedClients := [];
   Result.TrustedProxies := [];
   Result.AllowedHosts := [];
+  Result.UpdateCheck := True;
   Result.DummyEpgEnabled := True;
   Result.DummyEpgBlockMinutes := cDefaultDummyEpgBlockMinutes;
   Result.DummyEpgHoursBack := cDefaultDummyEpgHoursBack;
@@ -433,6 +438,7 @@ begin
     lJson.AddPair(cKeyNameShowNumber, TJSONBool.Create(NameShowNumber));
     lJson.AddPair(cKeyNameShowSource, TJSONBool.Create(NameShowSource));
     lJson.AddPair(cKeyIdSortPrefix, TJSONBool.Create(IdSortPrefix));
+    lJson.AddPair(cKeyUpdateCheck, TJSONBool.Create(UpdateCheck));
     lGroupArr := TJSONArray.Create;
     for lItem in VisibleGroups do
       lGroupArr.Add(lItem);
@@ -589,6 +595,7 @@ begin
     Result.NameShowNumber := JBool(lJson, cKeyNameShowNumber, Result.NameShowNumber);
     Result.NameShowSource := JBool(lJson, cKeyNameShowSource, Result.NameShowSource);
     Result.IdSortPrefix := JBool(lJson, cKeyIdSortPrefix, Result.IdSortPrefix);
+    Result.UpdateCheck := JBool(lJson, cKeyUpdateCheck, Result.UpdateCheck);
     // visibleGroups[] — the global group filter (array of strings)
     lGroupsVal := lJson.GetValue(cKeyVisibleGroups);
     if lGroupsVal is TJSONArray then

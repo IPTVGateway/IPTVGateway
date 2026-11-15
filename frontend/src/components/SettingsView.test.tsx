@@ -51,6 +51,16 @@ describe('SettingsView — service settings', () => {
     await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith({ proxyStreams: true }))
   })
 
+  it('switches the daily update check off (only that field is sent)', async () => {
+    vi.mocked(api.saveConfig).mockResolvedValue({ ...CONFIG, updateCheck: false })
+    render(<SettingsView lists={LISTS} onListsChanged={() => {}} />)
+    const box = await screen.findByRole('checkbox', { name: 'Check daily for a new version' })
+    expect(box).toBeChecked()
+    await userEvent.click(box)
+    await userEvent.click(screen.getByRole('button', { name: 'Save settings' }))
+    await waitFor(() => expect(api.saveConfig).toHaveBeenCalledWith({ updateCheck: false }))
+  })
+
   it('lets the proxy port be cleared and retyped (no snap to 1), clamped on save', async () => {
     vi.mocked(api.getConfig).mockResolvedValue({ ...CONFIG, proxyStreams: true })
     vi.mocked(api.saveConfig).mockResolvedValue({ ...CONFIG, proxyStreams: true, proxyPort: 7778 })

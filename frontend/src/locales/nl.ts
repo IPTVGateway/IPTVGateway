@@ -634,4 +634,11 @@ export const nl: Record<string, string> = {
   'Or add this host name to allowedHosts in config.json.':
     'Of voeg deze hostnaam toe aan allowedHosts in config.json.',
   'Try again': 'Opnieuw proberen',
+  'A newer version is available — open the release notes':
+    'Er is een nieuwere versie — open de release-opmerkingen',
+  'Update: v{version}': 'Update: v{version}',
+  Updates: 'Updates',
+  'Check daily for a new version': 'Dagelijks controleren op een nieuwe versie',
+  'Once a day the server downloads a tiny version file of the latest release from GitHub and shows a notice in the header when a newer version exists. Nothing about your setup is sent; GitHub only sees the IP address (as with a docker pull).':
+    'Eén keer per dag haalt de server een klein versiebestand van de nieuwste release op bij GitHub en toont een melding in de kop als er een nieuwere versie is. Er wordt niets over jouw installatie verstuurd; GitHub ziet alleen het IP-adres (net als bij een docker pull).',
 }

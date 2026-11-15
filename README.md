@@ -156,6 +156,9 @@ actually chose.
   (Settings → "Media servers: allowed clients").
 - An optional stream proxy and cross-provider failover.
 - Optional HTTPS and an admin password.
+- An update notice in the web app when a newer version is released (a daily check of
+  the latest GitHub release; nothing about your setup is sent; can be switched off in
+  Settings → "Updates").
 
 ## Screenshots
 

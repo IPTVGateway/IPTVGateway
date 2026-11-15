@@ -21,6 +21,7 @@ import type {
   MediaStatus,
   MirrorCredential,
   NewCounts,
+  UpdateStatus,
 } from '../types'
 import { DEFAULT_PROBE_SECONDS } from '../lib/constants'
 import { ApiError } from '../lib/errors'
@@ -273,6 +274,8 @@ export const api = {
     http<{ dvr: string; channels: number; steps: string[] }>('/plex/setup', { method: 'POST' }),
   // reminder state: is a Plex rescan due, is a tuner enabled, is the API configured
   plexStatus: () => http<{ pending: boolean; enabled: boolean; configured: boolean }>('/plex/status'),
+  // the daily update check (latest GitHub release vs the running version)
+  updateStatus: () => http<UpdateStatus>('/update'),
 
   // portable settings bundle: config + sources + lists + groups (NOT the picked
   // channels). Export returns the JSON object; import replaces the whole config.

@@ -30,7 +30,7 @@
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/IPTVGateway/IPTVGateway/issues</Support>
+  <Support>https://forums.unraid.net/topic/201311-support-iptvgateway/</Support>
   <Project>https://github.com/IPTVGateway/IPTVGateway</Project>
   <Overview>Curate your IPTV providers once, use the line-up on every box. IPTV Gateway merges Xtream Codes / M3U sources into bouquets with their own logins: pick, rename, group, order and number channels in a web UI. Every box logging in with that bouquet (TiviMate, Formuler/MyTVOnline, Smarters, OTT Navigator, ...) gets exactly the same line-up and guide. It also gives you cleaner channel names, a better EPG (optional extra XMLTV sources, matched automatically), catch-up/timeshift pass-through and Plex Live TV &amp; DVR via HDHomeRun emulation. It is lightweight: one native binary, and video goes straight from the provider to the box by default (an optional relay exists for use abroad). Contains no content; bring your own legitimate sources. Getting started: https://github.com/IPTVGateway/IPTVGateway/blob/main/docs/GETTING-STARTED.md</Overview>
   <Category>MediaServer:Video Tools: MediaApp:Video</Category>

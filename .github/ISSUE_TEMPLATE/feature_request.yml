@@ -1,0 +1,24 @@
+name: Feature request
+description: An idea or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: Describe what you're trying to achieve, not only the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: How could it work?
+      description: Optional - your idea of how it could look or behave.
+
+  - type: input
+    id: setup
+    attributes:
+      label: Your setup
+      description: Optional - version, how you run it, and which IPTV box / player you use.
+      placeholder: "1.2.42, Unraid, TiviMate"

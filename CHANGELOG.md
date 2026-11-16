@@ -5,6 +5,12 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+### Added
+- GitHub issue forms: a bug report (version, platform, area, Log-tab lines and a
+  required "no credentials" check) and a feature request; links to the guides.
+- Support thread on the Unraid forum; the Unraid template's Support link and the
+  CA profile's Forum link now point to it (GitHub stays the project page).
+
 ## [1.2.42] - 2026-11-15
 
 The web app now tells you when a newer version is out.

@@ -1,0 +1,88 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Please never paste provider URLs, usernames, passwords,
+        tokens or playlist links** - this page is public. Replace them with `***`.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the web app header and in Settings, e.g. 1.2.42.
+      placeholder: "1.2.42"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: How do you run it?
+      options:
+        - Unraid (Community Apps template)
+        - Docker / docker compose (other host)
+        - Windows service
+        - Windows console / other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Sources / refresh (ingest)
+        - Bouquets / groups / channel names
+        - IPTV box / player (Xtream login, M3U, playback)
+        - EPG / guide
+        - Catch-up / timeshift
+        - Stream relay (proxy mode)
+        - Plex / HDHomeRun
+        - Web app / settings
+        - Installation / update
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+
+  - type: input
+    id: client
+    attributes:
+      label: IPTV box / player
+      description: If relevant - e.g. TiviMate, IPTV Smarters, Kodi, Enigma2, Plex.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log lines
+      description: |
+        From the **Log** tab in the web app (use "only problems" and copy the relevant lines).
+        Check them for credentials before posting.
+      render: text
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed provider URLs, usernames, passwords and tokens from this report.
+          required: true

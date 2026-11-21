@@ -768,6 +768,13 @@ export function ListPanel({
             >
               {t('⬇ EPG')}
             </button>
+            <button
+              type="button"
+              title={t('Download playlist + EPG together as one zip file')}
+              onClick={() => void download(() => api.downloadExportZip(activeListId))}
+            >
+              {t('⬇ .zip')}
+            </button>
           </span>
         )}
       </header>

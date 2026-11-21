@@ -5,7 +5,15 @@ All notable changes to IPTV Gateway. Released versions are also on the
 
 ## [Unreleased]
 
+## [1.2.43] - 2026-11-21
+
+Save a bouquet as one file, plus a documentation website.
+
 ### Added
+- **Save a bouquet as one file:** a new **⬇ .zip** button in the Bouquet panel downloads
+  the bouquet's playlist and its XMLTV guide together (`<bouquet>.m3u` + `<bouquet>.xml`,
+  `GET /api/lists/{id}/export.zip`, behind the same short-lived download token as the
+  `.m3u` and EPG downloads).
 - GitHub issue forms: a bug report (version, platform, area, Log-tab lines and a
   required "no credentials" check) and a feature request; links to the guides.
 - Support thread on the Unraid forum; the Unraid template's Support link and the

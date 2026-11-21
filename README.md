@@ -154,6 +154,8 @@ actually chose.
   `tv_archive`, `has_archive`, `/timeshift/` and M3U `catchup="xc"`.
 - An XMLTV guide restricted to your chosen channels, with optional dummy EPG for
   channels that have no guide.
+- Save a bouquet as a file: its playlist (`.m3u`), its guide (`.xml`) or both in one
+  `.zip`.
 - **Plex Live TV & DVR**: an HDHomeRun emulation with SSDP discovery, or an M3U
   tuner with XMLTV. These addresses have no login: by default they only answer
   devices on your local network, and they can be limited further to known clients

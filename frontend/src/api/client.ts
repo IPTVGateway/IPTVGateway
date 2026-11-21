@@ -392,8 +392,10 @@ export const api = {
   downloadToken,
   /** An admin GET URL with a fresh download token, for a link or a new tab. */
   tokenUrl,
-  // downloads of the curated list: the list as M3U_plus (raw upstream URLs) and
-  // the curated EPG as XMLTV. Each fetches a fresh download token first.
+  // downloads of the curated list: the list as M3U_plus (raw upstream URLs), the
+  // curated EPG as XMLTV, or both in one zip (<name>.m3u + <name>.xml). Each fetches
+  // a fresh download token first.
   downloadExportM3u: (listId: number) => downloadFile(`/lists/${listId}/export.m3u`),
   downloadExportXmltv: (listId: number) => downloadFile(`/lists/${listId}/export.xmltv`),
+  downloadExportZip: (listId: number) => downloadFile(`/lists/${listId}/export.zip`),
 }

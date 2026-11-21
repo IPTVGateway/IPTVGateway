@@ -238,6 +238,8 @@ procedure TSecurityTests.DownloadTokenPaths;
 begin
   Assert.IsTrue(IsDownloadTokenPath('/api/lists/12/export.m3u'), 'M3U export');
   Assert.IsTrue(IsDownloadTokenPath('/api/lists/1/export.xmltv'), 'XMLTV export');
+  Assert.IsTrue(IsDownloadTokenPath('/api/lists/7/export.zip'), 'playlist + EPG zip');
+  Assert.IsFalse(IsDownloadTokenPath('/api/lists/7/export.tar'), 'other extension');
   Assert.IsFalse(IsDownloadTokenPath('/api/export'), 'settings backup (all secrets)');
   Assert.IsFalse(IsDownloadTokenPath('/api/lists/x/export.m3u'), 'not a list id');
   Assert.IsFalse(IsDownloadTokenPath('/api/lists/12/export.m3u/../../export'), 'nothing appended');

@@ -22,6 +22,7 @@ vi.mock('../api/client', () => ({
     tvgIds: vi.fn().mockResolvedValue([]),
     downloadExportM3u: vi.fn().mockResolvedValue(undefined),
     downloadExportXmltv: vi.fn().mockResolvedValue(undefined),
+    downloadExportZip: vi.fn().mockResolvedValue(undefined),
   },
 }))
 import { api } from '../api/client'
@@ -73,6 +74,12 @@ describe('ListPanel — sources + downloads', () => {
     expect(btn.getAttribute('href')).toBeNull()
     await userEvent.click(btn)
     expect(api.downloadExportM3u).toHaveBeenCalledWith(1)
+  })
+
+  it('downloads playlist + EPG as one zip', async () => {
+    renderPanel()
+    await userEvent.click(screen.getByTitle('Download playlist + EPG together as one zip file'))
+    expect(api.downloadExportZip).toHaveBeenCalledWith(1)
   })
 
   it('shows why a download failed', async () => {

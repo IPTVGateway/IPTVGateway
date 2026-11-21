@@ -35,7 +35,7 @@ a clean, merged, renamed, sorted channel list.
 - **Optional stream proxy** — relay video through the gateway (for use abroad or
   when the box can only reach the gateway).
 - **Plex Live TV** — M3U+XMLTV tuner *and* HDHomeRun emulation (+ SSDP
-  auto-discovery), each toggleable with its own proxy choice; one-click **Rescan
+  auto-discovery), each toggleable with its own proxy choice; one-click **Refresh
   Plex**.
 - **Built-in web admin UI**, daily auto-refresh, **settings export/import**
   (clone a whole setup), optional **HTTPS** and **admin password**.
@@ -63,22 +63,24 @@ Providers ──read──▶ Catalog (all channels, merged, change-tracked)
                   IPTV box / Plex
 ```
 
-The app is a single page with three tabs in the header: **Workbench**, **EPG**,
-**Settings**.
+The app is a single page with five tabs in the header: **Workbench**, **EPG**,
+**Media Servers**, **Settings** and **Log**.
 
-![App overview — the three header tabs (Workbench / EPG / Settings)](screenshots/app-overview.png)
+![App overview — the header tabs and the Workbench](screenshots/app-overview.png)
 
 ---
 
 ## Header (always visible)
 
+- **Version** — the running version, next to the name. When a newer release is
+  out, an **Update: v…** link appears that opens its release notes (see *Updates*).
 - **Theme** — System / Light / Dark.
 - **● Proxy On/Off** — global stream-proxy toggle (see *Stream proxy*).
 - **↻ Refresh Plex** — appears only when the bouquet changed since the last Plex
   rescan *and* a Plex tuner is enabled; click to tell Plex to reload its
   guide/line-up. Disappears once rescanned.
 - **backend: ok** — health indicator.
-- **Logout** — shown when an admin password is set.
+- **Log out** — shown when an admin password is set.
 
 ---
 
@@ -93,19 +95,28 @@ Bouquet**).
 Your upstream providers. Click **Add source** (or **Edit** on a source) to open
 the editor dialog and add an **Xtream portal** or an **M3U / M3U_plus playlist**.
 The list itself stays compact — each row shows the name, type, content-type
-toggles, ingest status, and Refresh/Edit/Delete.
+toggles, ingest status, the account status (expiry date, connection limit) for
+Xtream portals, and Refresh/Edit/Delete.
 
 In the editor dialog, per source you can set:
-- **Content types** (Live / Movies / Series / Radio) — toggle each on/off; a
-  disabled type is never ingested or offered.
+- **Name / kind / URL / username / password** — a saved password is not shown
+  again; leave the field empty to keep it.
+- **EPG URL** — optional; empty = the portal's own `xmltv.php` or the playlist's
+  `url-tvg`.
+- **User-Agent / Referer** — per-provider overrides (some portals require a
+  specific UA or a Referer).
 - **Name filters** — *Include* (keep only names matching a token, prefix or
   suffix) and *Exclude* (drop matching names). Tick discovered prefixes or type
   tokens. Filters never delete; drop a filter and the channels reappear.
-- **Strip prefixes** — leading tokens (e.g. `NL`) removed from a channel name
-  when it's added to your bouquet (so `NL| NPO 1` becomes `NPO 1`). `;`-separated;
-  the original catalog name is kept.
-- **User-Agent / Referer** — per-provider overrides (some portals require a
-  specific UA or a Referer).
+- **Strip prefixes / Strip suffixes** — tokens removed from a channel name when
+  it's added to your bouquet (so `NL| NPO 1 HD` becomes `NPO 1`). `;`-separated;
+  the original catalog name is kept and shown under the bouquet name.
+- **Enabled** — a disabled source is never refreshed or offered.
+- **Live always as HLS (m3u8)** — for providers whose live streams only work as HLS.
+- **Own EPG before the extra EPG source** — keep this provider's own guide when it
+  has data; the extra guide only fills the gaps (see *Extra EPG sources*).
+- **Content types** (Live / Movies / Series / Radio) — toggle each on/off; a
+  disabled type is never ingested or offered.
 - **Refresh** — re-read this source now; a live status line shows progress
   (busy / done with counts / error), and each source shows its **last refresh**
   time. **Refresh all** runs every source in parallel.
@@ -129,6 +140,10 @@ The merged view of everything ingested from all sources.
   clear the badge.
 - **Add to bouquet:** multi-select channels and add them to a list (and a group)
   in one go.
+- **⟲ 3d** badge — the channel has a catch-up archive of that many days.
+- **📊 Quality probe** — measures every quality variant of a channel (codec,
+  resolution, fps, bitrate, real-time ratio), one after the other. Tick **All
+  sources** to also compare the same channel at your other providers.
 
 ![Catalog with search + multi-select add](screenshots/catalog-search.png)
 
@@ -152,7 +167,24 @@ The heart of the product — what the box/Plex actually receives.
 - **🗑** removes a channel from the list. Groups can be **collapsed** (Expand
   all / Collapse all). There's a **dedupe** (drop duplicate channels by upstream
   URL) and an **empty group** action.
+- **Group header icons:** ✎ rename · **A↓Z** order the channels by name ·
+  **⎘±** replace the group's channels by another quality or provider (keeps the
+  numbers and overrides), or duplicate the group · **✂** clean names after the fact
+  (preview first) · 🧹 empty the group · 🗑 delete the group (its channels move to
+  the upstream group).
+- **Renumber bouquet** numbers all channels across all groups: each group starts
+  on a new hundred (100, 200, …), or a new thousand for groups over 99 channels. A
+  preview is shown first.
+- **Suggest EPG-ids** matches channels without a guide to a known tvg-id and
+  proposes it; you pick which suggestions to apply.
+- **📊** on a channel opens the quality probe; **Use this** swaps the channel to the
+  measured variant.
+- **⬇ .m3u / ⬇ EPG / ⬇ .zip** download the bouquet as a playlist, as its XMLTV
+  guide, or both together in one zip (`<bouquet>.m3u` + `<bouquet>.xml`) — handy
+  for a player that loads files, or as a snapshot of the line-up.
 - A **list picker** at the top switches between output lists.
+- A **mirror bouquet** (see *Output lists*) shows the channels of the bouquet it
+  mirrors, read-only.
 
 ![Bouquet — always-on-top groups, drag-order, per-channel edit](screenshots/bouquet.png)
 
@@ -170,9 +202,42 @@ days the guide spans is whatever your provider supplies (cap it in Settings →
 
 ---
 
-## 3. Settings
+## 3. Media Servers (Plex / Jellyfin)
 
-![Settings — service, Plex, output lists](screenshots/settings.png)
+Its own header tab. Two independent tuner surfaces, each on/off with its own proxy
+choice:
+- **M3U + XMLTV tuner** → add in Plex/Jellyfin as an M3U tuner
+  (`/plex/playlist.m3u`) + XMLTV guide (`/plex/epg.xml`).
+- **HDHomeRun emulation** → Plex auto-detects it (SSDP, UDP 1900) or you add it by
+  URL; advertises a configurable tuner count.
+- **Tuner URLs** → the exact addresses to enter in Plex or Jellyfin.
+- **Plex server (optional)** → Plex server URL + token; enables the **Refresh Plex**
+  button.
+- **Channel filter** → which groups of the bouquet go to the media server.
+- **Dummy EPG** → filler programmes for channels without a real guide, so Plex
+  never shows "Unknown airing".
+- **New tuner ID** → gives the tuner a new DeviceID, so Plex sees a brand-new device
+  and re-imports the line-up (use it when Plex keeps the wrong channel order).
+
+**Channel name / ordering options** (all default off, Plex/Jellyfin output only —
+your plain box `get.php`/`xmltv.php` keep clean names):
+- **Show group in name** — prefix each channel name with its group, e.g.
+  `Sport · NPO 1` (Plex's HDHomeRun tuner can't show groups otherwise).
+- **Show number in name** — prefix a **zero-padded sort number** in bouquet order,
+  e.g. `018 NPO 1` (or `18 NPO 1` when you have < 100 channels). This number is the
+  **same value as the HDHomeRun `GuideNumber`** and is added to the **XMLTV
+  `<display-name>`** as well, because Plex's *Alphabetical* guide sorts by that
+  display-name — so numbering it forces your exact bouquet order. It never touches
+  the channel/`tvg-id`, so the EPG coupling is unaffected. Combine both →
+  `018 Sport · NPO 1`.
+  *Tip:* Plex caches its channel mapping per DeviceID — after enabling this, use
+  **New tuner ID** and re-add the DVR in Plex so it re-imports.
+
+---
+
+## 4. Settings
+
+![Settings — language, service settings, output lists](screenshots/settings.png)
 
 ### Language
 The admin UI ships with **English** (default) and **Dutch** built in — pick one
@@ -200,48 +265,52 @@ Any string you leave out falls back to English, so a partial file is fine.
 - **Daily refresh** — local time the service re-reads all sources + EPG.
 - **EPG max days** — cap the served guide to N days ahead (0 = unlimited / take
   whatever providers give).
+- **Extra EPG sources** — one or more third-party XMLTV guides (`.xml` or
+  `.xml.gz`). After every refresh they are matched to your bouquet channels by
+  name or tvg-id; only matching channels are stored. The extra guide goes first,
+  unless a source has *Own EPG before the extra EPG source* ticked. When several
+  guides overlap, the first one in the list wins. Channel ids never change, so
+  boxes and Plex keep their mapping.
 - **Stream proxy** — OFF (default): the box gets the raw provider URL, video
   never flows through the gateway. ON: output URLs point back here and the
   service relays the bytes (handy abroad, or when the box can only reach the
   gateway). Costs bandwidth/CPU. Runs on its own port (default 7778).
-
-### Media Servers (Plex / Jellyfin)
-Its own header tab. Two independent tuner surfaces, each on/off with its own proxy
-choice:
-- **M3U + XMLTV tuner** → add in Plex/Jellyfin as an M3U tuner
-  (`/plex/playlist.m3u`) + XMLTV guide (`/plex/epg.xml`).
-- **HDHomeRun emulation** → Plex auto-detects it (SSDP, UDP 1900) or you add it by
-  URL; advertises a configurable tuner count.
-- **Plex server + token** (optional) → enables the **Rescan Plex** button.
-- **Base URL / channel filter / dummy EPG** → the base URL used to build the tuner
-  URLs, a global group filter, and filler programmes for channels without real EPG.
-
-**Channel name / ordering options** (config keys shown; all default `false`,
-Plex/Jellyfin output only — your plain box `get.php`/`xmltv.php` keep clean names):
-- **`nameShowGroup`** — prefix each channel name with its group, e.g. `Sport · NPO 1`
-  (Plex's HDHomeRun tuner can't show groups otherwise).
-- **`nameShowNumber`** — prefix a **zero-padded sort number** in bouquet order, e.g.
-  `018 NPO 1` (or `18 NPO 1` when you have < 100 channels — the width follows your
-  highest channel number). This number is the **same value as the HDHomeRun
-  `GuideNumber`** and is added to the **XMLTV `<display-name>`** as well, because
-  Plex's *Alphabetical* guide sorts by that display-name — so numbering it forces
-  your exact bouquet order. It's **idempotent** (a name already starting with that
-  number isn't prefixed twice) and never touches the channel/`tvg-id`, so the EPG
-  coupling is unaffected. Combine both → `018 Sport · NPO 1`.
-  *Tip:* Plex caches its channel mapping per DeviceID — after enabling this, use
-  **New tuner ID** (Media Servers) and re-add the DVR in Plex so it re-imports.
+  - **Fail over to another source when a channel is down** — only while
+    relaying: if a provider can't be reached, the same channel (matched by tvg-id,
+    else exact name) is tried from another source.
+- **Media servers: allowed clients** — the Plex/HDHomeRun addresses have no login.
+  Empty = only devices on your local network may use them; list addresses here to
+  allow only those.
+- **Updates** — *Check daily for a new version*: the gateway asks GitHub once a day
+  which version is the latest and shows **Update: v…** in the header when there is
+  a newer one. Nothing about your setup is sent. Untick to switch it off.
 
 ### Output lists
 What an IPTV box authenticates as. Pick a list from the dropdown to edit it, or
-**New list…** to add one. Each list has an optional **username/password**; a list
-with an **empty username becomes the default** the box resolves to when it sends
-no/unknown login. (v1 typically uses a single list.)
+**➕ New list…** to add one. Each list has:
+- a **name** and an **on/off** switch;
+- an optional **username/password** for the box. A list with an **empty username
+  becomes the default** the box resolves to when it sends no/unknown login.
+- **Mirror of** — optional. A mirror always shows the channels of the chosen
+  bouquet (read-only) and plays them with **its own provider account**: per source
+  you can set another server URL, username and password. Handy when someone else
+  uses the same line-up with their own subscription. A mirror can't be mirrored
+  itself, and a bouquet that has mirrors can't be deleted.
 
 ### Settings export / import
-**Export** the whole configuration (sources + lists + groups + the chosen
-channels, each with its upstream stream) to one JSON file; **Import** replaces
-everything — a 1:1 clone to another instance. The catalog is rebuilt for the
-chosen channels, so the clone works without a refresh first.
+**Export to file** saves the whole configuration (settings, sources, lists,
+groups and the chosen channels) as one JSON file; **Import** replaces everything
+with that file — handy for moving to another machine. Refresh the sources after an
+import to fill the catalog.
+
+---
+
+## 5. Log
+
+The last 2000 log lines of the service, updated every few seconds (kept in memory
+only). **Pause / Resume**, a text **filter** (e.g. `timeshift`, `EPG`, `failed`),
+**Only problems**, **Clear view** and **Download**. Paste the relevant lines in a bug
+report — after removing provider URLs and logins.
 
 ---
 
@@ -326,16 +395,16 @@ Or use the **M3U + EPG** URLs directly:
 - **Option B — HDHomeRun:** Plex auto-detects the emulated tuner via SSDP (UDP
   1900), or add it by URL (`http://<host>:7777`). For the guide, choose **“Have an
   XMLTV guide on your server”** and use `http://<host>:7777/plex/epg.xml` (the
-  same guide URL). The exact URLs are also shown in **Settings → Plex Live TV**.
-- **For playback via a Plex tuner, enable the proxy** for that surface (Settings →
-  Plex Live TV → “stream via proxy”): a 302 to the raw provider often won't play in
+  same guide URL). The exact URLs are also shown under **Media Servers → Tuner URLs**.
+- **For playback via a Plex tuner, enable the proxy** for that surface (Media
+  Servers → “stream via proxy”): a 302 to the raw provider often won't play in
   Plex's tuner, but the relay feeds it clean MPEG-TS. The relay starts automatically
   when any proxy option is on.
 - **Per-channel EPG** needs a tvg-id; set one on the bouquet channel if the
   provider didn't supply it.
 - **Refreshing:** Plex caches the line-up. It refreshes the *guide* on its own
   schedule, but **adding/removing channels needs a re-scan in Plex** (or use the
-  **Rescan Plex** button if you set the Plex server + token).
+  **Refresh Plex** button if you set the Plex server + token).
 - **Docker caveat:** SSDP (UDP 1900) does **not** cross Docker bridge NAT. For
   auto-discovery run the container with **host networking**, or add the tuner by
   URL. Set `publicBaseUrl` to the real host so Plex can fetch the lineup.

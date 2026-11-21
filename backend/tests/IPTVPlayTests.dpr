@@ -26,6 +26,7 @@ uses
   Test.SourceHttp in 'Test.SourceHttp.pas',
   Test.Stalker in 'Test.Stalker.pas',
   Test.OutputBuilder in 'Test.OutputBuilder.pas',
+  Test.OutputBundle in 'Test.OutputBundle.pas',
   Test.Serializers in 'Test.Serializers.pas',
   Test.SettingsIO in 'Test.SettingsIO.pas',
   Test.Relay in 'Test.Relay.pas',

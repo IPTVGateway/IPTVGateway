@@ -111,7 +111,7 @@ function SecureRandomBytes(ACount: Integer): TBytes;
 function SecureRandomHex(AByteCount: Integer = cTokenRandomBytes): string;
 
 /// <summary>May a download token be issued for APath? Only the bouquet export
-/// downloads: /api/lists/{id}/export.m3u and /api/lists/{id}/export.xmltv.</summary>
+/// downloads: /api/lists/{id}/export.m3u, .../export.xmltv and .../export.zip.</summary>
 function IsDownloadTokenPath(const APath: string): Boolean;
 
 /// <summary>APath without a query string or fragment.</summary>
@@ -234,7 +234,7 @@ const
 
   // download tokens
   cMaxTokens = 1000;
-  cDownloadPathPattern = '^/api/lists/[0-9]+/export\.(m3u|xmltv)$';
+  cDownloadPathPattern = '^/api/lists/[0-9]+/export\.(m3u|xmltv|zip)$';
   cHexDigits = '0123456789abcdef';
   cNibbleBits = 4;
   cNibbleMask = $0F;

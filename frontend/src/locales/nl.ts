@@ -223,6 +223,8 @@ export const nl: Record<string, string> = {
   '⬇ .m3u': '⬇ .m3u',
   'Download EPG as XMLTV': 'EPG downloaden als XMLTV',
   '⬇ EPG': '⬇ EPG',
+  'Download playlist + EPG together as one zip file': 'Afspeellijst + EPG samen downloaden als één zip-bestand',
+  '⬇ .zip': '⬇ .zip',
   'Pick a list…': 'Kies een lijst…',
   'Select a list to curate.': 'Selecteer een lijst om samen te stellen.',
   'New group name': 'Naam nieuwe groep',

@@ -10,10 +10,15 @@ interface
 uses
   // RTL
   System.JSON,
+  System.Classes,
   // third-party
   MARS.Core.Attributes,
   MARS.Core.MediaType,
   MARS.Core.RequestAndResponse.Interfaces;
+
+const
+  /// Media type of the bouquet zip download (GET /api/lists/{id}/export.zip).
+  cMediaTypeZip = 'application/zip';
 
 type
   /// <summary>Admin REST API (/api) behind the web app.</summary>
@@ -273,6 +278,10 @@ type
     /// List EPG as an XMLTV download.
     [GET, Path('lists/{id}/export.xmltv'), Produces(TMediaType.APPLICATION_XML)]
     function ExportXmltv([PathParam('id')] AId: Integer): string;
+    /// List playlist + EPG together as one zip (<name>.m3u + <name>.xml). MARS sends
+    /// the returned stream and frees it.
+    [GET, Path('lists/{id}/export.zip'), Produces(cMediaTypeZip)]
+    function ExportZip([PathParam('id')] AId: Integer): TStream;
   end;
 
 implementation
@@ -280,7 +289,6 @@ implementation
 uses
   // RTL
   System.SysUtils,
-  System.Classes,
   System.Generics.Collections,
   System.IOUtils,
   System.Math,
@@ -301,6 +309,7 @@ uses
   IPTV.Api.Serializers,
   IPTV.Api.SettingsIO,
   IPTV.Output.Builder,
+  IPTV.Output.Bundle,
   IPTV.Core.Utils,
   IPTV.Plex.Client,
   IPTV.Source.Probe,
@@ -321,8 +330,8 @@ const
   cFieldExtraEpgUrls = 'extraEpgUrls';
   cFieldDownloadPath = 'path'; // POST /api/download-token body
   cHeaderHost = 'Host';
-  cMsgBadDownloadPath = 'A download token is only issued for /api/lists/{id}/export.m3u or ' +
-    '/api/lists/{id}/export.xmltv';
+  cMsgBadDownloadPath = 'A download token is only issued for /api/lists/{id}/export.m3u, ' +
+    '/api/lists/{id}/export.xmltv or /api/lists/{id}/export.zip';
   cMsgClearPlexTokenBool = 'clearPlexToken must be true or false';
   cMsgHostLockout = 'This change would lock you out: without an admin password the admin API only ' +
     'accepts Host "%s" through allowedHosts / publicBaseUrl - keep it there or set an admin password first';
@@ -2137,6 +2146,27 @@ begin
   RequireApp(cAllowQueryPassword); // a download link
   Response.SetHeader(cHeaderContentDisposition, Format(cAttachmentFmt, [cExportXmltvFileName]));
   Result := BuildXmltv(App.Store, AId, App.Config.EpgMaxDays);
+end;
+
+function TAdminResource.ExportZip(AId: Integer): TStream;
+var
+  lLists: TObjectList<TCustomList>;
+  lList: TCustomList;
+  lBaseName: string;
+begin
+  RequireApp(cAllowQueryPassword); // a download link
+  lBaseName := cDefaultBundleBaseName;
+  lLists := App.Store.LoadLists;
+  try
+    for lList in lLists do
+      if lList.Id = AId then
+        lBaseName := BundleBaseName(lList.Name);
+  finally
+    FreeAndNil(lLists);
+  end;
+  Response.SetHeader(cHeaderContentDisposition, Format(cAttachmentFmt, [lBaseName + cBundleZipExt]));
+  Result := BuildBouquetZip(BuildM3U(App.Store, AId), BuildXmltv(App.Store, AId, App.Config.EpgMaxDays),
+    lBaseName);
 end;
 
 initialization

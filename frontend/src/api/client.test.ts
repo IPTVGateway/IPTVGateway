@@ -141,7 +141,8 @@ describe('api client — admin password', () => {
       clicked.push(this.getAttribute('href') ?? '')
     })
     await api.downloadExportXmltv(4)
-    expect(clicked).toEqual(['/api/lists/4/export.xmltv?dt=abc'])
+    await api.downloadExportZip(4)
+    expect(clicked).toEqual(['/api/lists/4/export.xmltv?dt=abc', '/api/lists/4/export.zip?dt=abc'])
     spy.mockRestore()
   })
 

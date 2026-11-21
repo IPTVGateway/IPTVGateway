@@ -10,6 +10,11 @@ All notable changes to IPTV Gateway. Released versions are also on the
   required "no credentials" check) and a feature request; links to the guides.
 - Support thread on the Unraid forum; the Unraid template's Support link and the
   CA profile's Forum link now point to it (GitHub stays the project page).
+- Documentation website (MkDocs Material on GitHub Pages,
+  https://iptvgateway.github.io/IPTVGateway/): home page, getting started, user guide
+  and changelog, rebuilt by the `docs` workflow on every docs change on `main`.
+  Linked from the README, the Unraid template (`ReadMe` + Overview), the compose file,
+  the issue chooser and the image label `org.opencontainers.image.documentation`.
 
 ## [1.2.42] - 2026-11-15
 

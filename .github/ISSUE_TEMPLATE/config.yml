@@ -3,9 +3,6 @@ contact_links:
   - name: Questions (Unraid forum)
     url: https://forums.unraid.net/topic/201311-support-iptvgateway/
     about: Setup and usage questions - the support thread on the Unraid forum.
-  - name: Getting started
-    url: https://github.com/IPTVGateway/IPTVGateway/blob/main/docs/GETTING-STARTED.md
-    about: Installation and first setup.
-  - name: User guide
-    url: https://github.com/IPTVGateway/IPTVGateway/blob/main/docs/USER-GUIDE.md
-    about: How the workbench, bouquets, EPG and settings work.
+  - name: Documentation
+    url: https://iptvgateway.github.io/IPTVGateway/
+    about: Installation, getting started and the user guide.

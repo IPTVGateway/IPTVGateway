@@ -4,6 +4,10 @@
 
 [![frontend](https://github.com/IPTVGateway/IPTVGateway/actions/workflows/frontend.yml/badge.svg)](https://github.com/IPTVGateway/IPTVGateway/actions/workflows/frontend.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![docs](https://img.shields.io/badge/docs-iptvgateway.github.io-orange.svg)](https://iptvgateway.github.io/IPTVGateway/)
+
+📖 **Documentation: [iptvgateway.github.io/IPTVGateway](https://iptvgateway.github.io/IPTVGateway/)**:
+installation, a step-by-step guide and the user guide.
 
 **Merge the IPTV subscriptions you already have into one clean, curated line-up,
 and serve it as your own Xtream Codes portal, M3U playlist, XMLTV guide and
@@ -261,6 +265,9 @@ cd frontend; npx vitest run          # frontend (Vitest + Testing Library)
 ```
 
 ## Documentation
+
+The documentation website is **https://iptvgateway.github.io/IPTVGateway/**. Its
+source is the `docs/` folder:
 
 - **[Getting started](docs/GETTING-STARTED.md)**: step by step from installation to a box showing your line-up.
 - [User guide](docs/USER-GUIDE.md): every screen, connecting a box, Plex, ports.

@@ -71,6 +71,7 @@ LABEL net.unraid.docker.webui="http://[IP]:[PORT:7777]/" \
       net.unraid.docker.icon="https://raw.githubusercontent.com/IPTVGateway/IPTVGateway/main/frontend/public/icon.png" \
       org.opencontainers.image.title="IPTV Gateway" \
       org.opencontainers.image.source="https://github.com/IPTVGateway/IPTVGateway" \
+      org.opencontainers.image.documentation="https://iptvgateway.github.io/IPTVGateway/" \
       org.opencontainers.image.licenses="MIT"
 
 # Not root: the entrypoint drops to PUID:PGID (default 99:100 = Unraid nobody:users)

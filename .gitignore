@@ -91,3 +91,6 @@ frontend/*.tsbuildinfo
 
 # maintainer-specific notes for Claude Code (paths, deploy targets, agreements)
 CLAUDE.local.md
+
+# MkDocs: copy of CHANGELOG.md made at build time (see .github/workflows/docs.yml)
+docs/changelog.md

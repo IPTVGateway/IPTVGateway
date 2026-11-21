@@ -6,7 +6,7 @@ line-up. For every screen in detail, see the [User guide](USER-GUIDE.md).
 > **Before you start:** IPTV Gateway does not provide any channels. You need at
 > least one IPTV source you are entitled to use: an Xtream Codes login (server,
 > username, password) or an M3U playlist URL. See the
-> [disclaimer](../README.md#disclaimer).
+> [disclaimer](index.md#disclaimer).
 
 In the examples, `http://192.168.1.50:7777` is the address of your gateway; replace
 it with your own server's IP and port.

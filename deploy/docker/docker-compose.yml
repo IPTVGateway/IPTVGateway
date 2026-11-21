@@ -1,3 +1,5 @@
+# IPTV Gateway - documentation: https://iptvgateway.github.io/IPTVGateway/
+#
 # NETWORKING / PLEX SSDP NOTE:
 #   Plex HDHomeRun auto-discovery uses SSDP multicast on UDP 1900, which does NOT
 #   cross Docker bridge NAT. On bridge networking the HTTP endpoints work fine, but

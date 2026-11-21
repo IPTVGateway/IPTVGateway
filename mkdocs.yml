@@ -1,0 +1,76 @@
+site_name: IPTV Gateway
+site_description: >-
+  Merge the IPTV subscriptions you already have into one clean, curated line-up and serve it
+  as your own Xtream Codes portal, M3U playlist, XMLTV guide and HDHomeRun tuner.
+site_url: https://iptvgateway.github.io/IPTVGateway/
+repo_url: https://github.com/IPTVGateway/IPTVGateway
+repo_name: IPTVGateway/IPTVGateway
+edit_uri: edit/main/docs/
+copyright: MIT &copy; IPTV Gateway contributors
+
+docs_dir: docs
+site_dir: .Output/site
+exclude_docs: |
+  requirements.txt
+
+nav:
+  - Home: index.md
+  - Getting started: GETTING-STARTED.md
+  - User guide: USER-GUIDE.md
+  - Changelog: changelog.md
+
+theme:
+  name: material
+  logo: assets/icon.png
+  favicon: assets/icon.png
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to system preference
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/IPTVGateway/IPTVGateway
+    - icon: fontawesome/solid/comments
+      link: https://forums.unraid.net/topic/201311-support-iptvgateway/
+      name: Support thread (Unraid forum)
